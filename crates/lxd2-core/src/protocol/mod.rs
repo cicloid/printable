@@ -2,3 +2,4 @@
 
 pub mod auth;
 pub mod crc;
+pub mod packets;

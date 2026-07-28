@@ -32,6 +32,11 @@ impl Bitmap {
         self.rows[y][x / 8] & (0x80 >> (x % 8)) != 0
     }
 
+    /// Append `rows` blank (white) rows at the bottom, e.g. for feed lines.
+    pub fn extend_blank(&mut self, rows: usize) {
+        self.rows.resize(self.rows.len() + rows, [0u8; BYTES_PER_ROW]);
+    }
+
     /// 96-byte payloads for raster packets: two rows each, zero-padded.
     pub fn to_raster_payloads(&self) -> Vec<[u8; 2 * BYTES_PER_ROW]> {
         self.rows
@@ -68,6 +73,16 @@ mod tests {
         let chunks = b.to_raster_payloads();
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[1][0], 0b1000_0000); // row 2 = first row of chunk 1
+    }
+
+    #[test]
+    fn extend_blank_appends_white_rows() {
+        let mut b = Bitmap::new(2);
+        b.set(0, 1, true);
+        b.extend_blank(3);
+        assert_eq!(b.height(), 5);
+        assert!(b.get(0, 1)); // existing content untouched
+        assert!((2..5).all(|y| (0..384).all(|x| !b.get(x, y))));
     }
 
     #[test]

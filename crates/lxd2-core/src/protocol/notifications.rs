@@ -42,9 +42,7 @@ pub fn parse(data: &[u8]) -> Option<Notification> {
             overheat: data.get(5).is_some_and(|&b| b != 0),
             low_battery: data.get(6).is_some_and(|&b| b != 0),
             density: data.get(7).copied(),
-            voltage_mv: data
-                .get(8..10)
-                .map(|v| u16::from_be_bytes([v[0], v[1]])),
+            voltage_mv: data.get(8..10).map(|v| u16::from_be_bytes([v[0], v[1]])),
         })),
         0x05 if data.len() >= 4 => Some(Notification::LostPacket {
             index: u16::from_be_bytes([data[2], data[3]]),
@@ -55,7 +53,9 @@ pub fn parse(data: &[u8]) -> Option<Notification> {
         0x07 => Some(Notification::Cooldown),
         0x08 => Some(Notification::Hold),
         0x0A => Some(Notification::AuthChallengeReply),
-        0x0B if data.len() >= 3 => Some(Notification::AuthResult { ok: data[2] == 0x01 }),
+        0x0B if data.len() >= 3 => Some(Notification::AuthResult {
+            ok: data[2] == 0x01,
+        }),
         _ => None,
     }
 }
@@ -69,7 +69,9 @@ mod tests {
         let n = [0x5A, 0x01, 0, 0, 0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33, 0, 0];
         assert_eq!(
             parse(&n),
-            Some(Notification::Hello { mac: [0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33] })
+            Some(Notification::Hello {
+                mac: [0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33]
+            })
         );
     }
 
@@ -109,16 +111,30 @@ mod tests {
 
     #[test]
     fn parses_flow_control() {
-        assert_eq!(parse(&[0x5A, 0x05, 0x01, 0x40]), Some(Notification::LostPacket { index: 0x0140 }));
-        assert_eq!(parse(&[0x5A, 0x06, 0x01, 0x40]), Some(Notification::Finished { num_packets: 0x0140 }));
+        assert_eq!(
+            parse(&[0x5A, 0x05, 0x01, 0x40]),
+            Some(Notification::LostPacket { index: 0x0140 })
+        );
+        assert_eq!(
+            parse(&[0x5A, 0x06, 0x01, 0x40]),
+            Some(Notification::Finished {
+                num_packets: 0x0140
+            })
+        );
         assert_eq!(parse(&[0x5A, 0x07]), Some(Notification::Cooldown));
         assert_eq!(parse(&[0x5A, 0x08]), Some(Notification::Hold));
     }
 
     #[test]
     fn parses_auth_results() {
-        assert_eq!(parse(&[0x5A, 0x0B, 0x01]), Some(Notification::AuthResult { ok: true }));
-        assert_eq!(parse(&[0x5A, 0x0B, 0x00]), Some(Notification::AuthResult { ok: false }));
+        assert_eq!(
+            parse(&[0x5A, 0x0B, 0x01]),
+            Some(Notification::AuthResult { ok: true })
+        );
+        assert_eq!(
+            parse(&[0x5A, 0x0B, 0x00]),
+            Some(Notification::AuthResult { ok: false })
+        );
         // 5A 0A reply payload is unused garbage; still recognized
         let n = [0x5A, 0x0A, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
         assert_eq!(parse(&n), Some(Notification::AuthChallengeReply));

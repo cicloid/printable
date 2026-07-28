@@ -144,7 +144,12 @@ mod tests {
         let one = render_text("a", 24.0);
         let two = render_text("a\nb", 24.0);
         // Two lines = ceil(2 * line_height), one line = ceil(line_height).
-        assert!(two.height() > one.height(), "{} vs {}", two.height(), one.height());
+        assert!(
+            two.height() > one.height(),
+            "{} vs {}",
+            two.height(),
+            one.height()
+        );
         assert!(two.height() >= one.height() * 2 - 1);
     }
 

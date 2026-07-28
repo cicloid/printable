@@ -10,7 +10,9 @@ pub struct Bitmap {
 
 impl Bitmap {
     pub fn new(height: usize) -> Self {
-        Self { rows: vec![[0u8; BYTES_PER_ROW]; height] }
+        Self {
+            rows: vec![[0u8; BYTES_PER_ROW]; height],
+        }
     }
 
     pub fn height(&self) -> usize {
@@ -25,7 +27,11 @@ impl Bitmap {
     pub fn set(&mut self, x: usize, y: usize, black: bool) {
         let byte = &mut self.rows[y][x / 8];
         let mask = 0x80 >> (x % 8);
-        if black { *byte |= mask } else { *byte &= !mask }
+        if black {
+            *byte |= mask
+        } else {
+            *byte &= !mask
+        }
     }
 
     pub fn get(&self, x: usize, y: usize) -> bool {
@@ -34,7 +40,8 @@ impl Bitmap {
 
     /// Append `rows` blank (white) rows at the bottom, e.g. for feed lines.
     pub fn extend_blank(&mut self, rows: usize) {
-        self.rows.resize(self.rows.len() + rows, [0u8; BYTES_PER_ROW]);
+        self.rows
+            .resize(self.rows.len() + rows, [0u8; BYTES_PER_ROW]);
     }
 
     /// 96-byte payloads for raster packets: two rows each, zero-padded.

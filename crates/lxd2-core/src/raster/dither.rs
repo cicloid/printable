@@ -74,7 +74,9 @@ mod tests {
     #[test]
     fn threshold_maps_dark_to_black() {
         let mut img = GrayImage::new(384, 2);
-        for p in img.pixels_mut() { *p = Luma([10]); } // dark
+        for p in img.pixels_mut() {
+            *p = Luma([10]);
+        } // dark
         let b = image_to_bitmap(&img, Dither::Threshold);
         assert!(b.get(0, 0) && b.get(383, 1)); // black everywhere
     }
@@ -82,7 +84,9 @@ mod tests {
     #[test]
     fn threshold_maps_light_to_white() {
         let mut img = GrayImage::new(384, 2);
-        for p in img.pixels_mut() { *p = Luma([250]); }
+        for p in img.pixels_mut() {
+            *p = Luma([250]);
+        }
         let b = image_to_bitmap(&img, Dither::Threshold);
         assert!(!b.get(0, 0) && !b.get(383, 1));
     }
@@ -90,7 +94,9 @@ mod tests {
     #[test]
     fn floyd_steinberg_mid_gray_is_half_black() {
         let mut img = GrayImage::new(384, 100);
-        for p in img.pixels_mut() { *p = Luma([128]); }
+        for p in img.pixels_mut() {
+            *p = Luma([128]);
+        }
         let b = image_to_bitmap(&img, Dither::FloydSteinberg);
         let black: usize = (0..100)
             .flat_map(|y| (0..384).map(move |x| (x, y)))

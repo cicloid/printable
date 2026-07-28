@@ -53,10 +53,7 @@ mod tests {
 
     #[test]
     fn hello_packet_bytes() {
-        assert_eq!(
-            hello(),
-            [0x5A, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        );
+        assert_eq!(hello(), [0x5A, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     }
 
     #[test]

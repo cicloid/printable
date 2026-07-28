@@ -11,6 +11,9 @@ const FONT_BYTES: &[u8] = include_bytes!("../../assets/JetBrainsMono-Regular.ttf
 /// Glyph coverage at or above this value (of 255) is printed black.
 const COVERAGE_THRESHOLD: u8 = 128;
 
+/// Line height as a multiple of the font size.
+const LINE_HEIGHT_FACTOR: f32 = 1.3;
+
 fn font() -> &'static Font {
     static FONT: OnceLock<Font> = OnceLock::new();
     FONT.get_or_init(|| {
@@ -30,7 +33,14 @@ struct PlacedGlyph {
 ///
 /// Line height is 1.3 × `size_px`; `\n` forces a hard break. Overlong single
 /// words break mid-word. Empty text yields a zero-height bitmap.
+///
+/// Input is normalized first: `\r\n` and bare `\r` become `\n`, and `\t`
+/// expands to four spaces (predictable with a monospace font).
 pub fn render_text(text: &str, size_px: f32) -> Bitmap {
+    let text = text
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\t', "    ");
     if text.is_empty() {
         return Bitmap::new(0);
     }
@@ -73,7 +83,7 @@ pub fn render_text(text: &str, size_px: f32) -> Bitmap {
         }
     }
 
-    let line_height = size_px * 1.3;
+    let line_height = size_px * LINE_HEIGHT_FACTOR;
     let ascent = font
         .horizontal_line_metrics(size_px)
         .map(|m| m.ascent)
@@ -127,5 +137,21 @@ mod tests {
     #[test]
     fn empty_text_gives_empty_bitmap() {
         assert_eq!(render_text("", 24.0).height(), 0);
+    }
+
+    #[test]
+    fn newline_forces_hard_break() {
+        let one = render_text("a", 24.0);
+        let two = render_text("a\nb", 24.0);
+        // Two lines = ceil(2 * line_height), one line = ceil(line_height).
+        assert!(two.height() > one.height(), "{} vs {}", two.height(), one.height());
+        assert!(two.height() >= one.height() * 2 - 1);
+    }
+
+    #[test]
+    fn overlong_word_breaks_mid_word() {
+        let one_line = render_text("M", 24.0);
+        let long = render_text(&"M".repeat(60), 24.0);
+        assert!(long.height() > one_line.height());
     }
 }

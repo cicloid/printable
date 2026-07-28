@@ -34,4 +34,13 @@ mod tests {
         assert_eq!(img.get_pixel(0, 0).0[0], 0);     // black
         assert_eq!(img.get_pixel(1, 0).0[0], 255);   // white
     }
+
+    #[test]
+    fn zero_height_bitmap_gives_white_384x1_png() {
+        let png = bitmap_to_png(&Bitmap::new(0));
+        let img = image::load_from_memory(&png).unwrap().to_luma8();
+        assert_eq!(img.width(), 384);
+        assert_eq!(img.height(), 1);
+        assert!(img.pixels().all(|p| p.0[0] == 255));
+    }
 }

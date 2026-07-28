@@ -20,7 +20,8 @@ pub fn prepare(img: &image::DynamicImage) -> image::GrayImage {
 
 /// Convert a grayscale image to a 1-bit bitmap (bit 1 = black).
 ///
-/// Images narrower than 384 px leave the right margin white.
+/// Images narrower than 384 px leave the right margin white. Images wider
+/// than 384 px are truncated on the right — call [`prepare`] first to scale.
 pub fn image_to_bitmap(img: &image::GrayImage, dither: Dither) -> Bitmap {
     let width = (img.width() as usize).min(WIDTH);
     let height = img.height() as usize;

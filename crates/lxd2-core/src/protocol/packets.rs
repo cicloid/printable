@@ -79,6 +79,14 @@ mod tests {
     }
 
     #[test]
+    fn auth_reply_packet() {
+        let r = [7u8; 10];
+        let p = auth_reply(&r);
+        assert_eq!(&p[..2], &[0x5A, 0x0B]);
+        assert_eq!(&p[2..], &r);
+    }
+
+    #[test]
     fn raster_packet_layout() {
         let data = [0xFFu8; 96];
         let p = raster(0x0203, &data);

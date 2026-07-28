@@ -129,4 +129,12 @@ mod tests {
         assert_eq!(parse(&[0x5A]), None);
         assert_eq!(parse(&[0x42, 0x00]), None);
     }
+
+    #[test]
+    fn truncated_guarded_variants_return_none() {
+        assert_eq!(parse(&[]), None);
+        assert_eq!(parse(&[0x5A, 0x02, 80]), None); // status needs >= 5 bytes
+        assert_eq!(parse(&[0x5A, 0x05, 0x01]), None); // lost-packet needs >= 4 bytes
+        assert_eq!(parse(&[0x5A, 0x0B]), None); // auth result needs >= 3 bytes
+    }
 }

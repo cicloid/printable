@@ -10,6 +10,9 @@ use crate::protocol::notifications::Notification;
 use crate::protocol::packets::{self, RASTER_DATA_LEN};
 use crate::raster::bitmap::Bitmap;
 
+/// How long to back off when the printer reports a thermal cooldown.
+const COOLDOWN_MS: u64 = 100;
+
 /// What the caller should do next.
 #[derive(Debug)]
 pub enum Action {
@@ -44,7 +47,8 @@ enum State {
     SendStart,
     /// Streaming raster packets; `send_idx` tracks the next one to send.
     Streaming,
-    /// Printer asked us to pause; resumes on `LostPacket`.
+    /// Printer asked us to pause; resumes on `LostPacket`, or ends when a
+    /// `Finished` arrives.
     Holding,
     /// All packets sent; waiting for `Finished`.
     AwaitFinish,
@@ -63,7 +67,7 @@ pub struct PrintJob {
     mac: [u8; 6],
     /// Index of the next raster packet to send while `Streaming`.
     send_idx: u16,
-    delay_ms: u64,
+    inter_packet_delay_ms: u64,
     /// One-shot wait to emit before the next action (inter-packet delay or
     /// cooldown back-off).
     pending_wait_ms: Option<u64>,
@@ -71,20 +75,31 @@ pub struct PrintJob {
 }
 
 impl PrintJob {
+    /// Create a job that prints `bitmap` once the caller drives it.
+    ///
+    /// * `density` — print darkness, valid range 1-7.
+    /// * `challenge` — caller-supplied randomness for the `5A 0A` auth
+    ///   challenge. Injecting it keeps this crate free of RNG dependencies
+    ///   and makes the state machine fully deterministic in tests.
+    /// * `inter_packet_delay_ms` — pause between raster packet sends;
+    ///   15 ms is the recommended value for real hardware, 0 disables the
+    ///   delay entirely.
     pub fn new(
         bitmap: &Bitmap,
         density: u8,
         challenge: [u8; 10],
         inter_packet_delay_ms: u64,
     ) -> Self {
+        let payloads = bitmap.to_raster_payloads();
+        debug_assert!(payloads.len() <= u16::MAX as usize);
         Self {
             state: State::SendHello,
-            payloads: bitmap.to_raster_payloads(),
+            payloads,
             density,
             challenge,
             mac: [0u8; 6],
             send_idx: 0,
-            delay_ms: inter_packet_delay_ms,
+            inter_packet_delay_ms,
             pending_wait_ms: None,
             error: None,
         }
@@ -99,6 +114,7 @@ impl PrintJob {
     /// Once a fatal error has been recorded this returns [`Action::Done`];
     /// callers must check [`PrintJob::error`] after the loop exits to tell
     /// success from failure.
+    #[must_use]
     pub fn next_action(&mut self) -> Action {
         if self.error.is_some() {
             return Action::Done;
@@ -135,8 +151,10 @@ impl PrintJob {
                         self.send_idx += 1;
                         // Inter-packet delay applies between raster sends; a
                         // zero delay is skipped entirely.
-                        if self.delay_ms > 0 && (self.send_idx as usize) < self.payloads.len() {
-                            self.pending_wait_ms = Some(self.delay_ms);
+                        if self.inter_packet_delay_ms > 0
+                            && (self.send_idx as usize) < self.payloads.len()
+                        {
+                            self.pending_wait_ms = Some(self.inter_packet_delay_ms);
                         }
                         Action::Send(packets::raster(idx, data).to_vec())
                     }
@@ -184,6 +202,8 @@ impl PrintJob {
                 State::Streaming | State::Holding | State::AwaitFinish,
                 Notification::LostPacket { index },
             ) => {
+                // Resend from one packet before the reported index — the
+                // convention observed in the official app (per rusq fsm.go).
                 self.send_idx = index.saturating_sub(1);
                 self.pending_wait_ms = None;
                 self.state = State::Streaming;
@@ -192,7 +212,7 @@ impl PrintJob {
                 self.state = State::Holding;
             }
             (State::Streaming | State::AwaitFinish, Notification::Cooldown) => {
-                self.pending_wait_ms = Some(100);
+                self.pending_wait_ms = Some(COOLDOWN_MS);
             }
             // The printer decides when the job is complete, even if we think
             // we are still streaming.
@@ -245,6 +265,24 @@ mod tests {
         PrintJob::new(&bitmap, 3, CHALLENGE, 0)
     }
 
+    /// Fast-forward through hello + auth exchange, stopping right before the
+    /// auth result so tests can feed a pass or a failure.
+    fn complete_handshake(job: &mut PrintJob) {
+        drain_sends(job);
+        job.on_notification(hello_reply());
+        drain_sends(job);
+        job.on_notification(Notification::AuthChallengeReply);
+        drain_sends(job);
+    }
+
+    /// A two-packet job that has passed the handshake and is ready to stream.
+    fn authed_job() -> PrintJob {
+        let mut job = two_packet_job();
+        complete_handshake(&mut job);
+        job.on_notification(Notification::AuthResult { ok: true });
+        job
+    }
+
     #[test]
     fn happy_path_full_sequence() {
         let mut job = two_packet_job();
@@ -279,14 +317,7 @@ mod tests {
 
     #[test]
     fn lost_packet_rewinds_to_index_minus_one() {
-        let mut job = two_packet_job();
-        // fast-forward through handshake
-        drain_sends(&mut job);
-        job.on_notification(hello_reply());
-        drain_sends(&mut job);
-        job.on_notification(Notification::AuthChallengeReply);
-        drain_sends(&mut job);
-        job.on_notification(Notification::AuthResult { ok: true });
+        let mut job = authed_job();
         drain_sends(&mut job); // all packets streamed
 
         job.on_notification(Notification::LostPacket { index: 1 });
@@ -298,13 +329,7 @@ mod tests {
 
     #[test]
     fn hold_pauses_until_lost_packet_resumes() {
-        let mut job = two_packet_job();
-        drain_sends(&mut job);
-        job.on_notification(hello_reply());
-        drain_sends(&mut job);
-        job.on_notification(Notification::AuthChallengeReply);
-        drain_sends(&mut job);
-        job.on_notification(Notification::AuthResult { ok: true });
+        let mut job = authed_job();
 
         // stream first packet, then printer says hold
         let _ = job.next_action(); // density
@@ -323,30 +348,20 @@ mod tests {
     #[test]
     fn auth_failure_is_fatal() {
         let mut job = two_packet_job();
-        drain_sends(&mut job);
-        job.on_notification(hello_reply());
-        drain_sends(&mut job);
-        job.on_notification(Notification::AuthChallengeReply);
-        drain_sends(&mut job);
+        complete_handshake(&mut job);
         job.on_notification(Notification::AuthResult { ok: false });
         assert!(job.error().is_some());
     }
 
     #[test]
     fn cooldown_waits_100ms_then_resumes() {
-        let mut job = two_packet_job();
-        drain_sends(&mut job);
-        job.on_notification(hello_reply());
-        drain_sends(&mut job);
-        job.on_notification(Notification::AuthChallengeReply);
-        drain_sends(&mut job);
-        job.on_notification(Notification::AuthResult { ok: true });
+        let mut job = authed_job();
 
         let _ = job.next_action(); // density
         let _ = job.next_action(); // start
         let _ = job.next_action(); // raster 0
         job.on_notification(Notification::Cooldown);
-        assert!(matches!(job.next_action(), Action::WaitMs(100)));
+        assert!(matches!(job.next_action(), Action::WaitMs(COOLDOWN_MS)));
         match job.next_action() {
             Action::Send(p) => assert_eq!(&p[..3], &[0x55, 0x00, 0x01]),
             other => panic!("expected resumed send, got {other:?}"),
@@ -355,13 +370,7 @@ mod tests {
 
     #[test]
     fn lost_packet_index_zero_rewinds_to_zero() {
-        let mut job = two_packet_job();
-        drain_sends(&mut job);
-        job.on_notification(hello_reply());
-        drain_sends(&mut job);
-        job.on_notification(Notification::AuthChallengeReply);
-        drain_sends(&mut job);
-        job.on_notification(Notification::AuthResult { ok: true });
+        let mut job = authed_job();
         drain_sends(&mut job); // all packets streamed
 
         job.on_notification(Notification::LostPacket { index: 0 });
@@ -372,18 +381,13 @@ mod tests {
 
     #[test]
     fn finished_while_streaming_moves_to_print_end() {
-        let mut job = two_packet_job();
-        drain_sends(&mut job);
-        job.on_notification(hello_reply());
-        drain_sends(&mut job);
-        job.on_notification(Notification::AuthChallengeReply);
-        drain_sends(&mut job);
-        job.on_notification(Notification::AuthResult { ok: true });
+        let mut job = authed_job();
 
         let _ = job.next_action(); // density
         let _ = job.next_action(); // start
         let _ = job.next_action(); // raster 0
-                                   // printer claims completion before we sent everything
+
+        // printer claims completion before we sent everything
         job.on_notification(Notification::Finished { num_packets: 2 });
         let sent = drain_sends(&mut job);
         assert_eq!(&sent[0], &[0x5A, 0x04, 0x00, 0x02, 0x01, 0x00]);
@@ -394,11 +398,7 @@ mod tests {
     fn inter_packet_delay_emits_wait_between_rasters() {
         let bitmap = crate::raster::bitmap::Bitmap::new(3);
         let mut job = PrintJob::new(&bitmap, 3, CHALLENGE, 15);
-        drain_sends(&mut job);
-        job.on_notification(hello_reply());
-        drain_sends(&mut job);
-        job.on_notification(Notification::AuthChallengeReply);
-        drain_sends(&mut job);
+        complete_handshake(&mut job);
         job.on_notification(Notification::AuthResult { ok: true });
 
         let _ = job.next_action(); // density

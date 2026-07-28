@@ -46,11 +46,21 @@ pub struct PrintArgs {
     #[arg(long, value_enum, default_value_t = DitherArg::Floyd)]
     pub dither: DitherArg,
     /// Font size for text in pixels
-    #[arg(long, default_value_t = 24.0)]
+    #[arg(long, default_value_t = 24.0, value_parser = parse_font_size)]
     pub size: f32,
     /// Render to PNG instead of printing
     #[arg(long)]
     pub preview: Option<std::path::PathBuf>,
+}
+
+/// Parse a font size: must be a positive, finite number of pixels.
+fn parse_font_size(s: &str) -> Result<f32, String> {
+    let size: f32 = s.parse().map_err(|_| format!("`{s}` is not a number"))?;
+    if size.is_finite() && size > 0.0 {
+        Ok(size)
+    } else {
+        Err("font size must be greater than 0".to_string())
+    }
 }
 
 #[derive(clap::Args)]

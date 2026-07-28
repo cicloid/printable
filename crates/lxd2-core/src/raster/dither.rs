@@ -11,9 +11,21 @@ pub enum Dither {
     Threshold,
 }
 
+/// Maximum output height of [`prepare`] in rows: about half a meter of
+/// paper at 203 dpi.
+const MAX_PREPARE_HEIGHT: u64 = 4096;
+
 /// Grayscale + resize to the 384 px print width, preserving aspect ratio.
+///
+/// The output height is clamped to 4096 rows (~0.5 m of paper); taller
+/// results are squashed to fit rather than erroring. A zero-width input
+/// cannot be scaled and yields a 384x1 all-white image.
 pub fn prepare(img: &image::DynamicImage) -> image::GrayImage {
-    let height = ((WIDTH as u64 * img.height() as u64) / img.width() as u64).max(1) as u32;
+    if img.width() == 0 {
+        return image::GrayImage::from_pixel(WIDTH as u32, 1, image::Luma([255]));
+    }
+    let height = ((WIDTH as u64 * img.height() as u64) / img.width() as u64)
+        .clamp(1, MAX_PREPARE_HEIGHT) as u32;
     img.resize_exact(WIDTH as u32, height, image::imageops::FilterType::Lanczos3)
         .to_luma8()
 }
@@ -112,5 +124,22 @@ mod tests {
         let g = prepare(&img);
         assert_eq!(g.width(), 384);
         assert_eq!(g.height(), 100);
+    }
+
+    #[test]
+    fn prepare_clamps_height_to_4096() {
+        // 10x1000 would scale to 384x38400; clamped to the paper cap.
+        let img = image::DynamicImage::new_luma8(10, 1000);
+        let g = prepare(&img);
+        assert_eq!(g.width(), 384);
+        assert_eq!(g.height(), 4096);
+    }
+
+    #[test]
+    fn prepare_zero_width_gives_white_384x1() {
+        let img = image::DynamicImage::new_luma8(0, 10);
+        let g = prepare(&img);
+        assert_eq!((g.width(), g.height()), (384, 1));
+        assert!(g.pixels().all(|p| p.0[0] == 255));
     }
 }

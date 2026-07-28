@@ -131,6 +131,10 @@ async fn cmd_print(args: PrintArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Create the job before touching BLE so an oversized bitmap fails fast.
+    let mut job = PrintJob::new(&bitmap, density, rand::random(), INTER_PACKET_DELAY_MS)
+        .context("cannot print this job")?;
+
     let mut printer = ble::connect(device.device.as_deref(), SCAN_TIMEOUT).await?;
     eprintln!("Connected to {}.", printer.name());
 
@@ -146,7 +150,6 @@ async fn cmd_print(args: PrintArgs) -> anyhow::Result<()> {
         }
     }
 
-    let mut job = PrintJob::new(&bitmap, density, rand::random(), INTER_PACKET_DELAY_MS);
     let result = printer.run_job(&mut job).await;
     printer.disconnect().await;
     result.map_err(|e| e.context(PrintFailure))?;

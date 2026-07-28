@@ -32,6 +32,10 @@ pub enum JobError {
     /// The printer rejected our `5A 0B` auth response.
     #[error("printer rejected authentication")]
     AuthFailed,
+    /// The bitmap needs more raster packets than the protocol's 16-bit
+    /// packet index can address.
+    #[error("print too large: {packets} raster packets exceeds the maximum of {max}", max = u16::MAX)]
+    TooLarge { packets: usize },
 }
 
 /// Internal state of the job.
@@ -84,15 +88,23 @@ impl PrintJob {
     /// * `inter_packet_delay_ms` — pause between raster packet sends;
     ///   15 ms is the recommended value for real hardware, 0 disables the
     ///   delay entirely.
+    ///
+    /// Errors with [`JobError::TooLarge`] if the bitmap needs more raster
+    /// packets than the protocol's 16-bit packet index can address
+    /// (i.e. more than 131,070 rows).
     pub fn new(
         bitmap: &Bitmap,
         density: u8,
         challenge: [u8; 10],
         inter_packet_delay_ms: u64,
-    ) -> Self {
+    ) -> Result<Self, JobError> {
         let payloads = bitmap.to_raster_payloads();
-        debug_assert!(payloads.len() <= u16::MAX as usize);
-        Self {
+        if payloads.len() > u16::MAX as usize {
+            return Err(JobError::TooLarge {
+                packets: payloads.len(),
+            });
+        }
+        Ok(Self {
             state: State::SendHello,
             payloads,
             density,
@@ -102,7 +114,7 @@ impl PrintJob {
             inter_packet_delay_ms,
             pending_wait_ms: None,
             error: None,
-        }
+        })
     }
 
     fn num_packets(&self) -> u16 {
@@ -262,7 +274,7 @@ mod tests {
     fn two_packet_job() -> PrintJob {
         // 3-row bitmap -> 2 raster payloads
         let bitmap = crate::raster::bitmap::Bitmap::new(3);
-        PrintJob::new(&bitmap, 3, CHALLENGE, 0)
+        PrintJob::new(&bitmap, 3, CHALLENGE, 0).unwrap()
     }
 
     /// Fast-forward through hello + auth exchange, stopping right before the
@@ -346,6 +358,16 @@ mod tests {
     }
 
     #[test]
+    fn oversized_bitmap_errors() {
+        // 131,073 rows -> 65,537 packets, one more than a u16 index allows.
+        let bitmap = crate::raster::bitmap::Bitmap::new(131_073);
+        assert!(matches!(
+            PrintJob::new(&bitmap, 3, CHALLENGE, 0),
+            Err(JobError::TooLarge { packets: 65_537 })
+        ));
+    }
+
+    #[test]
     fn auth_failure_is_fatal() {
         let mut job = two_packet_job();
         complete_handshake(&mut job);
@@ -397,7 +419,7 @@ mod tests {
     #[test]
     fn inter_packet_delay_emits_wait_between_rasters() {
         let bitmap = crate::raster::bitmap::Bitmap::new(3);
-        let mut job = PrintJob::new(&bitmap, 3, CHALLENGE, 15);
+        let mut job = PrintJob::new(&bitmap, 3, CHALLENGE, 15).unwrap();
         complete_handshake(&mut job);
         job.on_notification(Notification::AuthResult { ok: true });
 

@@ -54,6 +54,8 @@ The first run triggers a Bluetooth permission prompt for your terminal app. If y
 | 3 | Out of paper |
 | 4 | Print failed |
 
+Invalid command-line usage also exits 2 (clap's convention).
+
 ## Architecture
 
 The workspace has two crates. `lxd2-core` is a sans-IO crate containing the protocol (packet building, CRC, auth, print-job state machine) and the rendering pipeline (text layout, dithering, raster chunking, PNG preview); it has no Bluetooth dependencies, keeping it WASM-ready for a future Web Bluetooth version. `lxd2` is the CLI, which drives `lxd2-core` over BLE using [btleplug](https://github.com/deviceplug/btleplug).

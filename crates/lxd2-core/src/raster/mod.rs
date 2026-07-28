@@ -2,3 +2,4 @@
 
 pub mod bitmap;
 pub mod dither;
+pub mod text;

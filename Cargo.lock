@@ -27,6 +27,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocator-api2"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -424,7 +430,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
 dependencies = [
  "cfg-if",
- "hashbrown",
+ "hashbrown 0.14.5",
  "lock_api",
  "once_cell",
  "parking_lot_core",
@@ -438,7 +444,7 @@ checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
 dependencies = [
  "cfg-if",
  "crossbeam-utils",
- "hashbrown",
+ "hashbrown 0.14.5",
  "lock_api",
  "once_cell",
  "parking_lot_core",
@@ -493,6 +499,12 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "equivalent"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "errno"
@@ -550,6 +562,22 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+]
+
+[[package]]
+name = "foldhash"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
+
+[[package]]
+name = "fontdue"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e57e16b3fe8ff4364c0661fdaac543fb38b29ea9bc9c2f45612d90adf931d2b"
+dependencies = [
+ "hashbrown 0.15.5",
+ "ttf-parser",
 ]
 
 [[package]]
@@ -689,6 +717,17 @@ name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+
+[[package]]
+name = "hashbrown"
+version = "0.15.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash",
+]
 
 [[package]]
 name = "heck"
@@ -918,6 +957,7 @@ dependencies = [
 name = "lxd2-core"
 version = "0.1.0"
 dependencies = [
+ "fontdue",
  "image",
  "thiserror 2.0.19",
 ]
@@ -1669,6 +1709,12 @@ dependencies = [
  "pin-project-lite",
  "tokio",
 ]
+
+[[package]]
+name = "ttf-parser"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c591d83f69777866b9126b24c6dd9a18351f177e49d625920d19f989fd31cf8"
 
 [[package]]
 name = "unicode-ident"

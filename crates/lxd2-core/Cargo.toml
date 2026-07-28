@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 thiserror = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+fontdue = "0.9"

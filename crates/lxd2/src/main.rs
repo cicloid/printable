@@ -11,24 +11,14 @@ use clap::Parser;
 use lxd2_core::protocol::job::PrintJob;
 use lxd2_core::raster::{bitmap_to_png, image_to_bitmap, prepare, render_text, Bitmap, Dither};
 
-use crate::ble::NoPrinterFound;
-use crate::cli::{Cli, Command, DeviceArgs};
+use crate::ble::{NoPaper, NoPrinterFound};
+use crate::cli::{Cli, Command, DeviceArgs, PrintArgs};
 
 /// How long `connect` keeps scanning for a matching device.
 const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Delay between raster packet writes, in milliseconds.
 const INTER_PACKET_DELAY_MS: u64 = 15;
-
-/// Marker context: the printer reported it is out of paper (exit code 3).
-#[derive(Debug)]
-struct NoPaper;
-
-impl fmt::Display for NoPaper {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("printer is out of paper")
-    }
-}
 
 /// Marker context: authentication or printing failed (exit code 4).
 #[derive(Debug)]
@@ -71,27 +61,7 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
     match cli.command {
         Command::Scan { timeout } => cmd_scan(timeout).await,
         Command::Status(device) => cmd_status(device).await.map(|()| 0),
-        Command::Print {
-            device,
-            text,
-            file,
-            density,
-            feed,
-            dither,
-            size,
-            preview,
-        } => cmd_print(
-            device,
-            text,
-            file,
-            density,
-            feed,
-            dither.into(),
-            size,
-            preview,
-        )
-        .await
-        .map(|()| 0),
+        Command::Print(args) => cmd_print(args).await.map(|()| 0),
     }
 }
 
@@ -99,7 +69,8 @@ async fn cmd_scan(timeout: u64) -> anyhow::Result<i32> {
     let found = ble::scan(Duration::from_secs(timeout)).await?;
     if found.is_empty() {
         eprintln!("No LX printers found. Is the printer on?");
-        return Ok(1);
+        // Same exit code as a failed connect: no printer found.
+        return Ok(2);
     }
     println!("{:<20} ID", "NAME");
     for (name, id) in &found {
@@ -139,18 +110,18 @@ async fn cmd_status(device: DeviceArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn cmd_print(
-    device: DeviceArgs,
-    text: Option<String>,
-    file: Option<PathBuf>,
-    density: u8,
-    feed: usize,
-    dither: Dither,
-    size: f32,
-    preview: Option<PathBuf>,
-) -> anyhow::Result<()> {
-    let mut bitmap = build_bitmap(text, file, dither, size)?;
+async fn cmd_print(args: PrintArgs) -> anyhow::Result<()> {
+    let PrintArgs {
+        device,
+        text,
+        file,
+        density,
+        feed,
+        dither,
+        size,
+        preview,
+    } = args;
+    let mut bitmap = build_bitmap(text, file, dither.into(), size)?;
     bitmap.extend_blank(feed);
 
     if let Some(path) = preview {

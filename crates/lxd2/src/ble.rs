@@ -40,6 +40,28 @@ impl fmt::Display for NoPrinterFound {
     }
 }
 
+/// The printer reported it is out of paper.
+///
+/// Kept as a distinct type so `main` can map it to its own exit code.
+#[derive(Debug)]
+pub struct NoPaper;
+
+impl fmt::Display for NoPaper {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("printer is out of paper")
+    }
+}
+
+/// Bail if a notification is a Status frame reporting no paper.
+fn check_paper(n: &Notification) -> Result<()> {
+    if let Notification::Status(s) = n {
+        if s.no_paper {
+            return Err(anyhow::Error::msg(NoPaper));
+        }
+    }
+    Ok(())
+}
+
 /// Find the first Bluetooth adapter, with a hint if Bluetooth is off.
 async fn default_adapter() -> Result<Adapter> {
     let manager = Manager::new()
@@ -63,6 +85,18 @@ async fn start_scan(adapter: &Adapter) -> Result<()> {
     )
 }
 
+/// Returns the advertised name if the device matches: its name (or id)
+/// contains `filter`, or — with no filter — its name starts with "LX".
+async fn matching_name(p: &Peripheral, filter: Option<&str>) -> Option<String> {
+    let props = p.properties().await.ok()??;
+    let name = props.local_name?;
+    let matched = match filter {
+        Some(f) => name.contains(f) || p.id().to_string().contains(f),
+        None => name.starts_with("LX"),
+    };
+    matched.then_some(name)
+}
+
 /// Scan for `timeout`, returning (name, id) of every device named `LX*`.
 pub async fn scan(timeout: Duration) -> Result<Vec<(String, String)>> {
     let adapter = default_adapter().await?;
@@ -71,13 +105,7 @@ pub async fn scan(timeout: Duration) -> Result<Vec<(String, String)>> {
 
     let mut found = Vec::new();
     for p in adapter.peripherals().await? {
-        let Ok(Some(props)) = p.properties().await else {
-            continue;
-        };
-        let Some(name) = props.local_name else {
-            continue;
-        };
-        if name.starts_with("LX") {
+        if let Some(name) = matching_name(&p, None).await {
             found.push((name, p.id().to_string()));
         }
     }
@@ -85,24 +113,13 @@ pub async fn scan(timeout: Duration) -> Result<Vec<(String, String)>> {
     Ok(found)
 }
 
-/// A device matches if its name contains `filter` (or its id does), or —
-/// with no filter — if its name starts with "LX".
+/// First device matching `filter` (see [`matching_name`]), if any.
 async fn find_match(
     adapter: &Adapter,
     filter: Option<&str>,
 ) -> Result<Option<(Peripheral, String)>> {
     for p in adapter.peripherals().await? {
-        let Ok(Some(props)) = p.properties().await else {
-            continue;
-        };
-        let Some(name) = props.local_name else {
-            continue;
-        };
-        let matched = match filter {
-            Some(f) => name.contains(f) || p.id().to_string().contains(f),
-            None => name.starts_with("LX"),
-        };
-        if matched {
+        if let Some(name) = matching_name(&p, filter).await {
             return Ok(Some((p, name)));
         }
     }
@@ -113,7 +130,11 @@ async fn find_match(
 pub struct Printer {
     peripheral: Peripheral,
     write_char: Characteristic,
+    notify_char: Characteristic,
     notify_rx: mpsc::UnboundedReceiver<Notification>,
+    /// The task forwarding raw notifications into `notify_rx`; aborted on
+    /// disconnect so it does not park on the stream forever.
+    forwarder: tokio::task::JoinHandle<()>,
     name: String,
 }
 
@@ -140,6 +161,20 @@ pub async fn connect(filter: Option<&str>, scan_timeout: Duration) -> Result<Pri
         .connect()
         .await
         .with_context(|| format!("failed to connect to {name}"))?;
+
+    // From here on the link is up: drop it again if setup fails.
+    match initialize(peripheral.clone(), name).await {
+        Ok(printer) => Ok(printer),
+        Err(e) => {
+            let _ = peripheral.disconnect().await;
+            Err(e)
+        }
+    }
+}
+
+/// Post-connect setup: discover characteristics, subscribe, and spawn the
+/// notification forwarder. The caller disconnects on error.
+async fn initialize(peripheral: Peripheral, name: String) -> Result<Printer> {
     peripheral
         .discover_services()
         .await
@@ -173,7 +208,7 @@ pub async fn connect(filter: Option<&str>, scan_timeout: Duration) -> Result<Pri
         .await
         .context("failed to open notification stream")?;
     let (tx, notify_rx) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
+    let forwarder = tokio::spawn(async move {
         while let Some(data) = stream.next().await {
             if data.uuid != notify_uuid {
                 continue;
@@ -189,7 +224,9 @@ pub async fn connect(filter: Option<&str>, scan_timeout: Duration) -> Result<Pri
     Ok(Printer {
         peripheral,
         write_char,
+        notify_char,
         notify_rx,
+        forwarder,
         name,
     })
 }
@@ -221,8 +258,10 @@ impl Printer {
         loop {
             // Drain pending notifications first so mid-stream flow control
             // (Hold / LostPacket / Cooldown) reaches the FSM even while we
-            // are on the Send/WaitMs fast path.
+            // are on the Send/WaitMs fast path. A no-paper Status aborts the
+            // job here rather than dying later on a misleading timeout.
             while let Ok(n) = self.notify_rx.try_recv() {
+                check_paper(&n)?;
                 job.on_notification(n);
             }
             match job.next_action() {
@@ -238,6 +277,7 @@ impl Printer {
                         .await
                         .map_err(|_| anyhow!("printer stopped responding"))?
                         .ok_or_else(|| anyhow!("notification stream closed"))?;
+                    check_paper(&n)?;
                     job.on_notification(n);
                 }
                 Action::Done => break,
@@ -250,7 +290,12 @@ impl Printer {
     }
 
     /// Disconnect, ignoring errors (the OS drops the link anyway on exit).
+    ///
+    /// Unsubscribes first, then stops the notification forwarder so it does
+    /// not sit parked on a stream that will never yield again.
     pub async fn disconnect(self) {
+        let _ = self.peripheral.unsubscribe(&self.notify_char).await;
+        self.forwarder.abort();
         let _ = self.peripheral.disconnect().await;
     }
 }

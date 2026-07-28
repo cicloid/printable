@@ -24,30 +24,33 @@ pub enum Command {
     /// Show printer status (battery, paper, density)
     Status(DeviceArgs),
     /// Print text (arg or stdin) or a file
-    Print {
-        #[command(flatten)]
-        device: DeviceArgs,
-        /// Text to print; reads stdin if omitted and no --file
-        text: Option<String>,
-        /// File to print (.png/.jpg/.jpeg/.txt)
-        #[arg(short, long)]
-        file: Option<std::path::PathBuf>,
-        /// Density 1-7
-        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u8).range(1..=7))]
-        density: u8,
-        /// Blank feed lines after printing
-        #[arg(long, default_value_t = 40)]
-        feed: usize,
-        /// Dithering for images
-        #[arg(long, value_enum, default_value_t = DitherArg::Floyd)]
-        dither: DitherArg,
-        /// Font size for text in pixels
-        #[arg(long, default_value_t = 24.0)]
-        size: f32,
-        /// Render to PNG instead of printing
-        #[arg(long)]
-        preview: Option<std::path::PathBuf>,
-    },
+    Print(PrintArgs),
+}
+
+#[derive(clap::Args)]
+pub struct PrintArgs {
+    #[command(flatten)]
+    pub device: DeviceArgs,
+    /// Text to print; reads stdin if omitted and no --file
+    pub text: Option<String>,
+    /// File to print (.png/.jpg/.jpeg/.txt)
+    #[arg(short, long)]
+    pub file: Option<std::path::PathBuf>,
+    /// Density 1-7
+    #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u8).range(1..=7))]
+    pub density: u8,
+    /// Blank feed lines after printing
+    #[arg(long, default_value_t = 40)]
+    pub feed: usize,
+    /// Dithering for images
+    #[arg(long, value_enum, default_value_t = DitherArg::Floyd)]
+    pub dither: DitherArg,
+    /// Font size for text in pixels
+    #[arg(long, default_value_t = 24.0)]
+    pub size: f32,
+    /// Render to PNG instead of printing
+    #[arg(long)]
+    pub preview: Option<std::path::PathBuf>,
 }
 
 #[derive(clap::Args)]

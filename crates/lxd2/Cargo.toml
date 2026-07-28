@@ -8,7 +8,8 @@ license.workspace = true
 lxd2-core = { path = "../lxd2-core" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 btleplug = "0.11"
 futures = "0.3"
-image = "0.25"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rand = "0.8"

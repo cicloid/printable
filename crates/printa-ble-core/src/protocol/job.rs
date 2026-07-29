@@ -38,6 +38,24 @@ pub enum JobError {
     TooLarge { packets: usize },
 }
 
+/// Counters describing how a print job actually went.
+///
+/// A job that took far longer than its line count suggests usually spent the
+/// difference in thermal flow control; these counters are what a caller needs
+/// to say so. Plain data on purpose — this crate is sans-IO, so it counts and
+/// the transport layer decides how to report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct JobStats {
+    /// Raster packets written, counting every resend.
+    pub packets_sent: u32,
+    /// `5A 05` LostPacket events: the printer asked us to rewind.
+    pub retransmits: u32,
+    /// `5A 08` Hold events: the printer paused the stream.
+    pub holds: u32,
+    /// `5A 07` Cooldown events: the printer asked us to back off.
+    pub cooldowns: u32,
+}
+
 /// Internal state of the job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -76,6 +94,7 @@ pub struct PrintJob {
     /// cooldown back-off).
     pending_wait_ms: Option<u64>,
     error: Option<JobError>,
+    stats: JobStats,
 }
 
 impl PrintJob {
@@ -114,6 +133,7 @@ impl PrintJob {
             inter_packet_delay_ms,
             pending_wait_ms: None,
             error: None,
+            stats: JobStats::default(),
         })
     }
 
@@ -161,6 +181,7 @@ impl PrintJob {
                 match self.payloads.get(idx as usize) {
                     Some(data) => {
                         self.send_idx += 1;
+                        self.stats.packets_sent = self.stats.packets_sent.saturating_add(1);
                         // Inter-packet delay applies between raster sends; a
                         // zero delay is skipped entirely.
                         if self.inter_packet_delay_ms > 0
@@ -219,12 +240,15 @@ impl PrintJob {
                 self.send_idx = index.saturating_sub(1);
                 self.pending_wait_ms = None;
                 self.state = State::Streaming;
+                self.stats.retransmits = self.stats.retransmits.saturating_add(1);
             }
             (State::Streaming | State::AwaitFinish, Notification::Hold) => {
                 self.state = State::Holding;
+                self.stats.holds = self.stats.holds.saturating_add(1);
             }
             (State::Streaming | State::AwaitFinish, Notification::Cooldown) => {
                 self.pending_wait_ms = Some(COOLDOWN_MS);
+                self.stats.cooldowns = self.stats.cooldowns.saturating_add(1);
             }
             // The printer decides when the job is complete, even if we think
             // we are still streaming.
@@ -244,6 +268,12 @@ impl PrintJob {
     /// The fatal error, if the job failed.
     pub fn error(&self) -> Option<&JobError> {
         self.error.as_ref()
+    }
+
+    /// Counters for what the job has done so far: raster packets written and
+    /// how many flow-control events the printer raised.
+    pub fn stats(&self) -> JobStats {
+        self.stats
     }
 }
 
@@ -355,6 +385,119 @@ mod tests {
             Action::Send(p) => assert_eq!(&p[..3], &[0x55, 0x00, 0x00]),
             other => panic!("expected resume send, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn stats_start_at_zero() {
+        assert_eq!(two_packet_job().stats(), JobStats::default());
+    }
+
+    /// Handshake traffic is not raster traffic: nothing is counted until the
+    /// stream starts.
+    #[test]
+    fn handshake_sends_are_not_counted_as_packets() {
+        let mut job = two_packet_job();
+        complete_handshake(&mut job);
+        job.on_notification(Notification::AuthResult { ok: true });
+        assert_eq!(job.stats().packets_sent, 0);
+    }
+
+    #[test]
+    fn stats_count_packets_sent() {
+        let mut job = authed_job();
+        drain_sends(&mut job); // density, start, raster 0, raster 1
+        assert_eq!(
+            job.stats(),
+            JobStats {
+                packets_sent: 2,
+                ..JobStats::default()
+            }
+        );
+    }
+
+    #[test]
+    fn stats_count_retransmits_and_resent_packets() {
+        let mut job = authed_job();
+        drain_sends(&mut job);
+
+        job.on_notification(Notification::LostPacket { index: 1 });
+        drain_sends(&mut job); // resends packets 0 and 1
+
+        assert_eq!(
+            job.stats(),
+            JobStats {
+                // 2 originals + 2 resends: resends count too.
+                packets_sent: 4,
+                retransmits: 1,
+                ..JobStats::default()
+            }
+        );
+    }
+
+    #[test]
+    fn stats_count_holds() {
+        let mut job = authed_job();
+        let _ = job.next_action(); // density
+        let _ = job.next_action(); // start
+        let _ = job.next_action(); // raster 0
+
+        job.on_notification(Notification::Hold);
+        job.on_notification(Notification::LostPacket { index: 1 });
+        job.on_notification(Notification::Hold);
+
+        assert_eq!(job.stats().holds, 2);
+    }
+
+    #[test]
+    fn stats_count_cooldowns() {
+        let mut job = authed_job();
+        let _ = job.next_action(); // density
+        let _ = job.next_action(); // start
+        let _ = job.next_action(); // raster 0
+
+        job.on_notification(Notification::Cooldown);
+        let _ = job.next_action(); // the cooldown wait
+        let _ = job.next_action(); // raster 1
+        job.on_notification(Notification::Cooldown);
+
+        assert_eq!(job.stats().cooldowns, 2);
+    }
+
+    /// Notifications the FSM ignores in the current state must not move any
+    /// counter — a Hold before streaming is not a thermal pause.
+    #[test]
+    fn ignored_notifications_do_not_count() {
+        let mut job = two_packet_job();
+        job.on_notification(Notification::Hold);
+        job.on_notification(Notification::Cooldown);
+        job.on_notification(Notification::LostPacket { index: 3 });
+        assert_eq!(job.stats(), JobStats::default());
+    }
+
+    /// One drive through every flow-control event, ending in a finished job.
+    #[test]
+    fn stats_accumulate_across_a_whole_job() {
+        let mut job = authed_job();
+        let _ = job.next_action(); // density
+        let _ = job.next_action(); // start
+        let _ = job.next_action(); // raster 0
+
+        job.on_notification(Notification::Cooldown);
+        job.on_notification(Notification::Hold);
+        job.on_notification(Notification::LostPacket { index: 1 });
+        drain_sends(&mut job); // resends 0 and 1
+        job.on_notification(Notification::Finished { num_packets: 2 });
+        drain_sends(&mut job); // print end
+
+        assert_eq!(
+            job.stats(),
+            JobStats {
+                packets_sent: 3,
+                retransmits: 1,
+                holds: 1,
+                cooldowns: 1,
+            }
+        );
     }
 
     #[test]

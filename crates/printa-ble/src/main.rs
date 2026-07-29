@@ -54,9 +54,14 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Status(device) => cmd_status(device).await.map(|()| 0),
         Command::Print(args) => cmd_print(args).await.map(|()| 0),
         Command::Qr(args) => cmd_qr(args).await.map(|()| 0),
-        Command::Serve { port, bind, device } => {
-            server::serve(&bind, port, device.device).await.map(|()| 0)
-        }
+        Command::Serve {
+            port,
+            bind,
+            no_remote_images,
+            device,
+        } => server::serve(&bind, port, device.device, !no_remote_images)
+            .await
+            .map(|()| 0),
     }
 }
 
@@ -215,7 +220,13 @@ async fn build_bitmap(args: &PrintArgs) -> anyhow::Result<Bitmap> {
                 }
                 // Local refs resolve relative to the document. Local reads are
                 // allowed here: this is the user's own shell and filesystem.
-                let images = md_images::resolve(&text, path.parent(), true).await;
+                let images = md_images::resolve(
+                    &text,
+                    path.parent(),
+                    /* local */ true,
+                    /* remote */ true,
+                )
+                .await;
                 Ok(render_markdown_with(&text, &images))
             }
             _ => bail!(

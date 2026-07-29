@@ -17,6 +17,16 @@ use crate::print_service::bitmap_from_image_bytes;
 /// Give up on a slow server rather than block a print forever.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Ceiling on the whole resolution pass, however many references there are.
+/// Without it a document full of blackholed hosts would hang its request for
+/// `refs × HTTP_TIMEOUT`.
+const TOTAL_BUDGET: Duration = Duration::from_secs(30);
+
+/// Most images resolved for one document. A receipt is 384px wide — nothing
+/// legitimate needs more, and the cap keeps a single small request from turning
+/// into a large outbound fetch storm.
+const MAX_IMAGE_REFS: usize = 32;
+
 /// Refuse oversized downloads: a receipt is 384px wide, nothing legitimate
 /// comes close to this.
 const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
@@ -31,26 +41,64 @@ const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 /// filesystem. With it false this function performs no filesystem access at all
 /// for non-HTTP references — it does not even stat the path.
 ///
+/// `allow_remote` gates http(s) fetching. False leaves the resolver with no
+/// outbound reach at all (the server's `--no-remote-images` mode).
+///
+/// Work is bounded twice over: at most [`MAX_IMAGE_REFS`] references are
+/// resolved, and the whole pass gets [`TOTAL_BUDGET`]. Fetches stay sequential
+/// on purpose — resolving them concurrently would multiply the outbound traffic
+/// one request can trigger.
+///
 /// Never panics and never fails: unreachable, oversized, or undecodable images
 /// warn on stderr and are left out of the map (the document then shows a
-/// placeholder in their place).
+/// placeholder in their place). Anything left unresolved when the budget runs
+/// out is treated the same way.
 pub async fn resolve(
     md: &str,
     base_dir: Option<&Path>,
     allow_local: bool,
+    allow_remote: bool,
 ) -> HashMap<String, Bitmap> {
-    let refs = markdown_image_refs(md);
+    let mut refs = markdown_image_refs(md);
     let mut out = HashMap::new();
+    if refs.len() > MAX_IMAGE_REFS {
+        eprintln!(
+            "warning: document references {} images; resolving the first {MAX_IMAGE_REFS}, \
+             the rest render as placeholders",
+            refs.len()
+        );
+        refs.truncate(MAX_IMAGE_REFS);
+    }
     if refs.is_empty() {
         return out;
     }
 
+    // Dropping the future on expiry leaves `out` holding whatever finished.
+    let pass = resolve_into(&mut out, refs, base_dir, allow_local, allow_remote);
+    if tokio::time::timeout(TOTAL_BUDGET, pass).await.is_err() {
+        eprintln!(
+            "warning: image resolution gave up after {}s; unresolved images render as placeholders",
+            TOTAL_BUDGET.as_secs()
+        );
+    }
+    out
+}
+
+/// The resolution pass itself, filling `out` as it goes so a caller that
+/// abandons it mid-flight still keeps the images already resolved.
+async fn resolve_into(
+    out: &mut HashMap<String, Bitmap>,
+    refs: Vec<String>,
+    base_dir: Option<&Path>,
+    allow_local: bool,
+    allow_remote: bool,
+) {
     // Built once, and only if the document actually references a remote image.
-    let client = if refs.iter().any(|dest| is_http(dest)) {
+    let client = if allow_remote && refs.iter().any(|dest| is_http(dest)) {
         match build_client() {
             Ok(c) => Some(c),
             Err(e) => {
-                eprintln!("warning: cannot create HTTP client, skipping remote images: {e}");
+                eprintln!("warning: cannot create HTTP client, skipping remote images: {e:#}");
                 None
             }
         }
@@ -60,13 +108,17 @@ pub async fn resolve(
 
     for dest in refs {
         let bytes = if is_http(&dest) {
+            if !allow_remote {
+                eprintln!("warning: skipping remote image {dest}: remote images are disabled");
+                continue;
+            }
             let Some(client) = client.as_ref() else {
                 continue;
             };
             match fetch_remote(client, &dest).await {
                 Ok(b) => b,
                 Err(e) => {
-                    eprintln!("warning: skipping image {dest}: {e}");
+                    eprintln!("warning: skipping image {dest}: {e:#}");
                     continue;
                 }
             }
@@ -76,13 +128,13 @@ pub async fn resolve(
             match std::fs::read(local_path(&dest, base_dir)) {
                 Ok(b) => b,
                 Err(e) => {
-                    eprintln!("warning: skipping image {dest}: {e}");
+                    eprintln!("warning: skipping image {dest}: {e:#}");
                     continue;
                 }
             }
         } else {
             // SECURITY BOUNDARY: no filesystem access for network-facing
-            // callers. Return before touching the path in any way.
+            // callers. Move on before touching the path in any way.
             eprintln!("warning: skipping local image {dest}: only http(s) images are allowed here");
             continue;
         };
@@ -94,8 +146,6 @@ pub async fn resolve(
             Err(e) => eprintln!("warning: skipping image {dest}: {e:#}"),
         }
     }
-
-    out
 }
 
 fn is_http(dest: &str) -> bool {
@@ -157,12 +207,30 @@ mod tests {
         bitmap_to_png(&bitmap)
     }
 
+    /// Serve `png_bytes()` from an ephemeral loopback port; returns its URL.
+    async fn spawn_png_server() -> String {
+        let png = png_bytes();
+        let app = axum::Router::new().route(
+            "/x.png",
+            axum::routing::get(move || {
+                let png = png.clone();
+                async move { png }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}/x.png")
+    }
+
     #[tokio::test]
     async fn resolves_relative_local_file() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("photo.png"), png_bytes()).unwrap();
 
-        let images = resolve("![pic](photo.png)", Some(dir.path()), true).await;
+        let images = resolve("![pic](photo.png)", Some(dir.path()), true, true).await;
 
         assert_eq!(images.len(), 1, "images: {:?}", images.keys());
         assert!(images["photo.png"].height() > 0);
@@ -175,7 +243,7 @@ mod tests {
         std::fs::write(&path, png_bytes()).unwrap();
         let md = format!("![pic]({})", path.display());
 
-        let images = resolve(&md, None, true).await;
+        let images = resolve(&md, None, true, true).await;
 
         assert_eq!(images.len(), 1, "images: {:?}", images.keys());
     }
@@ -189,7 +257,29 @@ mod tests {
         std::fs::write(&path, png_bytes()).unwrap();
         let md = format!("![pic]({})\n\n![rel](photo.png)", path.display());
 
-        let images = resolve(&md, Some(dir.path()), false).await;
+        let images = resolve(&md, Some(dir.path()), false, true).await;
+
+        assert!(images.is_empty(), "images: {:?}", images.keys());
+    }
+
+    #[tokio::test]
+    async fn fetches_remote_image_when_allowed() {
+        let url = spawn_png_server().await;
+        let md = format!("![pic]({url})");
+
+        let images = resolve(&md, None, false, true).await;
+
+        assert_eq!(images.len(), 1, "images: {:?}", images.keys());
+        assert!(images[&url].height() > 0);
+    }
+
+    /// `--no-remote-images`: a reachable, serving URL is still skipped.
+    #[tokio::test]
+    async fn skips_remote_image_when_not_allowed() {
+        let url = spawn_png_server().await;
+        let md = format!("![pic]({url})");
+
+        let images = resolve(&md, None, false, false).await;
 
         assert!(images.is_empty(), "images: {:?}", images.keys());
     }
@@ -197,7 +287,7 @@ mod tests {
     #[tokio::test]
     async fn unreachable_url_is_skipped() {
         // Port 1 refuses immediately, so this stays fast.
-        let images = resolve("![x](http://127.0.0.1:1/x.png)", None, false).await;
+        let images = resolve("![x](http://127.0.0.1:1/x.png)", None, false, true).await;
         assert!(images.is_empty(), "images: {:?}", images.keys());
     }
 
@@ -206,7 +296,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("photo.png"), b"not an image at all").unwrap();
 
-        let images = resolve("![pic](photo.png)", Some(dir.path()), true).await;
+        let images = resolve("![pic](photo.png)", Some(dir.path()), true, true).await;
 
         assert!(images.is_empty(), "images: {:?}", images.keys());
     }
@@ -214,13 +304,35 @@ mod tests {
     #[tokio::test]
     async fn missing_local_file_is_skipped() {
         let dir = tempfile::tempdir().unwrap();
-        let images = resolve("![pic](nope.png)", Some(dir.path()), true).await;
+        let images = resolve("![pic](nope.png)", Some(dir.path()), true, true).await;
         assert!(images.is_empty(), "images: {:?}", images.keys());
     }
 
     #[tokio::test]
     async fn document_without_images_resolves_to_nothing() {
-        assert!(resolve("# hi\n\njust text", None, true).await.is_empty());
+        assert!(resolve("# hi\n\njust text", None, true, true)
+            .await
+            .is_empty());
+    }
+
+    /// A document may not spend unbounded work: only the first
+    /// [`MAX_IMAGE_REFS`] references resolve, the rest fall back to
+    /// placeholders.
+    #[tokio::test]
+    async fn resolution_is_capped_per_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = png_bytes();
+        let mut md = String::new();
+        for i in 0..MAX_IMAGE_REFS + 8 {
+            std::fs::write(dir.path().join(format!("p{i}.png")), &png).unwrap();
+            md.push_str(&format!("![pic](p{i}.png)\n\n"));
+        }
+
+        let images = resolve(&md, Some(dir.path()), true, true).await;
+
+        assert_eq!(images.len(), MAX_IMAGE_REFS);
+        assert!(images.contains_key("p0.png"));
+        assert!(!images.contains_key(&format!("p{MAX_IMAGE_REFS}.png")));
     }
 
     #[test]

@@ -50,6 +50,10 @@ pub struct AppState {
     /// concurrent print requests queue (no explicit timeout — the BLE layer
     /// has its own). `/status` only try-locks it; previews never take it.
     pub print_lock: tokio::sync::Mutex<()>,
+    /// Whether markdown may pull in http(s) images. `printable serve
+    /// --no-remote-images` clears it, leaving the server with no outbound
+    /// request surface at all. Local file references are refused regardless.
+    pub remote_images: bool,
 }
 
 /// An API error: HTTP status plus a message, rendered as `{"error": msg}`.
@@ -167,10 +171,16 @@ pub fn router(state: Arc<AppState>) -> Router {
 }
 
 /// Bind and run the server until interrupted.
-pub async fn serve(bind: &str, port: u16, device: Option<String>) -> anyhow::Result<()> {
+pub async fn serve(
+    bind: &str,
+    port: u16,
+    device: Option<String>,
+    remote_images: bool,
+) -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         device,
         print_lock: tokio::sync::Mutex::new(()),
+        remote_images,
     });
     let listener = tokio::net::TcpListener::bind((bind, port))
         .await
@@ -282,16 +292,20 @@ async fn preview_text(Json(body): Json<TextBody>) -> Result<Response, ApiError> 
 /// LAN, so a caller must never be able to make it read its own filesystem —
 /// `![x](/etc/hosts)` renders a placeholder, not the file. `base_dir` is `None`
 /// for the same reason: a posted document has no directory of its own.
-/// Remote http(s) images are still fetched.
-async fn resolve_images(md: &str) -> HashMap<String, Bitmap> {
-    md_images::resolve(md, None, false).await
+/// Remote http(s) images are fetched unless `--no-remote-images` was given.
+async fn resolve_images(state: &AppState, md: &str) -> HashMap<String, Bitmap> {
+    md_images::resolve(md, None, false, state.remote_images).await
 }
 
-async fn preview_markdown(Json(body): Json<MarkdownBody>) -> Result<Response, ApiError> {
+async fn preview_markdown(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<MarkdownBody>,
+) -> Result<Response, ApiError> {
     if body.content.trim().is_empty() {
         return Err(ApiError::bad_request("content must not be empty"));
     }
-    let bitmap = render_markdown_with(&body.content, &resolve_images(&body.content).await);
+    let images = resolve_images(&state, &body.content).await;
+    let bitmap = render_markdown_with(&body.content, &images);
     Ok(png_response(bitmap_to_png(&bitmap)))
 }
 
@@ -414,7 +428,8 @@ async fn print_markdown(
     if body.content.trim().is_empty() {
         return Err(ApiError::bad_request("content must not be empty"));
     }
-    let bitmap = render_markdown_with(&body.content, &resolve_images(&body.content).await);
+    let images = resolve_images(&state, &body.content).await;
+    let bitmap = render_markdown_with(&body.content, &images);
     print_and_respond(&state, bitmap, body.opts).await
 }
 
@@ -609,6 +624,7 @@ mod tests {
         router(Arc::new(AppState {
             device: None,
             print_lock: tokio::sync::Mutex::new(()),
+            remote_images: true,
         }))
     }
 
@@ -887,6 +903,7 @@ mod tests {
         let state = Arc::new(AppState {
             device: None,
             print_lock: tokio::sync::Mutex::new(()),
+            remote_images: true,
         });
         let _guard = state.print_lock.lock().await;
         let resp = router(state.clone())

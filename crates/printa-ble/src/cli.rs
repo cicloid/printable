@@ -35,6 +35,11 @@ pub enum Command {
         /// Address to bind (0.0.0.0 = every interface, for LAN printing)
         #[arg(long, default_value = "0.0.0.0")]
         bind: String,
+        /// Never fetch http(s) images referenced by markdown (removes the
+        /// server's outbound request surface: no SSRF, no fetch amplification).
+        /// Local file references are already refused either way.
+        #[arg(long)]
+        no_remote_images: bool,
         #[command(flatten)]
         device: DeviceArgs,
     },

@@ -23,8 +23,8 @@
 //! Two fence names turn a code block into a graphic instead of text, matched
 //! case-insensitively on the info string's first word (so ` ```QR ` and
 //! ` ```barcode utf8 ` both count): ` ```qr ` encodes its trimmed body as a QR
-//! code, ` ```barcode ` as a Code128 barcode (printable ASCII only, roughly 29
-//! characters — see [`barcode`](super::barcode)). Every other info string,
+//! code, ` ```barcode ` as a Code128 barcode (printable ASCII only, 28
+//! characters max — see [`barcode`](super::barcode)). Every other info string,
 //! including none at all, still renders as plain code text. A payload the
 //! encoder rejects prints its error message as code text: a bad code never
 //! panics or costs the reader the rest of the document.
@@ -39,7 +39,7 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, T
 
 use super::barcode::render_barcode;
 use super::bitmap::{Bitmap, WIDTH};
-use super::qr::render_qr;
+use super::qr::{self, render_qr};
 use super::rich::{render_rich, FontStyle, RichLine, Span, Style};
 
 /// Body text size in pixels.
@@ -56,8 +56,9 @@ const RULE_MARGIN: usize = 12;
 const RULE_THICKNESS: usize = 2;
 /// Dash (and gap) length of a tear marker's dashed line, in pixels.
 const TEAR_DASH: usize = 8;
-/// White margin above and below a rendered ` ```qr ` / ` ```barcode ` fence.
-const FENCE_MARGIN: usize = 8;
+/// Total white margin above and below a rendered ` ```qr ` / ` ```barcode `
+/// fence, including whatever margin the renderer draws itself.
+const FENCE_MARGIN: usize = 24;
 
 /// A vertically-stacked unit of lowered markdown.
 enum MdBlock {
@@ -109,8 +110,10 @@ pub fn render_markdown(md: &str) -> Bitmap {
             MdBlock::Lines(lines) => render_rich(lines),
             MdBlock::Rule => rule_bitmap(),
             MdBlock::Tear => tear_bitmap(),
-            MdBlock::Qr(data) => fence_bitmap(render_qr(data, None)),
-            MdBlock::Barcode(data) => fence_bitmap(render_barcode(data)),
+            // Each fence declares the margin its renderer already draws, so
+            // both end up spaced identically on the page.
+            MdBlock::Qr(data) => fence_bitmap(render_qr(data, None), qr::MARGIN),
+            MdBlock::Barcode(data) => fence_bitmap(render_barcode(data), 0),
         })
         .collect();
     stack(bitmaps)
@@ -118,24 +121,27 @@ pub fn render_markdown(md: &str) -> Bitmap {
 
 /// Lay out a ` ```qr ` / ` ```barcode ` fence's render.
 ///
-/// On success the code (already 384 px wide and centered) gets a
-/// [`FENCE_MARGIN`] px white margin above and below — on top of whatever
-/// margin the renderer itself contributes, so a QR ends up with 24 px.
+/// On success the code (already 384 px wide and centered) is padded *to*
+/// [`FENCE_MARGIN`] px of white above and below, not *by* it: `built_in` is
+/// the margin the renderer already draws itself, so a QR (which carries
+/// [`qr::MARGIN`]) and a barcode (which carries none) sit equally spaced on
+/// the page instead of the barcode looking cramped.
 ///
 /// On failure the encoder's message renders as code-style text instead. A
 /// payload that cannot be encoded — too long for any QR version, non-ASCII in
 /// a barcode — must never panic or abort the surrounding document: the reader
 /// gets a printed diagnostic and the rest of the page.
-fn fence_bitmap<E: std::fmt::Display>(rendered: Result<Bitmap, E>) -> Bitmap {
+fn fence_bitmap<E: std::fmt::Display>(rendered: Result<Bitmap, E>, built_in: usize) -> Bitmap {
     let code = match rendered {
         Ok(code) => code,
         Err(e) => return fence_error(&e.to_string()),
     };
-    let mut out = Bitmap::new(2 * FENCE_MARGIN + code.height());
+    let pad = FENCE_MARGIN.saturating_sub(built_in);
+    let mut out = Bitmap::new(2 * pad + code.height());
     for y in 0..code.height() {
         for x in 0..WIDTH {
             if code.get(x, y) {
-                out.set(x, FENCE_MARGIN + y, true);
+                out.set(x, pad + y, true);
             }
         }
     }
@@ -1063,6 +1069,22 @@ mod tests {
         assert!(!ink_before(&b, 16), "ink inside the 16 px quiet zone");
         let tall = (0..WIDTH).filter(|&x| tallest_run(&b, x) >= 60).count();
         assert!(tall >= 20, "only {tall} columns have a 60 px black run");
+        // Fence blocks are padded to a common margin, so a barcode gets the
+        // same breathing room a QR does rather than sitting cramped against
+        // the next block.
+        let first_ink = (0..b.height())
+            .find(|&y| (0..WIDTH).any(|x| b.get(x, y)))
+            .unwrap();
+        assert_eq!(first_ink, FENCE_MARGIN, "barcode top margin");
+        let last_ink = (0..b.height())
+            .rev()
+            .find(|&y| (0..WIDTH).any(|x| b.get(x, y)))
+            .unwrap();
+        assert_eq!(
+            b.height() - 1 - last_ink,
+            FENCE_MARGIN,
+            "barcode bottom margin"
+        );
     }
 
     #[test]
@@ -1089,13 +1111,12 @@ mod tests {
             }],
             indent: CODE_INDENT,
         }]);
-        for md in [
-            "```\ncode\n```",
-            "```rust\ncode\n```",
-            "```qrcode\ncode\n```",
-        ] {
+        // The classifier matches whole fence names, never prefixes: only
+        // exactly `qr` and `barcode` turn into graphics.
+        for lang in ["", "rust", "qrcode", "qrs", "barcodes", "barcodex", "bar"] {
+            let md = format!("```{lang}\ncode\n```");
             assert_eq!(
-                rows(&render_markdown(md)),
+                rows(&render_markdown(&md)),
                 rows(&expected),
                 "{md:?} should still render as code text"
             );

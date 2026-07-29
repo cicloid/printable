@@ -11,8 +11,9 @@
 //! 384 px minus a [`QUIET`] px quiet zone on each side, and centered. Bars are
 //! [`BAR_HEIGHT`] px tall with no vertical margin (callers add their own) and
 //! no human-readable text below. Because the module width must be at least
-//! 1 px, roughly 29 characters is the practical limit; longer payloads fail
-//! with [`BarcodeError::TooLong`].
+//! 1 px, 28 characters is the limit — a payload encodes to `11n + 35` modules
+//! against a 352 px budget — and longer payloads fail with
+//! [`BarcodeError::TooLong`].
 
 use barcoders::sym::code128::Code128;
 
@@ -28,8 +29,8 @@ const CHARSET_B: char = '\u{0181}';
 /// Errors from Code128 encoding.
 #[derive(Debug, thiserror::Error)]
 pub enum BarcodeError {
-    /// The payload is empty.
-    #[error("barcode data is empty")]
+    /// The payload is empty, or nothing but whitespace.
+    #[error("barcode data is empty (after trimming whitespace)")]
     Empty,
     /// The payload contains characters outside printable ASCII.
     #[error("barcode data must be printable ASCII")]
@@ -37,14 +38,16 @@ pub enum BarcodeError {
     /// The encoded symbol needs more than 384 px even at one pixel per module.
     #[error("barcode data too long to fit the paper")]
     TooLong,
-    /// Any other encoding failure from the `barcoders` crate.
+    /// Any other encoding failure from the `barcoders` crate. Unreachable in
+    /// practice — the charset and length checks below already cover every way
+    /// `Code128::new` can fail — but kept for symmetry with [`super::qr`].
     #[error("barcode encoding failed: {0}")]
     Encode(barcoders::error::Error),
 }
 
 /// Render `data` as a Code128 barcode, centered on a [`BAR_HEIGHT`] px bitmap.
 pub fn render_barcode(data: &str) -> Result<Bitmap, BarcodeError> {
-    if data.is_empty() {
+    if data.trim().is_empty() {
         return Err(BarcodeError::Empty);
     }
     if !data.chars().all(|c| (' '..='~').contains(&c)) {
@@ -140,11 +143,28 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_non_ascii_are_rejected() {
+    fn length_limit_is_twenty_eight_characters() {
+        // `11n + 35` modules against the 352 px budget: 28 chars is 343.
+        assert!(
+            render_barcode(&"A".repeat(28)).is_ok(),
+            "28 chars should fit"
+        );
         assert!(matches!(
-            render_barcode("").unwrap_err(),
-            BarcodeError::Empty
+            render_barcode(&"A".repeat(29)).unwrap_err(),
+            BarcodeError::TooLong
         ));
+    }
+
+    #[test]
+    fn empty_and_non_ascii_are_rejected() {
+        // Space is encodable ASCII, so whitespace-only needs its own check —
+        // and the error message says "after trimming whitespace" because of it.
+        for blank in ["", " ", "\n  \t"] {
+            assert!(
+                matches!(render_barcode(blank).unwrap_err(), BarcodeError::Empty),
+                "{blank:?} should be rejected as empty"
+            );
+        }
         for bad in ["café", "☕", "a\tb", "a\nb"] {
             assert!(
                 matches!(render_barcode(bad).unwrap_err(), BarcodeError::Charset),

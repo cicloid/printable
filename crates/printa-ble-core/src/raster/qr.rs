@@ -13,8 +13,9 @@ use qrcode::{Color, QrCode};
 use super::bitmap::{Bitmap, WIDTH};
 use super::text::render_text;
 
-/// White margin above and below the code, in pixels.
-const MARGIN: usize = 16;
+/// White margin above and below the code, in pixels. Visible to the markdown
+/// renderer, which pads fence blocks *to* a common margin rather than by one.
+pub(crate) const MARGIN: usize = 16;
 /// Quiet-zone width on each side, in modules (the QR spec's minimum).
 const QUIET_MODULES: usize = 4;
 /// Caption text size in pixels.

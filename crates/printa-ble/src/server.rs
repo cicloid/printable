@@ -517,10 +517,10 @@ async fn print_and_respond(
     opts: PrintOpts,
 ) -> Result<Response, ApiError> {
     let _guard = state.print_lock.lock().await;
-    let lines = print_service::print_bitmap(bitmap, state.device.as_deref(), opts.into())
+    let outcome = print_service::print_bitmap(bitmap, state.device.as_deref(), opts.into())
         .await
         .map_err(|e| print_error_to_api(&e))?;
-    Ok(Json(json!({ "printed_lines": lines, "copies": opts.copies })).into_response())
+    Ok(Json(json!({ "printed_lines": outcome.lines, "copies": opts.copies })).into_response())
 }
 
 /// Map a print pipeline error to an API error by downcasting the marker

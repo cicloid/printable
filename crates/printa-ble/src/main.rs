@@ -24,6 +24,7 @@ use crate::print_service::{NoPaper, NoPrinterFound, PrintFailure, PrintOptions, 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    init_tracing(cli.verbose);
     let code = match run(cli).await {
         Ok(code) => code,
         Err(e) => {
@@ -32,6 +33,22 @@ async fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// Install the log subscriber for this run.
+///
+/// Logs go to stderr, never stdout: stdout carries the command's actual output
+/// (the preview path, the scan table) and scripts parse it. The default filter
+/// is `warn`, so an unflagged invocation prints exactly what it always did.
+/// `RUST_LOG` wins over `-v` when set.
+fn init_tracing(verbose: u8) {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(cli::log_filter(verbose)));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .init();
 }
 
 /// Distinct exit codes: 2 no printer found, 3 no paper, 4 auth/print
@@ -165,7 +182,7 @@ async fn dispatch(
         return Ok(());
     }
 
-    let lines = print_service::print_bitmap(
+    let outcome = print_service::print_bitmap(
         bitmap,
         device.device.as_deref(),
         PrintOptions {
@@ -176,7 +193,7 @@ async fn dispatch(
     )
     .await?;
     if copies == 1 {
-        println!("Printed {lines} lines.");
+        println!("Printed {} lines.", outcome.lines);
     }
     Ok(())
 }

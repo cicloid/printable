@@ -8,19 +8,21 @@
 //! the terminal app. If permission is denied, btleplug errors out — the
 //! messages below point the user at System Settings.
 
-use std::time::Duration;
+use std::fmt::Write as _;
+use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use btleplug::api::bleuuid::uuid_from_u16;
 use btleplug::api::{
     Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
 };
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use futures::StreamExt;
+use tracing::{debug, info, trace, warn};
 
 use crate::config::SavedDevice;
 use crate::print_service::{NoPaper, NoPrinterFound};
-use printa_ble_core::protocol::job::{Action, PrintJob};
+use printa_ble_core::protocol::job::{Action, JobStats, PrintJob};
 use printa_ble_core::protocol::notifications::{self, Notification, Status};
 use tokio::sync::mpsc;
 
@@ -30,6 +32,15 @@ const NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Polling interval while waiting for a matching device to appear.
 const DISCOVERY_POLL: Duration = Duration::from_millis(300);
 
+/// Shortest pause worth an info-level "resumed after" line. Below this the
+/// printer barely broke stride (a lone cooldown is a fixed 100 ms back-off)
+/// and the summary at the end of the job covers it.
+const NOTEWORTHY_PAUSE: Duration = Duration::from_millis(250);
+
+/// Minimum gap between info-level cooldown reports. A printer running hot
+/// emits a cooldown per packet; one line each would bury everything else.
+const COOLDOWN_REPORT_GAP: Duration = Duration::from_secs(2);
+
 /// Bail if a notification is a Status frame reporting no paper.
 fn check_paper(n: &Notification) -> Result<()> {
     if let Notification::Status(s) = n {
@@ -38,6 +49,164 @@ fn check_paper(n: &Notification) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Log what an incoming notification means for the job, and abort on the one
+/// condition the FSM does not handle (no paper).
+///
+/// The flow-control events land at info: they are the whole reason a print
+/// appears to hang, and the user asked to be told rather than left guessing.
+fn observe(n: &Notification, log: &mut JobLog) -> Result<()> {
+    let now = Instant::now();
+    match n {
+        Notification::Hold => {
+            log.pause(now);
+            info!("printer paused the stream (print head too hot); waiting to resume…");
+        }
+        Notification::Cooldown => {
+            log.pause(now);
+            match log.note_cooldown(now) {
+                Some(1) => info!("printer is cooling down"),
+                Some(n) => info!("printer is cooling down ({n} requests since the last report)"),
+                None => debug!("cooldown requested"),
+            }
+        }
+        Notification::LostPacket { index } => {
+            info!("printer requested a resend from packet {index}");
+        }
+        Notification::Finished { num_packets } => {
+            debug!("printer reported the job finished after {num_packets} packets");
+        }
+        Notification::Status(s) => {
+            if s.overheat && !log.warned_overheat {
+                log.warned_overheat = true;
+                warn!("printer reports the print head is overheating");
+            }
+            if s.low_battery && !log.warned_low_battery {
+                log.warned_low_battery = true;
+                warn!("printer battery is low ({}%)", s.battery_pct);
+            }
+        }
+        _ => {}
+    }
+    check_paper(n)
+}
+
+/// Lowercase hex, for trace-logging raw frames. Notification frames are at
+/// most a dozen bytes, so they are dumped whole.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+/// A short label for an outgoing frame.
+///
+/// Raster packets are named by index, never dumped: the payload is 96 bytes
+/// of pixels per packet and a page is thousands of them.
+fn describe_write(bytes: &[u8]) -> String {
+    match bytes {
+        [0x55, hi, lo, ..] => format!("raster idx={}", u16::from_be_bytes([*hi, *lo])),
+        [0x5A, 0x01, ..] => "hello".to_string(),
+        [0x5A, 0x0A, ..] => "auth challenge".to_string(),
+        [0x5A, 0x0B, ..] => "auth response".to_string(),
+        [0x5A, 0x0C, level, ..] => format!("set density {level}"),
+        [0x5A, 0x04, hi, lo, 0x00, ..] => {
+            format!("print start ({} packets)", u16::from_be_bytes([*hi, *lo]))
+        }
+        [0x5A, 0x04, hi, lo, ..] => {
+            format!("print end ({} packets)", u16::from_be_bytes([*hi, *lo]))
+        }
+        _ => format!("unknown frame {}", hex(bytes)),
+    }
+}
+
+/// Is this an outgoing raster packet (as opposed to a control frame)?
+fn is_raster(bytes: &[u8]) -> bool {
+    bytes.first() == Some(&0x55)
+}
+
+/// Render a duration the way a person reads it off a stopwatch.
+fn secs(d: Duration) -> String {
+    format!("{:.1}s", d.as_secs_f64())
+}
+
+/// One-line account of how a job went, for the log at the end of it.
+///
+/// This is the line that answers "why did that take so long": a job whose
+/// elapsed time dwarfs its packet count spent the difference paused, and the
+/// counters say so. Flow-control terms are omitted entirely when the printer
+/// never invoked any, so a healthy print stays a short line.
+fn job_summary(elapsed: Duration, paused: Duration, stats: JobStats) -> String {
+    let mut s = format!("{}, {} packets sent", secs(elapsed), stats.packets_sent);
+    if stats.holds > 0 {
+        let _ = write!(s, ", {} holds", stats.holds);
+    }
+    if stats.cooldowns > 0 {
+        let _ = write!(s, ", {} cooldowns", stats.cooldowns);
+    }
+    if stats.retransmits > 0 {
+        let _ = write!(s, ", {} resends", stats.retransmits);
+    }
+    if stats.holds > 0 || stats.cooldowns > 0 {
+        let _ = write!(s, ", {} paused for thermal flow control", secs(paused));
+    }
+    s
+}
+
+/// Per-job logging state: how long the printer has kept us waiting, and what
+/// has already been reported so a repeating condition is not logged forever.
+#[derive(Default)]
+struct JobLog {
+    /// Start of the pause the printer currently has us in, if any.
+    paused_since: Option<Instant>,
+    /// Time already spent paused, excluding any open window.
+    paused_total: Duration,
+    /// Cooldowns seen since the last one reported at info level.
+    cooldowns_pending: u32,
+    last_cooldown_report: Option<Instant>,
+    warned_overheat: bool,
+    warned_low_battery: bool,
+}
+
+impl JobLog {
+    /// Open a pause window, if one is not already open.
+    fn pause(&mut self, now: Instant) {
+        self.paused_since.get_or_insert(now);
+    }
+
+    /// Close the open pause window, returning how long it lasted.
+    fn resume(&mut self, now: Instant) -> Option<Duration> {
+        let since = self.paused_since.take()?;
+        let held = now.saturating_duration_since(since);
+        self.paused_total += held;
+        Some(held)
+    }
+
+    /// Total time paused, counting a window that is still open.
+    fn paused_total(&self, now: Instant) -> Duration {
+        match self.paused_since {
+            Some(since) => self.paused_total + now.saturating_duration_since(since),
+            None => self.paused_total,
+        }
+    }
+
+    /// Record a cooldown, returning how many to report if one is due.
+    ///
+    /// The first cooldown always reports; after that at most one report per
+    /// [`COOLDOWN_REPORT_GAP`], carrying the number suppressed in between.
+    fn note_cooldown(&mut self, now: Instant) -> Option<u32> {
+        self.cooldowns_pending += 1;
+        let due = self
+            .last_cooldown_report
+            .is_none_or(|last| now.saturating_duration_since(last) >= COOLDOWN_REPORT_GAP);
+        if !due {
+            return None;
+        }
+        self.last_cooldown_report = Some(now);
+        Some(std::mem::take(&mut self.cooldowns_pending))
+    }
 }
 
 /// Find the first Bluetooth adapter, with a hint if Bluetooth is off.
@@ -122,15 +291,23 @@ async fn match_target(p: &Peripheral, target: &Target<'_>) -> Option<(MatchKind,
 pub async fn scan(timeout: Duration) -> Result<Vec<(String, String)>> {
     let adapter = default_adapter().await?;
     start_scan(&adapter).await?;
+    info!("scanning for {}s", timeout.as_secs());
     tokio::time::sleep(timeout).await;
 
     let mut found = Vec::new();
+    let mut seen = 0usize;
     for p in adapter.peripherals().await? {
-        if let Some((_, name)) = match_target(&p, &Target::AnyLx).await {
-            found.push((name, p.id().to_string()));
+        seen += 1;
+        match match_target(&p, &Target::AnyLx).await {
+            Some((_, name)) => {
+                debug!("match: {name} ({})", p.id());
+                found.push((name, p.id().to_string()));
+            }
+            None => trace!("skipping {}", p.id()),
         }
     }
     let _ = adapter.stop_scan().await;
+    info!("scan saw {seen} devices, {} named LX*", found.len());
     Ok(found)
 }
 
@@ -193,6 +370,15 @@ pub async fn connect_resolved(
 
     let adapter = default_adapter().await?;
     start_scan(&adapter).await?;
+    debug!(
+        "scanning up to {}s for {}",
+        scan_timeout.as_secs(),
+        match &target {
+            Target::Filter(f) => format!("a device matching `{f}`"),
+            Target::SavedId { id, .. } => format!("saved device {id}"),
+            Target::AnyLx => "any LX printer".to_string(),
+        }
+    );
 
     let deadline = tokio::time::Instant::now() + scan_timeout;
     let mut fallback: Option<(Peripheral, String, FallbackRank)> = None;
@@ -219,6 +405,7 @@ pub async fn connect_resolved(
         tokio::time::sleep(DISCOVERY_POLL).await;
     };
     let _ = adapter.stop_scan().await;
+    debug!("connecting to {name} ({})", peripheral.id());
 
     peripheral
         .connect()
@@ -276,14 +463,21 @@ async fn initialize(peripheral: Peripheral, name: String) -> Result<Printer> {
             if data.uuid != notify_uuid {
                 continue;
             }
-            if let Some(n) = notifications::parse(&data.value) {
-                if tx.send(n).is_err() {
-                    break; // Printer was dropped.
+            trace!("notification frame {}", hex(&data.value));
+            match notifications::parse(&data.value) {
+                Some(n) => {
+                    debug!("notification: {n:?}");
+                    if tx.send(n).is_err() {
+                        break; // Printer was dropped.
+                    }
                 }
+                None => debug!("ignoring unparseable frame {}", hex(&data.value)),
             }
         }
+        debug!("notification forwarder stopped");
     });
 
+    info!("connected to {name}, subscribed to notifications");
     Ok(Printer {
         peripheral,
         write_char,
@@ -323,18 +517,58 @@ impl Printer {
     }
 
     /// Drive a print job to completion, pumping its sans-IO state machine.
-    pub async fn run_job(&mut self, job: &mut PrintJob) -> Result<()> {
+    ///
+    /// Logs a one-line summary of the job either way — that line is how a
+    /// caller tells a slow print from a hung one after the fact.
+    pub async fn run_job(&mut self, job: &mut PrintJob) -> Result<JobStats> {
+        let started = Instant::now();
+        let mut log = JobLog::default();
+
+        let mut result = self.pump(job, &mut log).await;
+        // A fatal FSM error (rejected auth) is not a transport error, but it
+        // ends the job just the same.
+        if result.is_ok() {
+            if let Some(e) = job.error() {
+                result = Err(anyhow!("{e}"));
+            }
+        }
+
+        let stats = job.stats();
+        let summary = job_summary(started.elapsed(), log.paused_total(Instant::now()), stats);
+        match &result {
+            Ok(()) => info!("print job finished: {summary}"),
+            // Info, not warn: the caller reports the failure itself, and the
+            // CLI must stay silent at the default log level.
+            Err(e) => info!("print job aborted after {summary}: {e:#}"),
+        }
+        result.map(|()| stats)
+    }
+
+    /// The action pump itself. Split out of [`Printer::run_job`] so the job
+    /// summary is logged on the failure paths too.
+    async fn pump(&mut self, job: &mut PrintJob, log: &mut JobLog) -> Result<()> {
         loop {
             // Drain pending notifications first so mid-stream flow control
             // (Hold / LostPacket / Cooldown) reaches the FSM even while we
             // are on the Send/WaitMs fast path. A no-paper Status aborts the
             // job here rather than dying later on a misleading timeout.
             while let Ok(n) = self.notify_rx.try_recv() {
-                check_paper(&n)?;
+                observe(&n, log)?;
                 job.on_notification(n);
             }
             match job.next_action() {
                 Action::Send(bytes) => {
+                    // A raster write is the printer letting us move again.
+                    if is_raster(&bytes) {
+                        if let Some(held) = log.resume(Instant::now()) {
+                            if held >= NOTEWORTHY_PAUSE {
+                                info!("printing resumed after {}", secs(held));
+                            } else {
+                                debug!("printing resumed after {}", secs(held));
+                            }
+                        }
+                    }
+                    trace!(len = bytes.len(), "write {}", describe_write(&bytes));
                     self.peripheral
                         .write(&self.write_char, &bytes, WriteType::WithoutResponse)
                         .await
@@ -344,18 +578,19 @@ impl Printer {
                 Action::WaitNotification => {
                     let n = tokio::time::timeout(NOTIFICATION_TIMEOUT, self.notify_rx.recv())
                         .await
-                        .map_err(|_| anyhow!("printer stopped responding"))?
+                        .map_err(|_| {
+                            anyhow!(
+                                "printer stopped responding (no notification for {}s)",
+                                NOTIFICATION_TIMEOUT.as_secs()
+                            )
+                        })?
                         .ok_or_else(|| anyhow!("notification stream closed"))?;
-                    check_paper(&n)?;
+                    observe(&n, log)?;
                     job.on_notification(n);
                 }
-                Action::Done => break,
+                Action::Done => return Ok(()),
             }
         }
-        if let Some(e) = job.error() {
-            bail!("{e}");
-        }
-        Ok(())
     }
 
     /// Disconnect, ignoring errors (the OS drops the link anyway on exit).
@@ -363,8 +598,194 @@ impl Printer {
     /// Unsubscribes first, then stops the notification forwarder so it does
     /// not sit parked on a stream that will never yield again.
     pub async fn disconnect(self) {
+        debug!("disconnecting from {}", self.name);
         let _ = self.peripheral.unsubscribe(&self.notify_char).await;
         self.forwarder.abort();
         let _ = self.peripheral.disconnect().await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests. Everything below the transport boundary — frame labelling, pause
+// accounting, the summary line — is pure and tested here. Connecting and
+// streaming need a real printer and are exercised by hand.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use printa_ble_core::protocol::packets;
+
+    #[test]
+    fn hex_is_lowercase_and_unpadded() {
+        assert_eq!(hex(&[0x5A, 0x08]), "5a08");
+        assert_eq!(hex(&[0x00, 0xff]), "00ff");
+        assert_eq!(hex(&[]), "");
+    }
+
+    /// The point of the labels: a raster packet is identified by index, never
+    /// by dumping its 96 bytes of pixels into the log.
+    #[test]
+    fn raster_writes_are_labelled_by_index_not_payload() {
+        let frame = packets::raster(0x0142, &[0xFF; packets::RASTER_DATA_LEN]);
+        let label = describe_write(&frame);
+        assert_eq!(label, "raster idx=322");
+        assert!(!label.contains("ff"), "payload leaked into the label");
+        assert!(is_raster(&frame));
+    }
+
+    #[test]
+    fn control_writes_are_named() {
+        assert_eq!(describe_write(&packets::hello()), "hello");
+        assert_eq!(describe_write(&packets::set_density(5)), "set density 5");
+        assert_eq!(
+            describe_write(&packets::auth_challenge(&[0; 10])),
+            "auth challenge"
+        );
+        assert_eq!(
+            describe_write(&packets::auth_reply(&[0; 10])),
+            "auth response"
+        );
+        assert_eq!(
+            describe_write(&packets::print_start(7)),
+            "print start (7 packets)"
+        );
+        assert_eq!(
+            describe_write(&packets::print_end(7)),
+            "print end (7 packets)"
+        );
+        for frame in [
+            packets::hello().as_slice(),
+            packets::print_start(7).as_slice(),
+        ] {
+            assert!(!is_raster(frame));
+        }
+    }
+
+    #[test]
+    fn unknown_writes_fall_back_to_hex() {
+        assert_eq!(describe_write(&[0x99, 0x01]), "unknown frame 9901");
+        assert_eq!(describe_write(&[]), "unknown frame ");
+    }
+
+    /// A clean job says only what happened; no flow-control noise.
+    #[test]
+    fn summary_omits_flow_control_when_there_was_none() {
+        let stats = JobStats {
+            packets_sent: 208,
+            ..JobStats::default()
+        };
+        assert_eq!(
+            job_summary(Duration::from_millis(4100), Duration::ZERO, stats),
+            "4.1s, 208 packets sent"
+        );
+    }
+
+    /// The line that answers "why did it stall".
+    #[test]
+    fn summary_reports_every_flow_control_event() {
+        let stats = JobStats {
+            packets_sent: 812,
+            retransmits: 2,
+            holds: 3,
+            cooldowns: 17,
+        };
+        let s = job_summary(
+            Duration::from_millis(41_200),
+            Duration::from_millis(28_400),
+            stats,
+        );
+        assert_eq!(
+            s,
+            "41.2s, 812 packets sent, 3 holds, 17 cooldowns, 2 resends, \
+             28.4s paused for thermal flow control"
+        );
+    }
+
+    /// A resend with no pause behind it is a dropped packet, not overheating,
+    /// so the paused time is left out.
+    #[test]
+    fn summary_omits_paused_time_without_holds_or_cooldowns() {
+        let stats = JobStats {
+            packets_sent: 10,
+            retransmits: 1,
+            ..JobStats::default()
+        };
+        let s = job_summary(Duration::from_secs(1), Duration::ZERO, stats);
+        assert_eq!(s, "1.0s, 10 packets sent, 1 resends");
+        assert!(!s.contains("paused"));
+    }
+
+    #[test]
+    fn pause_accounting_measures_one_window() {
+        let mut log = JobLog::default();
+        let t0 = Instant::now();
+        log.pause(t0);
+        let held = log.resume(t0 + Duration::from_secs(3)).unwrap();
+        assert_eq!(held, Duration::from_secs(3));
+        assert_eq!(log.paused_total(t0 + Duration::from_secs(9)), held);
+    }
+
+    /// Hold then Cooldown is one pause, not two: the second event arrives
+    /// while we are already stopped and must not restart the clock.
+    #[test]
+    fn overlapping_pauses_do_not_restart_the_clock() {
+        let mut log = JobLog::default();
+        let t0 = Instant::now();
+        log.pause(t0);
+        log.pause(t0 + Duration::from_secs(2));
+        assert_eq!(
+            log.resume(t0 + Duration::from_secs(3)).unwrap(),
+            Duration::from_secs(3)
+        );
+    }
+
+    #[test]
+    fn pauses_accumulate_across_windows() {
+        let mut log = JobLog::default();
+        let t0 = Instant::now();
+        log.pause(t0);
+        log.resume(t0 + Duration::from_secs(2));
+        log.pause(t0 + Duration::from_secs(5));
+        log.resume(t0 + Duration::from_secs(9));
+        assert_eq!(log.paused_total(t0), Duration::from_secs(6));
+    }
+
+    /// The summary must be honest about a job that is still stopped: an open
+    /// pause window counts toward the total.
+    #[test]
+    fn open_pause_window_counts_toward_the_total() {
+        let mut log = JobLog::default();
+        let t0 = Instant::now();
+        log.pause(t0);
+        assert_eq!(
+            log.paused_total(t0 + Duration::from_secs(4)),
+            Duration::from_secs(4)
+        );
+    }
+
+    #[test]
+    fn resume_without_a_pause_is_a_no_op() {
+        let mut log = JobLog::default();
+        let t0 = Instant::now();
+        assert!(log.resume(t0).is_none());
+        assert_eq!(log.paused_total(t0), Duration::ZERO);
+    }
+
+    /// A printer running hot cooldowns on every packet; the log must report
+    /// the condition without one line per packet.
+    #[test]
+    fn cooldown_reports_are_rate_limited_and_count_the_gap() {
+        let mut log = JobLog::default();
+        let t0 = Instant::now();
+
+        assert_eq!(log.note_cooldown(t0), Some(1));
+        // Nine more inside the window: silent, but counted.
+        for i in 1..10 {
+            assert_eq!(log.note_cooldown(t0 + Duration::from_millis(i * 10)), None);
+        }
+        // Once the gap elapses, the suppressed ones are reported together.
+        assert_eq!(log.note_cooldown(t0 + COOLDOWN_REPORT_GAP), Some(10));
+        assert_eq!(log.note_cooldown(t0 + COOLDOWN_REPORT_GAP), None);
     }
 }

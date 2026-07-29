@@ -11,6 +11,10 @@ use clap::{Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
+    /// Increase logging on stderr: -v info, -vv debug, -vvv trace.
+    /// `RUST_LOG` overrides this entirely.
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    pub verbose: u8,
 }
 
 #[derive(Subcommand)]
@@ -101,6 +105,20 @@ pub struct QrArgs {
     pub copies: u16,
 }
 
+/// The `EnvFilter` directive a `-v` count maps to.
+///
+/// Dependencies stay at `warn` until `-vvv`, so `-v`/`-vv` show this crate's
+/// own story without btleplug and hyper drowning it out. `RUST_LOG` (handled
+/// by the caller) is the escape hatch for anything finer.
+pub fn log_filter(verbose: u8) -> String {
+    match verbose {
+        0 => "warn".to_string(),
+        1 => "warn,printable=info".to_string(),
+        2 => "warn,printable=debug".to_string(),
+        _ => "debug,printable=trace".to_string(),
+    }
+}
+
 /// Parse a font size: must be a positive, finite number of pixels.
 fn parse_font_size(s: &str) -> Result<f32, String> {
     let size: f32 = s.parse().map_err(|_| format!("`{s}` is not a number"))?;
@@ -136,5 +154,54 @@ impl From<DitherArg> for printa_ble_core::raster::Dither {
             DitherArg::Atkinson => Self::Atkinson,
             DitherArg::Threshold => Self::Threshold,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory as _;
+
+    #[test]
+    fn cli_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    /// No flag must stay silent: the CLI's default output is load-bearing
+    /// (scripts read the preview path off stdout).
+    #[test]
+    fn default_verbosity_logs_nothing_below_warn() {
+        assert_eq!(log_filter(0), "warn");
+    }
+
+    #[test]
+    fn verbosity_ladder_increases_this_crate_first() {
+        assert!(log_filter(1).contains("printable=info"));
+        assert!(log_filter(2).contains("printable=debug"));
+        assert!(log_filter(3).contains("printable=trace"));
+        // Dependencies stay quiet until the last rung.
+        assert!(log_filter(1).starts_with("warn,"));
+        assert!(log_filter(2).starts_with("warn,"));
+        assert!(log_filter(3).starts_with("debug,"));
+    }
+
+    #[test]
+    fn verbosity_saturates_past_three() {
+        assert_eq!(log_filter(3), log_filter(9));
+    }
+
+    /// `-v` is global, so it must parse after any subcommand too.
+    #[test]
+    fn verbose_flag_is_global() {
+        let cli = Cli::try_parse_from(["printable", "print", "-vv", "hi"]).unwrap();
+        assert_eq!(cli.verbose, 2);
+        let cli = Cli::try_parse_from(["printable", "-v", "serve"]).unwrap();
+        assert_eq!(cli.verbose, 1);
+    }
+
+    #[test]
+    fn verbose_defaults_to_zero() {
+        let cli = Cli::try_parse_from(["printable", "print", "hi"]).unwrap();
+        assert_eq!(cli.verbose, 0);
     }
 }

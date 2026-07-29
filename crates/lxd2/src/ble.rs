@@ -8,7 +8,6 @@
 //! the terminal app. If permission is denied, btleplug errors out — the
 //! messages below point the user at System Settings.
 
-use std::fmt;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -20,6 +19,7 @@ use btleplug::platform::{Adapter, Manager, Peripheral};
 use futures::StreamExt;
 
 use crate::config::SavedDevice;
+use crate::print_service::{NoPaper, NoPrinterFound};
 use lxd2_core::protocol::job::{Action, PrintJob};
 use lxd2_core::protocol::notifications::{self, Notification, Status};
 use tokio::sync::mpsc;
@@ -29,30 +29,6 @@ const NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Polling interval while waiting for a matching device to appear.
 const DISCOVERY_POLL: Duration = Duration::from_millis(300);
-
-/// No matching printer was discovered before the scan timeout.
-///
-/// Kept as a distinct type so `main` can map it to its own exit code.
-#[derive(Debug)]
-pub struct NoPrinterFound;
-
-impl fmt::Display for NoPrinterFound {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("no LX printer found. Is the printer on and in range?")
-    }
-}
-
-/// The printer reported it is out of paper.
-///
-/// Kept as a distinct type so `main` can map it to its own exit code.
-#[derive(Debug)]
-pub struct NoPaper;
-
-impl fmt::Display for NoPaper {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("printer is out of paper")
-    }
-}
 
 /// Bail if a notification is a Status frame reporting no paper.
 fn check_paper(n: &Notification) -> Result<()> {

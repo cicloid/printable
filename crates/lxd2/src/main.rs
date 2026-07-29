@@ -1,39 +1,19 @@
 mod ble;
 mod cli;
 mod config;
+mod print_service;
 
-use std::fmt;
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{bail, Context as _};
 use clap::Parser;
-use lxd2_core::protocol::job::PrintJob;
-use lxd2_core::raster::{
-    bitmap_to_png, image_to_bitmap, prepare, render_markdown, render_qr, render_text, Bitmap,
-    Dither,
-};
+use lxd2_core::raster::{bitmap_to_png, render_markdown, render_qr, render_text, Bitmap, Dither};
 
-use crate::ble::{NoPaper, NoPrinterFound};
 use crate::cli::{Cli, Command, DeviceArgs, PrintArgs, QrArgs};
-use crate::config::{Config, SavedDevice};
-
-/// How long `connect` keeps scanning for a matching device.
-const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Delay between raster packet writes, in milliseconds.
-const INTER_PACKET_DELAY_MS: u64 = 15;
-
-/// Marker context: authentication or printing failed (exit code 4).
-#[derive(Debug)]
-struct PrintFailure;
-
-impl fmt::Display for PrintFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("print failed")
-    }
-}
+use crate::config::Config;
+use crate::print_service::{NoPaper, NoPrinterFound, PrintFailure, PrintOptions, SCAN_TIMEOUT};
 
 #[tokio::main]
 async fn main() {
@@ -85,22 +65,6 @@ async fn cmd_scan(timeout: u64) -> anyhow::Result<i32> {
     Ok(0)
 }
 
-/// Remember the connected printer in the config file, if it changed.
-///
-/// Best effort: a failed save warns but never fails the command.
-fn remember_device(config: &mut Config, printer: &ble::Printer) {
-    let current = SavedDevice {
-        id: printer.id(),
-        name: printer.name().to_string(),
-    };
-    if config.device.as_ref() != Some(&current) {
-        config.device = Some(current);
-        if let Err(e) = config.save() {
-            eprintln!("warning: failed to save config: {e:#}");
-        }
-    }
-}
-
 async fn cmd_status(device: DeviceArgs) -> anyhow::Result<()> {
     let mut config = Config::load();
     let mut printer = ble::connect_resolved(
@@ -110,7 +74,7 @@ async fn cmd_status(device: DeviceArgs) -> anyhow::Result<()> {
     )
     .await?;
     eprintln!("Connected to {}.", printer.name());
-    remember_device(&mut config, &printer);
+    print_service::remember_device(&mut config, &printer);
     let status = printer.wait_status(Duration::from_secs(5)).await;
     printer.disconnect().await;
     let s = status?;
@@ -169,8 +133,8 @@ async fn cmd_qr(args: QrArgs) -> anyhow::Result<()> {
     dispatch(bitmap, device, density, feed, preview, copies).await
 }
 
-/// Common print tail: append feed, preview or connect, and print `copies`
-/// jobs over a single connection.
+/// Common print tail: preview short-circuit, else hand off to the shared
+/// print service (append feed, connect, print `copies` jobs).
 async fn dispatch(
     mut bitmap: Bitmap,
     device: DeviceArgs,
@@ -179,60 +143,29 @@ async fn dispatch(
     preview: Option<PathBuf>,
     copies: u16,
 ) -> anyhow::Result<()> {
-    bitmap.extend_blank(feed);
-
     if let Some(path) = preview {
         if copies > 1 {
             eprintln!("note: preview renders a single copy; --copies is ignored");
         }
+        bitmap.extend_blank(feed);
         std::fs::write(&path, bitmap_to_png(&bitmap))
             .with_context(|| format!("failed to write {}", path.display()))?;
         println!("{}", path.display());
         return Ok(());
     }
 
-    // Validate the job before touching BLE so an oversized bitmap fails fast.
-    PrintJob::new(&bitmap, density, rand::random(), INTER_PACKET_DELAY_MS)
-        .context("cannot print this job")?;
-
-    let mut config = Config::load();
-    let mut printer = ble::connect_resolved(
+    let lines = print_service::print_bitmap(
+        bitmap,
         device.device.as_deref(),
-        config.device.as_ref(),
-        SCAN_TIMEOUT,
+        PrintOptions {
+            density,
+            feed,
+            copies,
+        },
     )
     .await?;
-    eprintln!("Connected to {}.", printer.name());
-    remember_device(&mut config, &printer);
-
-    // Pre-print check, best effort: status frames arrive unsolicited after
-    // subscribing, but not receiving one is not fatal.
-    if let Ok(s) = printer.wait_status(Duration::from_secs(3)).await {
-        if s.no_paper {
-            printer.disconnect().await;
-            return Err(anyhow::Error::msg(NoPaper));
-        }
-        if s.low_battery {
-            eprintln!("warning: printer battery is low");
-        }
-    }
-
-    // One connection, one full job (fresh challenge, auth included) per copy.
-    for copy in 1..=copies {
-        let mut job = PrintJob::new(&bitmap, density, rand::random(), INTER_PACKET_DELAY_MS)
-            .context("cannot print this job")?;
-        if let Err(e) = printer.run_job(&mut job).await {
-            printer.disconnect().await;
-            return Err(e.context(PrintFailure));
-        }
-        if copies > 1 {
-            println!("Printed copy {copy}/{copies}.");
-        }
-    }
-    printer.disconnect().await;
-
     if copies == 1 {
-        println!("Printed {} lines.", bitmap.height());
+        println!("Printed {lines} lines.");
     }
     Ok(())
 }
@@ -255,12 +188,9 @@ fn build_bitmap(
             .unwrap_or_default();
         return match ext.as_str() {
             "png" | "jpg" | "jpeg" => {
-                let img = image::open(&path)
+                let bytes = std::fs::read(&path)
                     .with_context(|| format!("failed to open {}", path.display()))?;
-                if img.width() == 0 {
-                    bail!("image has zero width");
-                }
-                Ok(image_to_bitmap(&prepare(&img), dither))
+                print_service::bitmap_from_image_bytes(&bytes, dither)
             }
             "txt" => {
                 let text = std::fs::read_to_string(&path)

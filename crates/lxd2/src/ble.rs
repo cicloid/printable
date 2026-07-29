@@ -148,10 +148,10 @@ async fn find_match(
     for p in adapter.peripherals().await? {
         match match_target(&p, target).await {
             Some((MatchKind::Exact, name)) => return Ok((Some((p, name)), fallback)),
-            Some((MatchKind::Fallback(rank), name)) => {
-                if fallback.as_ref().is_none_or(|(_, _, held)| rank > *held) {
-                    fallback = Some((p, name, rank));
-                }
+            Some((MatchKind::Fallback(rank), name))
+                if fallback.as_ref().is_none_or(|(_, _, held)| rank > *held) =>
+            {
+                fallback = Some((p, name, rank));
             }
             _ => {}
         }

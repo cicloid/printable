@@ -10,10 +10,13 @@ use std::time::Duration;
 use anyhow::{bail, Context as _};
 use clap::Parser;
 use lxd2_core::protocol::job::PrintJob;
-use lxd2_core::raster::{bitmap_to_png, image_to_bitmap, prepare, render_text, Bitmap, Dither};
+use lxd2_core::raster::{
+    bitmap_to_png, image_to_bitmap, prepare, render_markdown, render_qr, render_text, Bitmap,
+    Dither,
+};
 
 use crate::ble::{NoPaper, NoPrinterFound};
-use crate::cli::{Cli, Command, DeviceArgs, PrintArgs};
+use crate::cli::{Cli, Command, DeviceArgs, PrintArgs, QrArgs};
 use crate::config::{Config, SavedDevice};
 
 /// How long `connect` keeps scanning for a matching device.
@@ -64,6 +67,7 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Scan { timeout } => cmd_scan(timeout).await,
         Command::Status(device) => cmd_status(device).await.map(|()| 0),
         Command::Print(args) => cmd_print(args).await.map(|()| 0),
+        Command::Qr(args) => cmd_qr(args).await.map(|()| 0),
     }
 }
 
@@ -145,19 +149,50 @@ async fn cmd_print(args: PrintArgs) -> anyhow::Result<()> {
         dither,
         size,
         preview,
+        copies,
     } = args;
-    let mut bitmap = build_bitmap(text, file, dither.into(), size)?;
+    let bitmap = build_bitmap(text, file, dither.into(), size)?;
+    dispatch(bitmap, device, density, feed, preview, copies).await
+}
+
+async fn cmd_qr(args: QrArgs) -> anyhow::Result<()> {
+    let QrArgs {
+        data,
+        caption,
+        device,
+        density,
+        feed,
+        preview,
+        copies,
+    } = args;
+    let bitmap = render_qr(&data, caption.as_deref()).context("cannot render QR code")?;
+    dispatch(bitmap, device, density, feed, preview, copies).await
+}
+
+/// Common print tail: append feed, preview or connect, and print `copies`
+/// jobs over a single connection.
+async fn dispatch(
+    mut bitmap: Bitmap,
+    device: DeviceArgs,
+    density: u8,
+    feed: usize,
+    preview: Option<PathBuf>,
+    copies: u16,
+) -> anyhow::Result<()> {
     bitmap.extend_blank(feed);
 
     if let Some(path) = preview {
+        if copies > 1 {
+            eprintln!("note: preview renders a single copy; --copies is ignored");
+        }
         std::fs::write(&path, bitmap_to_png(&bitmap))
             .with_context(|| format!("failed to write {}", path.display()))?;
         println!("{}", path.display());
         return Ok(());
     }
 
-    // Create the job before touching BLE so an oversized bitmap fails fast.
-    let mut job = PrintJob::new(&bitmap, density, rand::random(), INTER_PACKET_DELAY_MS)
+    // Validate the job before touching BLE so an oversized bitmap fails fast.
+    PrintJob::new(&bitmap, density, rand::random(), INTER_PACKET_DELAY_MS)
         .context("cannot print this job")?;
 
     let mut config = Config::load();
@@ -182,11 +217,23 @@ async fn cmd_print(args: PrintArgs) -> anyhow::Result<()> {
         }
     }
 
-    let result = printer.run_job(&mut job).await;
+    // One connection, one full job (fresh challenge, auth included) per copy.
+    for copy in 1..=copies {
+        let mut job = PrintJob::new(&bitmap, density, rand::random(), INTER_PACKET_DELAY_MS)
+            .context("cannot print this job")?;
+        if let Err(e) = printer.run_job(&mut job).await {
+            printer.disconnect().await;
+            return Err(e.context(PrintFailure));
+        }
+        if copies > 1 {
+            println!("Printed copy {copy}/{copies}.");
+        }
+    }
     printer.disconnect().await;
-    result.map_err(|e| e.context(PrintFailure))?;
 
-    println!("Printed {} lines.", bitmap.height());
+    if copies == 1 {
+        println!("Printed {} lines.", bitmap.height());
+    }
     Ok(())
 }
 
@@ -220,8 +267,16 @@ fn build_bitmap(
                     .with_context(|| format!("failed to read {}", path.display()))?;
                 text_bitmap(&text, size)
             }
+            "md" | "markdown" => {
+                let text = std::fs::read_to_string(&path)
+                    .with_context(|| format!("failed to read {}", path.display()))?;
+                if text.trim().is_empty() {
+                    bail!("nothing to print");
+                }
+                Ok(render_markdown(&text))
+            }
             _ => bail!(
-                "unsupported file type: {} (expected .png, .jpg, .jpeg or .txt)",
+                "unsupported file type: {} (expected .png, .jpg, .jpeg, .txt, .md or .markdown)",
                 path.display()
             ),
         };

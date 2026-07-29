@@ -25,6 +25,8 @@ pub enum Command {
     Status(DeviceArgs),
     /// Print text (arg or stdin) or a file
     Print(PrintArgs),
+    /// Print a QR code
+    Qr(QrArgs),
 }
 
 #[derive(clap::Args)]
@@ -33,7 +35,7 @@ pub struct PrintArgs {
     pub device: DeviceArgs,
     /// Text to print; reads stdin if omitted and no --file
     pub text: Option<String>,
-    /// File to print (.png/.jpg/.jpeg/.txt)
+    /// File to print (.png/.jpg/.jpeg/.txt/.md/.markdown)
     #[arg(short, long)]
     pub file: Option<std::path::PathBuf>,
     /// Density 1-7
@@ -51,6 +53,32 @@ pub struct PrintArgs {
     /// Render to PNG instead of printing
     #[arg(long)]
     pub preview: Option<std::path::PathBuf>,
+    /// Number of copies to print (1-20)
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=20))]
+    pub copies: u16,
+}
+
+#[derive(clap::Args)]
+pub struct QrArgs {
+    /// Data to encode (URL or text)
+    pub data: String,
+    /// Caption text printed below the code
+    #[arg(long)]
+    pub caption: Option<String>,
+    #[command(flatten)]
+    pub device: DeviceArgs,
+    /// Density 1-7
+    #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u8).range(1..=7))]
+    pub density: u8,
+    /// Blank feed lines after printing
+    #[arg(long, default_value_t = 40)]
+    pub feed: usize,
+    /// Render to PNG instead of printing
+    #[arg(long)]
+    pub preview: Option<std::path::PathBuf>,
+    /// Number of copies to print (1-20)
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=20))]
+    pub copies: u16,
 }
 
 /// Parse a font size: must be a positive, finite number of pixels.

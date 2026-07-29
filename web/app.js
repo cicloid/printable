@@ -3,7 +3,9 @@
 
 import init, {
   render_text,
-  render_markdown,
+  render_markdown_with_images,
+  markdown_image_refs,
+  ImageSet,
   render_qr,
   render_image,
   WasmJob,
@@ -15,6 +17,10 @@ const NOTIFY = 0xffe2;
 
 const DEFAULT_TEXT_SIZE = 24.0; // matches the CLI/server default
 const WATCHDOG_MS = 10_000;
+// Markdown images always use Floyd-Steinberg, the CLI and server default. The
+// Image tab's dither select applies to that tab's single upload only — a
+// markdown document has no per-image control.
+const MD_IMAGE_DITHER = "floyd";
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -83,13 +89,55 @@ $("density").addEventListener("input", () => {
 });
 
 // --- Rendering (pure client-side WASM; works without a printer) ---
+
+// Non-fatal note from the last render (currently: markdown images that could
+// not be fetched). Set by renderCurrent, reported by the preview/print paths.
+let renderNotice = null;
+
+// Render markdown, resolving its image references through the browser.
+//
+// Core is sans-IO: it tells us which destinations the document uses, we fetch
+// what we can, and it renders an italic `[image: alt]` placeholder for
+// everything else — a blocked or broken image never fails the document.
+// Only http(s) refs are fetchable here: a relative path like `logo.png` names
+// a local file the browser has no way to read.
+async function renderMarkdown(md) {
+  const refs = markdown_image_refs(md);
+  const images = new ImageSet();
+  let skipped = 0;
+  try {
+    for (const ref of refs) {
+      if (!/^https?:\/\//i.test(ref)) {
+        skipped++;
+        continue;
+      }
+      try {
+        const res = await fetch(ref);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        images.add(ref, new Uint8Array(await res.arrayBuffer()), MD_IMAGE_DITHER);
+      } catch {
+        skipped++; // CORS, network, HTTP error, or undecodable bytes
+      }
+    }
+    if (skipped > 0) {
+      renderNotice =
+        skipped + (skipped === 1 ? " image" : " images") +
+        " could not be loaded (CORS, network, or a local path)";
+    }
+    return render_markdown_with_images(md, images);
+  } finally {
+    images.free(); // the bitmaps are WASM-owned; the render already copied them
+  }
+}
+
 // Returns a WasmBitmap the CALLER must free().
 async function renderCurrent() {
+  renderNotice = null;
   switch (activeTab) {
     case "text":
       return render_text($("text-content").value, DEFAULT_TEXT_SIZE);
     case "markdown":
-      return render_markdown($("md-content").value);
+      return await renderMarkdown($("md-content").value);
     case "qr":
       return render_qr($("qr-data").value, $("qr-caption").value || undefined);
     case "image": {
@@ -127,6 +175,7 @@ async function doPreview() {
   if (img.src) URL.revokeObjectURL(img.src);
   img.src = URL.createObjectURL(new Blob([png], { type: "image/png" }));
   $("preview-wrap").hidden = false;
+  if (renderNotice) toast(renderNotice, true); // rendered, but incomplete
 }
 
 // --- Web Bluetooth ---
@@ -303,6 +352,7 @@ async function doPrint() {
     }
     let msg = "Printed " + lines + " lines";
     if (copies > 1) msg += " × " + copies + " copies";
+    if (renderNotice) msg += " · " + renderNotice;
     toast(msg, false);
   } catch (e) {
     toast(errMsg(e), true);

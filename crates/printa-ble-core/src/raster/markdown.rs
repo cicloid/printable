@@ -51,7 +51,7 @@
 //! trimmed, as are blank lines abutting a horizontal rule (the rule carries
 //! its own margins).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -148,6 +148,10 @@ pub fn render_markdown(md: &str) -> Bitmap {
 /// whose inner events are consumed as alt text and never rendered).
 pub fn markdown_image_refs(md: &str) -> Vec<String> {
     let mut refs: Vec<String> = Vec::new();
+    // The vector keeps document order; the set answers "seen already?" in
+    // constant time, so a document with many images stays linear rather than
+    // rescanning the whole vector per image.
+    let mut seen: HashSet<String> = HashSet::new();
     let mut depth: u32 = 0;
     for event in Parser::new_ext(md, options()) {
         match event {
@@ -156,7 +160,7 @@ pub fn markdown_image_refs(md: &str) -> Vec<String> {
                 let dest = dest_url.into_string();
                 // `depth == 1` keeps only the outermost image of a nest — the
                 // one the lowering actually looks up.
-                if depth == 1 && !dest.is_empty() && !refs.contains(&dest) {
+                if depth == 1 && !dest.is_empty() && seen.insert(dest.clone()) {
                     refs.push(dest);
                 }
             }
@@ -1268,6 +1272,28 @@ mod tests {
         assert_eq!(markdown_image_refs(md), vec!["a.png", "b.png"]);
         assert!(markdown_image_refs("# Just text\n\nno pictures here").is_empty());
         assert!(markdown_image_refs("").is_empty());
+    }
+
+    /// Dedupe is by set membership, not a linear rescan, so a document with a
+    /// thousand images must still report each destination once, in first-seen
+    /// order.
+    #[test]
+    fn image_refs_dedupe_scales_and_keeps_first_seen_order() {
+        let mut md = String::new();
+        for i in 0..500 {
+            let dest = if i % 2 == 0 { "a.png" } else { "b.png" };
+            md.push_str(&format!("![alt]({dest})\n\n"));
+        }
+        for i in 0..500 {
+            md.push_str(&format!("![alt](u{i}.png)\n\n"));
+        }
+
+        let refs = markdown_image_refs(&md);
+        assert_eq!(refs.len(), 502, "each destination should appear once");
+
+        let mut expected = vec!["a.png".to_string(), "b.png".to_string()];
+        expected.extend((0..500).map(|i| format!("u{i}.png")));
+        assert_eq!(refs, expected);
     }
 
     #[test]

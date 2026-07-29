@@ -1,5 +1,5 @@
 [package]
-name = "lxd2-web"
+name = "printa-ble-web"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-lxd2-core = { path = "../lxd2-core" }
+printa-ble-core = { path = "../printa-ble-core" }
 wasm-bindgen = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6"

@@ -1,15 +1,19 @@
 [package]
-name = "lxd2"
+name = "printa-ble"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+
+[[bin]]
+name = "printable"
+path = "src/main.rs"
 
 [features]
 default = ["url"]
 url = ["dep:chromiumoxide"]
 
 [dependencies]
-lxd2-core = { path = "../lxd2-core" }
+printa-ble-core = { path = "../printa-ble-core" }
 chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"], optional = true }
 anyhow = "1"
 axum = { version = "0.8", features = ["multipart"] }

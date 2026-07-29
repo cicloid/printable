@@ -1,11 +1,11 @@
-//! WASM bindings for `lxd2-core`: rendering entry points for the web page.
+//! WASM bindings for `printa-ble-core`: rendering entry points for the web page.
 //!
 //! Thin `wasm-bindgen` wrappers around the core rasterizer. The crate also
 //! builds natively (rlib) so the wrappers can be unit-tested with plain
 //! `cargo test`; fallible functions return `Result<_, String>`, which
 //! wasm-bindgen converts to a thrown JS exception carrying the message.
 
-use lxd2_core::raster::{self, Bitmap, Dither};
+use printa_ble_core::raster::{self, Bitmap, Dither};
 use wasm_bindgen::prelude::*;
 
 pub mod job;

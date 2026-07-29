@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use anyhow::{bail, Context as _};
 use clap::Parser;
-use lxd2_core::raster::{bitmap_to_png, render_markdown, render_qr, render_text, Bitmap, Dither};
+use printa_ble_core::raster::{
+    bitmap_to_png, render_markdown, render_qr, render_text, Bitmap, Dither,
+};
 
 use crate::cli::{Cli, Command, DeviceArgs, PrintArgs, QrArgs};
 use crate::config::Config;

@@ -1,6 +1,8 @@
-# lxd2
+# printa-ble
 
 A Rust CLI for printing to LX-D02 / LX-D2 Bluetooth thermal printers (the "FunnyPrint" app family) on macOS. These are 58 mm, 203 dpi, 384 px-wide printers made by Shenzhen Xiqi Technology.
+
+The name **printa-ble** derives from *printa* (the ancestor project) plus *BLE* (Bluetooth Low Energy, how it talks to the printer) — and reads as "printable". It currently supports the LX-D02 / LX-D2 family. The command itself is `printable`.
 
 ## Status
 
@@ -9,7 +11,7 @@ All four phases of the [original design](docs/plans/2026-07-27-lxd2-design.md) a
 ## Install
 
 ```
-cargo install --path crates/lxd2
+cargo install --path crates/printa-ble
 ```
 
 or build from source:
@@ -21,17 +23,17 @@ cargo build --release
 ## Usage
 
 ```
-lxd2 scan
-lxd2 status
-echo "hello" | lxd2 print
-lxd2 print "hello world"
-lxd2 print -f photo.png --dither floyd
-lxd2 print -f notes.txt --size 28
-lxd2 print "test" --preview out.png   # render without printing
-lxd2 print -f notes.md                # markdown: headings, lists, bold/italic, code, rules
-lxd2 qr "https://example.com" --caption "scan me"
-lxd2 print "hello" --copies 3
-lxd2 print --url https://example.com    # render a web page via headless Chrome
+printable scan
+printable status
+echo "hello" | printable print
+printable print "hello world"
+printable print -f photo.png --dither floyd
+printable print -f notes.txt --size 28
+printable print "test" --preview out.png   # render without printing
+printable print -f notes.md                # markdown: headings, lists, bold/italic, code, rules
+printable qr "https://example.com" --caption "scan me"
+printable print "hello" --copies 3
+printable print --url https://example.com    # render a web page via headless Chrome
 ```
 
 ### Options
@@ -49,11 +51,11 @@ lxd2 print --url https://example.com    # render a web page via headless Chrome
 
 ### QR codes
 
-`lxd2 qr <DATA>` prints a QR code encoding a URL or arbitrary text, centered at the printer's full width. `--caption <TEXT>` prints a caption below the code. The `--device`, `--density`, `--feed`, `--preview`, and `--copies` options work the same as for `print`.
+`printable qr <DATA>` prints a QR code encoding a URL or arbitrary text, centered at the printer's full width. `--caption <TEXT>` prints a caption below the code. The `--device`, `--density`, `--feed`, `--preview`, and `--copies` options work the same as for `print`.
 
 ### Markdown
 
-`lxd2 print -f notes.md` (or `.markdown`) renders the file as formatted output rather than plain text. Supported: headings (H1-H3 at decreasing sizes; deeper levels render like H3), **bold** and *italic*, bulleted and ordered lists (including nesting), inline code and code blocks, blockquotes, and horizontal rules. Links render as their text. Tables and images are not supported.
+`printable print -f notes.md` (or `.markdown`) renders the file as formatted output rather than plain text. Supported: headings (H1-H3 at decreasing sizes; deeper levels render like H3), **bold** and *italic*, bulleted and ordered lists (including nesting), inline code and code blocks, blockquotes, and horizontal rules. Links render as their text. Tables and images are not supported.
 
 ### macOS Bluetooth permission
 
@@ -73,7 +75,7 @@ Invalid command-line usage also exits 2 (clap's convention).
 ## Server mode
 
 ```
-lxd2 serve
+printable serve
 ```
 
 starts an HTTP print server (REST API + web UI) on `0.0.0.0:8000`. `--port` and `--bind` change the listen address, and `--device` pins the printer just like the other commands. Open `http://<mac-ip>:8000` from any device on the LAN — the built-in web UI is phone-friendly and shows a live preview before printing.
@@ -129,7 +131,7 @@ There is no authentication — anyone on the LAN can print. Worst case that's wa
 
 ## Web app (Web Bluetooth)
 
-A static web page that prints directly from the browser — no server, no install. Rendering (text, markdown, QR, images) runs entirely client-side via `lxd2-core` compiled to WebAssembly, and the page talks to the printer over Web Bluetooth.
+A static web page that prints directly from the browser — no server, no install. Rendering (text, markdown, QR, images) runs entirely client-side via `printa-ble-core` compiled to WebAssembly, and the page talks to the printer over Web Bluetooth.
 
 ### Browser support
 
@@ -142,7 +144,7 @@ rustup target add wasm32-unknown-unknown
 scripts/build-web.sh    # needs wasm-pack
 ```
 
-This builds `crates/lxd2-web` with [wasm-pack](https://rustwasm.github.io/wasm-pack/) and puts the WASM package in `web/pkg/`.
+This builds `crates/printa-ble-web` with [wasm-pack](https://rustwasm.github.io/wasm-pack/) and puts the WASM package in `web/pkg/`.
 
 ### Run locally
 
@@ -158,11 +160,11 @@ The `web/` directory (with `pkg/` built) is fully static — host it anywhere th
 
 ## Configuration
 
-After each successful connection, lxd2 saves the printer's identifier and name to a config file — `~/Library/Application Support/lxd2/config.toml` on macOS (the platform config directory elsewhere) — and prefers that printer on later runs. If it is not seen, lxd2 falls back to a device advertising the saved name, or failing that any `LX*` device. `--device` overrides the saved printer, and the newly connected device is saved in its place. Delete the file to forget the saved printer.
+After each successful connection, printa-ble saves the printer's identifier and name to a config file — `~/Library/Application Support/printa-ble/config.toml` on macOS (the platform config directory elsewhere) — and prefers that printer on later runs. If it is not seen, printa-ble falls back to a device advertising the saved name, or failing that any `LX*` device. `--device` overrides the saved printer, and the newly connected device is saved in its place. Delete the file to forget the saved printer.
 
 ## Architecture
 
-The workspace has three crates. `lxd2-core` is a sans-IO crate containing the protocol (packet building, CRC, auth, print-job state machine) and the rendering pipeline (text layout, dithering, raster chunking, PNG preview); it has no Bluetooth dependencies. `lxd2` is the CLI, which drives `lxd2-core` over BLE using [btleplug](https://github.com/deviceplug/btleplug). `lxd2-web` compiles `lxd2-core` to WebAssembly for the static Web Bluetooth page in `web/`.
+The workspace has three crates. `printa-ble-core` is a sans-IO crate containing the protocol (packet building, CRC, auth, print-job state machine) and the rendering pipeline (text layout, dithering, raster chunking, PNG preview); it has no Bluetooth dependencies. `printa-ble` is the CLI (installed as the `printable` command), which drives `printa-ble-core` over BLE using [btleplug](https://github.com/deviceplug/btleplug). `printa-ble-web` compiles `printa-ble-core` to WebAssembly for the static Web Bluetooth page in `web/`.
 
 ## Credits
 
@@ -174,4 +176,4 @@ This project builds on protocol work from three reference implementations:
 
 ## License
 
-MIT — see [LICENSE](LICENSE). The embedded JetBrains Mono font is licensed under the SIL Open Font License; see [crates/lxd2-core/assets/OFL.txt](crates/lxd2-core/assets/OFL.txt).
+MIT — see [LICENSE](LICENSE). The embedded JetBrains Mono font is licensed under the SIL Open Font License; see [crates/printa-ble-core/assets/OFL.txt](crates/printa-ble-core/assets/OFL.txt).

@@ -7,8 +7,8 @@ use std::fmt;
 use std::time::Duration;
 
 use anyhow::{bail, Context as _};
-use lxd2_core::protocol::job::PrintJob;
-use lxd2_core::raster::{image_to_bitmap, prepare, Bitmap, Dither};
+use printa_ble_core::protocol::job::PrintJob;
+use printa_ble_core::raster::{image_to_bitmap, prepare, Bitmap, Dither};
 
 use crate::ble;
 use crate::config::{Config, SavedDevice};

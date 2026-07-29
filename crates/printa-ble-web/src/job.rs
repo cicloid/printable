@@ -1,13 +1,13 @@
 //! WASM bridge for the sans-IO print job state machine.
 //!
-//! [`WasmJob`] wraps [`lxd2_core::protocol::job::PrintJob`] for the Web
+//! [`WasmJob`] wraps [`printa_ble_core::protocol::job::PrintJob`] for the Web
 //! Bluetooth page: JS asks for the next action, performs it (GATT write,
 //! sleep, or wait), and feeds raw 0xFFE2 notification bytes back in. The
 //! action enum and [`WasmJob::next_action_inner`] are plain Rust so the
 //! whole contract is unit-testable natively.
 
-use lxd2_core::protocol::job::{Action, PrintJob};
-use lxd2_core::protocol::notifications;
+use printa_ble_core::protocol::job::{Action, PrintJob};
+use printa_ble_core::protocol::notifications;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
@@ -123,9 +123,9 @@ impl WasmJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lxd2_core::protocol::auth::auth_response;
-    use lxd2_core::protocol::packets;
-    use lxd2_core::raster::Bitmap;
+    use printa_ble_core::protocol::auth::auth_response;
+    use printa_ble_core::protocol::packets;
+    use printa_ble_core::raster::Bitmap;
 
     const CHALLENGE: [u8; 10] = [9u8; 10];
     const MAC: [u8; 6] = [1, 2, 3, 4, 5, 6];

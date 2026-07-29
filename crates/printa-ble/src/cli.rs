@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "lxd2",
+    name = "printable",
     about = "Print to LX-D02/LX-D2 BLE thermal printers",
     version
 )]
@@ -124,7 +124,7 @@ pub enum DitherArg {
     Threshold,
 }
 
-impl From<DitherArg> for lxd2_core::raster::Dither {
+impl From<DitherArg> for printa_ble_core::raster::Dither {
     fn from(d: DitherArg) -> Self {
         match d {
             DitherArg::Floyd => Self::FloydSteinberg,

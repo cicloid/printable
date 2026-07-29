@@ -1,4 +1,4 @@
-//! HTTP print server (`lxd2 serve`).
+//! HTTP print server (`printable serve`).
 //!
 //! Exposes a printa-style REST API on the LAN: health/status, preview
 //! endpoints that render text, markdown, QR codes and images to PNG without
@@ -14,8 +14,10 @@ use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use lxd2_core::protocol::job::JobError;
-use lxd2_core::raster::{bitmap_to_png, render_markdown, render_qr, render_text, Bitmap, Dither};
+use printa_ble_core::protocol::job::JobError;
+use printa_ble_core::raster::{
+    bitmap_to_png, render_markdown, render_qr, render_text, Bitmap, Dither,
+};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -573,7 +575,7 @@ fn png_response(png: Vec<u8>) -> Response {
 // Tests. `/status` with a free lock and successful `/print/*` requests are
 // deliberately untested here: they scan for and connect to a real printer
 // over BLE, which a unit test must not do. Those flows are the same code
-// paths as the hardware-validated `lxd2 status` / `lxd2 print` commands.
+// paths as the hardware-validated `printable status` / `printable print` commands.
 // The tests below only exercise what runs before BLE: validation, error
 // mapping, and the busy branch of `/status`.
 // ---------------------------------------------------------------------------
@@ -640,7 +642,10 @@ mod tests {
             "content-type: {content_type:?}"
         );
         let body = String::from_utf8(body_bytes(resp).await).unwrap();
-        assert!(body.contains("lxd2"), "UI page should mention lxd2");
+        assert!(
+            body.contains("printa-ble"),
+            "UI page should mention printa-ble"
+        );
     }
 
     #[tokio::test]
@@ -709,7 +714,7 @@ mod tests {
     /// Build a multipart/form-data body by hand with the given text fields
     /// and one `file` field carrying `file_bytes`.
     fn multipart_body(fields: &[(&str, &str)], file_bytes: &[u8]) -> (String, Vec<u8>) {
-        let boundary = "lxd2-test-boundary";
+        let boundary = "printable-test-boundary";
         let mut body = Vec::new();
         for (name, value) in fields {
             body.extend_from_slice(
@@ -868,7 +873,7 @@ mod tests {
     #[test]
     fn print_errors_map_to_statuses() {
         use crate::print_service::{NoPaper, NoPrinterFound, PrintFailure};
-        use lxd2_core::protocol::job::JobError;
+        use printa_ble_core::protocol::job::JobError;
 
         // ble.rs: anyhow::Error::msg(NoPrinterFound)
         let e = anyhow::Error::msg(NoPrinterFound);

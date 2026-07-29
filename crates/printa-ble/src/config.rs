@@ -1,7 +1,7 @@
 //! Persistent CLI configuration.
 //!
-//! Lives at `<config_dir>/lxd2/config.toml` (e.g.
-//! `~/Library/Application Support/lxd2/config.toml` on macOS) and currently
+//! Lives at `<config_dir>/printa-ble/config.toml` (e.g.
+//! `~/Library/Application Support/printa-ble/config.toml` on macOS) and currently
 //! only remembers the last printer we connected to, so subsequent runs can
 //! reconnect to the same device without `--device`.
 
@@ -25,7 +25,7 @@ pub struct SavedDevice {
 impl Config {
     /// The default config file path, if the platform has a config directory.
     pub fn path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("lxd2").join("config.toml"))
+        dirs::config_dir().map(|d| d.join("printa-ble").join("config.toml"))
     }
 
     /// Load from the default path. Never fails: any problem yields the
@@ -94,8 +94,8 @@ mod tests {
 
     impl TempDir {
         fn new(label: &str) -> Self {
-            let dir =
-                std::env::temp_dir().join(format!("lxd2-config-{label}-{}", std::process::id()));
+            let dir = std::env::temp_dir()
+                .join(format!("printa-ble-config-{label}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             TempDir(dir)
         }

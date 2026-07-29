@@ -20,8 +20,8 @@ use futures::StreamExt;
 
 use crate::config::SavedDevice;
 use crate::print_service::{NoPaper, NoPrinterFound};
-use lxd2_core::protocol::job::{Action, PrintJob};
-use lxd2_core::protocol::notifications::{self, Notification, Status};
+use printa_ble_core::protocol::job::{Action, PrintJob};
+use printa_ble_core::protocol::notifications::{self, Notification, Status};
 use tokio::sync::mpsc;
 
 /// How long `run_job` waits for an expected notification before giving up.

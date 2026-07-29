@@ -1163,51 +1163,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
-name = "lxd2"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "btleplug",
- "chromiumoxide",
- "clap",
- "dirs",
- "futures",
- "http-body-util",
- "image",
- "lxd2-core",
- "rand",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "tower",
-]
-
-[[package]]
-name = "lxd2-core"
-version = "0.1.0"
-dependencies = [
- "fontdue",
- "image",
- "pulldown-cmark",
- "qrcode",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "lxd2-web"
-version = "0.1.0"
-dependencies = [
- "image",
- "lxd2-core",
- "serde",
- "serde-wasm-bindgen",
- "serde_bytes",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1405,6 +1360,51 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
+]
+
+[[package]]
+name = "printa-ble"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "btleplug",
+ "chromiumoxide",
+ "clap",
+ "dirs",
+ "futures",
+ "http-body-util",
+ "image",
+ "printa-ble-core",
+ "rand",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tower",
+]
+
+[[package]]
+name = "printa-ble-core"
+version = "0.1.0"
+dependencies = [
+ "fontdue",
+ "image",
+ "pulldown-cmark",
+ "qrcode",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "printa-ble-web"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "printa-ble-core",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_bytes",
+ "wasm-bindgen",
 ]
 
 [[package]]

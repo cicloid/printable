@@ -1,5 +1,5 @@
-// lxd2 web — static Web Bluetooth page. Rendering and the print protocol
-// state machine live in WASM (lxd2-core); this file owns the DOM and GATT.
+// printa-ble web — static Web Bluetooth page. Rendering and the print protocol
+// state machine live in WASM (printa-ble-core); this file owns the DOM and GATT.
 
 import init, {
   render_text,
@@ -7,7 +7,7 @@ import init, {
   render_qr,
   render_image,
   WasmJob,
-} from "./pkg/lxd2_web.js";
+} from "./pkg/printa_ble_web.js";
 
 const SERVICE = 0xffe6;
 const WRITE = 0xffe1;

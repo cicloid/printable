@@ -91,12 +91,13 @@ async fn start_scan(adapter: &Adapter) -> Result<()> {
 ///
 /// 1. `Filter` — an explicit `--device` string; name or id substring match.
 /// 2. `SavedId` — the id remembered in the config file; an exact id match
-///    wins, but any `LX*` name is kept as a fallback in case the saved
-///    device never shows up before the scan deadline.
+///    wins, but fallbacks are kept in case the saved device never shows up
+///    before the scan deadline: a device whose local name equals the saved
+///    name is preferred over any other `LX*` name.
 /// 3. `AnyLx` — no flag, no saved device: first device named `LX*`.
 enum Target<'a> {
     Filter(&'a str),
-    SavedId(&'a str),
+    SavedId { id: &'a str, name: &'a str },
     AnyLx,
 }
 
@@ -104,8 +105,18 @@ enum Target<'a> {
 enum MatchKind {
     /// Take this device immediately.
     Exact,
-    /// Use this device only once the scan deadline expires.
-    Fallback,
+    /// Use this device only once the scan deadline expires; while waiting,
+    /// a higher-ranked fallback replaces a lower-ranked one.
+    Fallback(FallbackRank),
+}
+
+/// Preference order among fallback candidates (higher wins).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum FallbackRank {
+    /// Any device named `LX*`.
+    AnyLx,
+    /// Local name equals the saved device's name.
+    SavedName,
 }
 
 /// Match a peripheral against `target`, returning its advertised name.
@@ -116,11 +127,13 @@ async fn match_target(p: &Peripheral, target: &Target<'_>) -> Option<(MatchKind,
         Target::Filter(f) => {
             (name.contains(f) || p.id().to_string().contains(f)).then_some((MatchKind::Exact, name))
         }
-        Target::SavedId(id) => {
+        Target::SavedId { id, name: saved } => {
             if p.id().to_string() == *id {
                 Some((MatchKind::Exact, name))
+            } else if name == *saved {
+                Some((MatchKind::Fallback(FallbackRank::SavedName), name))
             } else if name.starts_with("LX") {
-                Some((MatchKind::Fallback, name))
+                Some((MatchKind::Fallback(FallbackRank::AnyLx), name))
             } else {
                 None
             }
@@ -146,17 +159,24 @@ pub async fn scan(timeout: Duration) -> Result<Vec<(String, String)>> {
 }
 
 /// One pass over the currently discovered peripherals: the first exact match
-/// for `target`, plus the first fallback candidate (see [`MatchKind`]).
+/// for `target`, plus the best-ranked fallback candidate (see [`MatchKind`]).
 #[allow(clippy::type_complexity)]
 async fn find_match(
     adapter: &Adapter,
     target: &Target<'_>,
-) -> Result<(Option<(Peripheral, String)>, Option<(Peripheral, String)>)> {
-    let mut fallback = None;
+) -> Result<(
+    Option<(Peripheral, String)>,
+    Option<(Peripheral, String, FallbackRank)>,
+)> {
+    let mut fallback: Option<(Peripheral, String, FallbackRank)> = None;
     for p in adapter.peripherals().await? {
         match match_target(&p, target).await {
             Some((MatchKind::Exact, name)) => return Ok((Some((p, name)), fallback)),
-            Some((MatchKind::Fallback, name)) if fallback.is_none() => fallback = Some((p, name)),
+            Some((MatchKind::Fallback(rank), name)) => {
+                if fallback.as_ref().is_none_or(|(_, _, held)| rank > *held) {
+                    fallback = Some((p, name, rank));
+                }
+            }
             _ => {}
         }
     }
@@ -179,8 +199,8 @@ pub struct Printer {
 /// discover characteristics, and subscribe to notifications.
 ///
 /// Resolution order (see [`Target`]): `explicit` filter > `saved` device id
-/// (falling back to any `LX*` name if the saved id is not seen before the
-/// deadline) > first device named `LX*`.
+/// (falling back to a device with the saved name, else any `LX*` name, if
+/// the saved id is not seen before the deadline) > first device named `LX*`.
 pub async fn connect_resolved(
     explicit: Option<&str>,
     saved: Option<&SavedDevice>,
@@ -188,7 +208,10 @@ pub async fn connect_resolved(
 ) -> Result<Printer> {
     let target = match (explicit, saved) {
         (Some(f), _) => Target::Filter(f),
-        (None, Some(d)) => Target::SavedId(&d.id),
+        (None, Some(d)) => Target::SavedId {
+            id: &d.id,
+            name: &d.name,
+        },
         (None, None) => Target::AnyLx,
     };
 
@@ -196,18 +219,21 @@ pub async fn connect_resolved(
     start_scan(&adapter).await?;
 
     let deadline = tokio::time::Instant::now() + scan_timeout;
-    let mut fallback = None;
+    let mut fallback: Option<(Peripheral, String, FallbackRank)> = None;
     let (peripheral, name) = loop {
         let (exact, fb) = find_match(&adapter, &target).await?;
         if let Some(found) = exact {
             break found;
         }
-        if fallback.is_none() {
-            fallback = fb;
+        // Upgrade the held fallback when a better-ranked candidate appears.
+        if let Some(fb) = fb {
+            if fallback.as_ref().is_none_or(|(_, _, held)| fb.2 > *held) {
+                fallback = Some(fb);
+            }
         }
         if tokio::time::Instant::now() >= deadline {
             match fallback.take() {
-                Some(found) => break found,
+                Some((p, n, _)) => break (p, n),
                 None => {
                     let _ = adapter.stop_scan().await;
                     return Err(anyhow::Error::msg(NoPrinterFound));

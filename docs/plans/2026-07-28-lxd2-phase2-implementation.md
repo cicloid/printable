@@ -154,3 +154,8 @@ Steps: implement → verify → commit `"Add markdown printing, qr command, and 
 - Markdown inline code/links render as plain text — do not add syntax highlighting or link footnotes (YAGNI).
 - One BLE connection for all copies; a fresh PrintJob (and auth) per copy.
 - Commit messages: never mention Claude.
+
+## Post-review addenda
+
+- **Atkinson dithering**: `--dither` now accepts `floyd|atkinson|threshold` (`none` aliases `threshold`), matching the design doc's CLI sketch. Floyd–Steinberg and Atkinson share one kernel-parameterized error-diffusion helper in `dither.rs`.
+- **Saved-device fallback**: when the saved id is not seen before the scan deadline, connect now prefers a device advertising the saved *name* over any other `LX*` device (ranked fallback in `ble.rs`).

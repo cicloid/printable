@@ -70,7 +70,7 @@ Invalid command-line usage also exits 2 (clap's convention).
 
 ## Configuration
 
-After each successful connection, lxd2 saves the printer's identifier and name to a config file — `~/Library/Application Support/lxd2/config.toml` on macOS (the platform config directory elsewhere) — and prefers that printer on later runs, falling back to any `LX*` device if it is not seen. `--device` overrides the saved printer, and the newly connected device is saved in its place. Delete the file to forget the saved printer.
+After each successful connection, lxd2 saves the printer's identifier and name to a config file — `~/Library/Application Support/lxd2/config.toml` on macOS (the platform config directory elsewhere) — and prefers that printer on later runs. If it is not seen, lxd2 falls back to a device advertising the saved name, or failing that any `LX*` device. `--device` overrides the saved printer, and the newly connected device is saved in its place. Delete the file to forget the saved printer.
 
 ## Architecture
 

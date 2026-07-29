@@ -1196,6 +1196,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lxd2-web"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "lxd2-core",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

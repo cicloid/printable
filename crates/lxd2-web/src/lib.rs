@@ -8,8 +8,14 @@
 use lxd2_core::raster::{self, Bitmap, Dither};
 use wasm_bindgen::prelude::*;
 
+pub mod job;
+
 /// Largest accepted font size in pixels, mirroring the server bound.
 const MAX_TEXT_SIZE: f32 = 128.0;
+
+/// Largest blank feed per [`WasmBitmap::extend_blank`] call, mirroring the
+/// server's 2000-row feed bound.
+const MAX_FEED_ROWS: usize = 2000;
 
 /// A rendered 1-bit bitmap, 384 px wide. Opaque to JS: preview via
 /// [`WasmBitmap::to_png`], print via the job bridge.
@@ -31,9 +37,10 @@ impl WasmBitmap {
         raster::bitmap_to_png(&self.inner)
     }
 
-    /// Append `rows` blank rows (paper feed).
+    /// Append `rows` blank rows (paper feed), clamped to 2000 per call —
+    /// the same bound the server enforces on its `feed` option.
     pub fn extend_blank(&mut self, rows: usize) {
-        self.inner.extend_blank(rows);
+        self.inner.extend_blank(rows.min(MAX_FEED_ROWS));
     }
 }
 
@@ -173,5 +180,13 @@ mod tests {
         let before = bitmap.height();
         bitmap.extend_blank(40);
         assert_eq!(bitmap.height(), before + 40);
+    }
+
+    #[test]
+    fn extend_blank_caps_at_2000() {
+        let mut bitmap = render_text("x", 24.0).unwrap();
+        let before = bitmap.height();
+        bitmap.extend_blank(1_000_000);
+        assert_eq!(bitmap.height(), before + 2000);
     }
 }

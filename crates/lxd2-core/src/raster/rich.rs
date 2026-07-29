@@ -19,6 +19,13 @@ const LINE_HEIGHT_FACTOR: f32 = 1.3;
 /// Line-height basis for a [`RichLine`] with no spans (a blank line).
 const DEFAULT_SIZE_PX: f32 = 24.0;
 
+/// Height of the strikethrough line above the baseline, as a fraction of the
+/// font size.
+const STRIKE_FACTOR: f32 = 0.35;
+
+/// Thickness of the strikethrough line, in pixels.
+const STRIKE_THICKNESS: usize = 2;
+
 /// Which embedded JetBrains Mono face to render with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontStyle {
@@ -32,6 +39,26 @@ pub enum FontStyle {
 pub struct Style {
     pub font: FontStyle,
     pub size_px: f32,
+    /// Draw a 2 px strikethrough line across the span.
+    pub strike: bool,
+}
+
+impl Style {
+    /// A plain (non-struck) style with the given face and size.
+    pub fn new(font: FontStyle, size_px: f32) -> Self {
+        Style {
+            font,
+            size_px,
+            strike: false,
+        }
+    }
+}
+
+impl Default for Style {
+    /// Regular face, 24 px, no strikethrough.
+    fn default() -> Self {
+        Style::new(FontStyle::Regular, DEFAULT_SIZE_PX)
+    }
 }
 
 /// A run of text rendered in a single style.
@@ -159,6 +186,14 @@ pub fn render_rich(lines: &[RichLine]) -> Bitmap {
                     rendered.push(new_line());
                     pen_x = 0.0;
                 } else {
+                    // Place the space too: it blits nothing, but a struck
+                    // style draws its strike line across the space's advance.
+                    placed.push(PlacedGlyph {
+                        ch: ' ',
+                        pen_x,
+                        line: rendered.len() - 1,
+                        style: space_styles[j - 1],
+                    });
                     pen_x += space_w;
                 }
             }
@@ -219,6 +254,23 @@ pub fn render_rich(lines: &[RichLine]) -> Bitmap {
                 }
             }
         }
+        // Strikethrough: a bar across the glyph's full advance (pen to
+        // pen + advance), so consecutive struck glyphs form a continuous line.
+        if g.style.strike {
+            let advance = font_for(g.style.font)
+                .metrics(g.ch, g.style.size_px)
+                .advance_width;
+            let y_top = (baseline - STRIKE_FACTOR * g.style.size_px).round() as i64;
+            let x_start = line.indent as i64 + g.pen_x.round() as i64;
+            let x_end = line.indent as i64 + (g.pen_x + advance).round() as i64;
+            for y in y_top..y_top + STRIKE_THICKNESS as i64 {
+                for x in x_start..x_end {
+                    if (0..WIDTH as i64).contains(&x) && (0..height as i64).contains(&y) {
+                        bitmap.set(x as usize, y as usize, true);
+                    }
+                }
+            }
+        }
     }
     bitmap
 }
@@ -228,7 +280,7 @@ mod tests {
     use super::*;
 
     fn style(font: FontStyle, size_px: f32) -> Style {
-        Style { font, size_px }
+        Style::new(font, size_px)
     }
 
     fn span(text: &str, font: FontStyle, size_px: f32) -> Span {
@@ -318,6 +370,69 @@ mod tests {
             "ink left of indent: {:?}",
             min_ink_x(&b)
         );
+    }
+
+    #[test]
+    fn strike_differs_from_plain() {
+        let struck_style = Style {
+            strike: true,
+            ..Style::default()
+        };
+        let plain = render_rich(&[line(vec![span("abc", FontStyle::Regular, 24.0)], 0)]);
+        let struck = render_rich(&[line(
+            vec![Span {
+                text: "abc".to_string(),
+                style: struck_style,
+            }],
+            0,
+        )]);
+        assert!(has_ink(&plain), "plain render has no ink");
+        assert!(has_ink(&struck), "struck render has no ink");
+        assert_ne!(
+            rows(&plain),
+            rows(&struck),
+            "strike should differ from plain"
+        );
+    }
+
+    #[test]
+    fn strike_has_line_at_strike_height() {
+        let struck_style = Style {
+            strike: true,
+            ..Style::default()
+        };
+        let b = render_rich(&[line(
+            vec![Span {
+                text: "ab cd".to_string(),
+                style: struck_style,
+            }],
+            0,
+        )]);
+        let font = font_for(struck_style.font);
+        let ascent = font
+            .horizontal_line_metrics(struck_style.size_px)
+            .expect("font has line metrics")
+            .ascent;
+        let y = (ascent - 0.35 * struck_style.size_px).round() as usize;
+        let width: f32 = "ab cd"
+            .chars()
+            .map(|c| font.metrics(c, struck_style.size_px).advance_width)
+            .sum();
+        // The line must be continuous across the full advance width — no
+        // breaks in inter-glyph gaps or at the word space.
+        for x in 0..width.floor() as usize {
+            assert!(b.get(x, y), "strike line broken at x={x}, y={y}");
+        }
+    }
+
+    #[test]
+    fn font_lacks_ballot_box_glyphs() {
+        // Pins the task-list marker decision: JetBrains Mono has no glyphs
+        // for U+2610 BALLOT BOX or U+2611 BALLOT BOX WITH CHECK, so markdown
+        // checkboxes fall back to ASCII "[ ] " / "[x] ".
+        let font = font_for(FontStyle::Regular);
+        assert_eq!(font.lookup_glyph_index('\u{2610}'), 0);
+        assert_eq!(font.lookup_glyph_index('\u{2611}'), 0);
     }
 
     #[test]

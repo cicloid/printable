@@ -15,10 +15,7 @@ pub fn render_text(text: &str, size_px: f32) -> Bitmap {
     if text.is_empty() {
         return Bitmap::new(0);
     }
-    let style = Style {
-        font: FontStyle::Regular,
-        size_px,
-    };
+    let style = Style::new(FontStyle::Regular, size_px);
     let lines: Vec<RichLine> = text
         .split('\n')
         .map(|line| RichLine {

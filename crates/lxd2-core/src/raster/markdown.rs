@@ -7,8 +7,14 @@
 //! (indent 24 px per nesting level, `• ` / `N. ` prefixes), fenced and
 //! indented code blocks (regular 20 px, indent 16 px, exact line breaks
 //! preserved), blockquotes (indent 24 px, italic), and horizontal rules
-//! (full-width 2 px bar with 12 px margins). Links render their inner text
-//! only; images and raw HTML are skipped.
+//! (full-width 2 px bar with 12 px margins), strikethrough (`~~text~~`, a
+//! 2 px line through the text), task-list checkboxes (`- [ ]` / `- [x]`,
+//! rendered as ASCII `[ ]` / `[x]` markers — JetBrains Mono has no ballot-box
+//! glyphs), and a tear marker: a thematic break written with interior spaces
+//! (`- - -`) renders as a dashed line (8 px on / 8 px off) instead of a solid
+//! rule. Links render their inner text only; images and raw HTML are skipped.
+//! Table parsing is enabled but layout is deferred (Task 2): each table row
+//! flattens to a plain space-separated text line for now.
 //!
 //! Deviation from the plan's break mapping: a soft break renders as a space
 //! (standard markdown behavior, reads better on a 384 px roll); only a hard
@@ -16,7 +22,7 @@
 //! trimmed, as are blank lines abutting a horizontal rule (the rule carries
 //! its own margins).
 
-use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::bitmap::{Bitmap, WIDTH};
 use super::rich::{render_rich, FontStyle, RichLine, Span, Style};
@@ -33,11 +39,15 @@ const CODE_INDENT: u32 = 16;
 const RULE_MARGIN: usize = 12;
 /// Thickness of a horizontal rule, in pixels.
 const RULE_THICKNESS: usize = 2;
+/// Dash (and gap) length of a tear marker's dashed line, in pixels.
+const TEAR_DASH: usize = 8;
 
 /// A vertically-stacked unit of lowered markdown.
 enum MdBlock {
     Lines(Vec<RichLine>),
     Rule,
+    /// A dashed tear-off line (`- - -` in the source).
+    Tear,
 }
 
 /// Render markdown to a 1-bit bitmap.
@@ -50,6 +60,7 @@ pub fn render_markdown(md: &str) -> Bitmap {
         .map(|block| match block {
             MdBlock::Lines(lines) => render_rich(lines),
             MdBlock::Rule => rule_bitmap(),
+            MdBlock::Tear => tear_bitmap(),
         })
         .collect();
     stack(bitmaps)
@@ -60,6 +71,17 @@ fn rule_bitmap() -> Bitmap {
     let mut b = Bitmap::new(2 * RULE_MARGIN + RULE_THICKNESS);
     for y in RULE_MARGIN..RULE_MARGIN + RULE_THICKNESS {
         for x in 0..WIDTH {
+            b.set(x, y, true);
+        }
+    }
+    b
+}
+
+/// A dashed 2 px tear line (8 px on / 8 px off) with rule margins.
+fn tear_bitmap() -> Bitmap {
+    let mut b = Bitmap::new(2 * RULE_MARGIN + RULE_THICKNESS);
+    for y in RULE_MARGIN..RULE_MARGIN + RULE_THICKNESS {
+        for x in (0..WIDTH).filter(|x| (x / TEAR_DASH).is_multiple_of(2)) {
             b.set(x, y, true);
         }
     }
@@ -94,6 +116,7 @@ struct Lowering {
     /// Nesting depths; unbalanced end tags saturate at zero.
     bold: u32,
     italic: u32,
+    strike: u32,
     quote_depth: u32,
     /// `Some(size_px)` while inside a heading.
     heading_size: Option<f32>,
@@ -114,6 +137,7 @@ fn lower(md: &str) -> Vec<MdBlock> {
         current: RichLine::default(),
         bold: 0,
         italic: 0,
+        strike: 0,
         quote_depth: 0,
         heading_size: None,
         lists: Vec::new(),
@@ -121,8 +145,15 @@ fn lower(md: &str) -> Vec<MdBlock> {
         code_buf: String::new(),
         image_depth: 0,
     };
-    for event in Parser::new(md) {
-        st.handle(event);
+    let options =
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_TABLES;
+    // The offset iterator is only consulted for Rule events: the source text
+    // distinguishes a tear marker (`- - -`) from a plain rule (`---`).
+    for (event, range) in Parser::new_ext(md, options).into_offset_iter() {
+        match event {
+            Event::Rule => st.rule(md[range].trim()),
+            _ => st.handle(event),
+        }
     }
     st.finish()
 }
@@ -140,6 +171,7 @@ impl Lowering {
         Style {
             font,
             size_px: self.heading_size.unwrap_or(BODY_SIZE),
+            strike: self.strike > 0,
         }
     }
 
@@ -194,10 +226,7 @@ impl Lowering {
         self.lines.push(RichLine {
             spans: vec![Span {
                 text: std::mem::take(&mut self.code_buf),
-                style: Style {
-                    font: FontStyle::Regular,
-                    size_px: CODE_SIZE,
-                },
+                style: Style::new(FontStyle::Regular, CODE_SIZE),
             }],
             indent,
         });
@@ -236,13 +265,30 @@ impl Lowering {
             Event::Code(text) => self.push_span(&text),
             Event::SoftBreak => self.push_span(" "),
             Event::HardBreak => self.flush_line(),
-            Event::Rule => {
-                self.flush_block();
-                self.blocks.push(MdBlock::Rule);
+            // Rule events are routed to `rule` (they need the source text).
+            Event::Rule => self.rule(""),
+            Event::TaskListMarker(checked) => {
+                // ASCII markers replace the `• ` bullet prefix pushed by the
+                // enclosing Item — JetBrains Mono has no ballot-box glyphs
+                // (U+2610/U+2611), pinned in rich::tests.
+                let marker = if checked { "[x] " } else { "[ ] " };
+                match self.current.spans.last_mut() {
+                    Some(span) => span.text = marker.to_string(),
+                    None => self.push_span(marker),
+                }
             }
             // Raw HTML is skipped; other events are out of scope.
             _ => {}
         }
+    }
+
+    /// Lower a thematic break given its trimmed source text: interior
+    /// whitespace (`- - -`, `* * *`) marks a tear line, otherwise a rule.
+    fn rule(&mut self, source: &str) {
+        self.flush_block();
+        let tear = source.chars().any(char::is_whitespace);
+        self.blocks
+            .push(if tear { MdBlock::Tear } else { MdBlock::Rule });
     }
 
     fn start(&mut self, tag: Tag) {
@@ -286,6 +332,19 @@ impl Lowering {
             }
             Tag::Strong => self.bold += 1,
             Tag::Emphasis => self.italic += 1,
+            Tag::Strikethrough => self.strike += 1,
+            // Task 2 adds real table layout; for now each row (header
+            // included) flattens to a plain space-separated text line.
+            Tag::Table(_) => {
+                self.flush_line();
+                self.current.indent = self.quote_indent();
+            }
+            Tag::TableHead | Tag::TableRow => self.flush_line(),
+            Tag::TableCell => {
+                if !self.current.spans.is_empty() {
+                    self.push_span(" ");
+                }
+            }
             Tag::Image { .. } => self.image_depth = 1,
             // Links render their inner text; everything else just flows.
             _ => {}
@@ -330,6 +389,12 @@ impl Lowering {
             }
             TagEnd::Strong => self.bold = self.bold.saturating_sub(1),
             TagEnd::Emphasis => self.italic = self.italic.saturating_sub(1),
+            TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
+            TagEnd::Table => {
+                self.flush_line();
+                self.push_blank();
+                self.current.indent = 0;
+            }
             _ => {}
         }
     }
@@ -439,6 +504,134 @@ mod tests {
             "long paragraph {} should wrap taller than short {}",
             long.height(),
             short.height()
+        );
+    }
+
+    #[test]
+    fn strikethrough_differs_from_plain() {
+        let struck = render_markdown("~~Hi~~");
+        let plain = render_markdown("Hi");
+        assert!(has_ink(&struck), "struck render has no ink");
+        assert!(has_ink(&plain), "plain render has no ink");
+        assert_ne!(
+            rows(&struck),
+            rows(&plain),
+            "strikethrough should differ from plain"
+        );
+        // The tildes must be consumed: ~~Hi~~ is exactly "Hi" struck through.
+        let expected = render_rich(&[RichLine {
+            spans: vec![Span {
+                text: "Hi".to_string(),
+                style: Style {
+                    strike: true,
+                    ..Style::default()
+                },
+            }],
+            indent: 0,
+        }]);
+        assert_eq!(
+            rows(&struck),
+            rows(&expected),
+            "~~Hi~~ should render as struck 'Hi'"
+        );
+    }
+
+    #[test]
+    fn checkbox_checked_differs_from_unchecked() {
+        let checked = render_markdown("- [x] task");
+        let unchecked = render_markdown("- [ ] task");
+        assert!(has_ink(&checked), "checked render has no ink");
+        assert!(has_ink(&unchecked), "unchecked render has no ink");
+        assert_ne!(
+            rows(&checked),
+            rows(&unchecked),
+            "checked should differ from unchecked"
+        );
+        // The checked marker is exactly "[x] " (no bullet, no literal "[x]"
+        // text run — the marker replaces the bullet prefix).
+        let expected = render_rich(&[RichLine {
+            spans: vec![Span {
+                text: "[x] task".to_string(),
+                style: Style::default(),
+            }],
+            indent: 24,
+        }]);
+        assert_eq!(
+            rows(&checked),
+            rows(&expected),
+            "checked task item should render as '[x] task' at list indent"
+        );
+    }
+
+    #[test]
+    fn checkbox_renders_ascii_marker() {
+        // JetBrains Mono lacks the ballot-box glyphs (pinned in rich::tests),
+        // so the task marker is ASCII and replaces the bullet: "[ ] task".
+        let md = render_markdown("- [ ] task");
+        let expected = render_rich(&[RichLine {
+            spans: vec![Span {
+                text: "[ ] task".to_string(),
+                style: Style::default(),
+            }],
+            indent: 24,
+        }]);
+        assert_eq!(
+            rows(&md),
+            rows(&expected),
+            "task item should render as '[ ] task' at list indent"
+        );
+    }
+
+    #[test]
+    fn tear_renders_dashed_line() {
+        let b = render_markdown("- - -");
+        // Same footprint as a rule: margins + 2 px line.
+        assert_eq!(b.height(), 2 * RULE_MARGIN + RULE_THICKNESS);
+        // Dashes: 8 px on / 8 px off, starting black at x = 0.
+        for y in RULE_MARGIN..RULE_MARGIN + RULE_THICKNESS {
+            for x in 0..WIDTH {
+                let want = (x / 8).is_multiple_of(2);
+                assert_eq!(b.get(x, y), want, "tear pattern wrong at x={x}, y={y}");
+            }
+        }
+    }
+
+    #[test]
+    fn tear_differs_from_solid_rule() {
+        let tear = render_markdown("- - -");
+        let rule = render_markdown("---");
+        assert_ne!(rows(&tear), rows(&rule), "tear should differ from rule");
+        let full_row = (0..rule.height()).any(|y| (0..WIDTH).all(|x| rule.get(x, y)));
+        assert!(full_row, "solid rule lost its full-width black row");
+    }
+
+    #[test]
+    fn table_flattens_to_text_lines() {
+        // Task 2 adds real table layout; until then cell text flattens to
+        // plain space-separated lines (one per row, pipes and the alignment
+        // row consumed) so nothing is silently lost.
+        let b = render_markdown("| a | b |\n| --- | --- |\n| c | d |");
+        let expected = render_rich(&[
+            RichLine {
+                spans: vec![Span {
+                    text: "a b".to_string(),
+                    style: Style::default(),
+                }],
+                indent: 0,
+            },
+            RichLine {
+                spans: vec![Span {
+                    text: "c d".to_string(),
+                    style: Style::default(),
+                }],
+                indent: 0,
+            },
+        ]);
+        assert!(has_ink(&b), "table render has no ink");
+        assert_eq!(
+            rows(&b),
+            rows(&expected),
+            "table should flatten to one plain line per row"
         );
     }
 

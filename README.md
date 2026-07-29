@@ -4,7 +4,7 @@ A Rust CLI for printing to LX-D02 / LX-D2 Bluetooth thermal printers (the "Funny
 
 ## Status
 
-Phases 1 and 2 are done: `scan`, `status`, and `print` (text, images, and markdown) with PNG preview, QR codes via `qr`, multiple copies with `--copies`, and a config file that remembers the last-connected printer. A print server (phase 3) and a Web Bluetooth version (phase 4) are upcoming — see [docs/plans/](docs/plans/).
+Phases 1-3 are done: `scan`, `status`, and `print` (text, images, markdown, and web pages via `--url`) with PNG preview, QR codes via `qr`, multiple copies with `--copies`, a config file that remembers the last-connected printer, and an HTTP print server with a phone-friendly web UI via `serve`. A Web Bluetooth page (phase 4) is upcoming — see [docs/plans/](docs/plans/).
 
 ## Install
 
@@ -31,6 +31,7 @@ lxd2 print "test" --preview out.png   # render without printing
 lxd2 print -f notes.md                # markdown: headings, lists, bold/italic, code, rules
 lxd2 qr "https://example.com" --caption "scan me"
 lxd2 print "hello" --copies 3
+lxd2 print --url https://example.com    # render a web page via headless Chrome
 ```
 
 ### Options
@@ -44,6 +45,7 @@ lxd2 print "hello" --copies 3
 | `--size <PX>` | Font size for text in pixels (default: 24) |
 | `--preview <PATH>` | Render to a PNG file instead of printing |
 | `--copies <1-20>` | Number of copies to print (default: 1) |
+| `--url <URL>` | Web page to render (via headless Chrome) and print; conflicts with a text argument and `--file` |
 
 ### QR codes
 
@@ -67,6 +69,63 @@ The first run triggers a Bluetooth permission prompt for your terminal app. If y
 | 4 | Print failed |
 
 Invalid command-line usage also exits 2 (clap's convention).
+
+## Server mode
+
+```
+lxd2 serve
+```
+
+starts an HTTP print server (REST API + web UI) on `0.0.0.0:8000`. `--port` and `--bind` change the listen address, and `--device` pins the printer just like the other commands. Open `http://<mac-ip>:8000` from any device on the LAN — the built-in web UI is phone-friendly and shows a live preview before printing.
+
+### Endpoints
+
+| Method | Path | Body | Result |
+|---|---|---|---|
+| GET | `/health` | — | `{"status":"ok","version":…,"url_printing":…}` |
+| GET | `/status` | — | Battery, paper, density, charging, voltage as JSON |
+| POST | `/preview/text` | JSON `{"content", "size"?}` | PNG |
+| POST | `/preview/markdown` | JSON `{"content"}` | PNG |
+| POST | `/preview/qr` | JSON `{"data", "caption"?}` | PNG |
+| POST | `/preview/image` | multipart: `file`, `dither`? | PNG |
+| POST | `/preview/url` | JSON `{"url"}` | PNG |
+| POST | `/print/text` | JSON `{"content", "size"?, …}` | `{"printed_lines", "copies"}` |
+| POST | `/print/markdown` | JSON `{"content", …}` | `{"printed_lines", "copies"}` |
+| POST | `/print/qr` | JSON `{"data", "caption"?, …}` | `{"printed_lines", "copies"}` |
+| POST | `/print/image` | multipart: `file`, `dither`?, `density`?, `feed`?, `copies`? | `{"printed_lines", "copies"}` |
+| POST | `/print/url` | JSON `{"url", …}` | `{"printed_lines", "copies"}` |
+
+Every `/print/*` JSON body also accepts the optional print options `density` (1-7, default 3), `feed` (blank lines after printing, default 40), and `copies` (1-20, default 1). `dither` takes `floyd`, `atkinson`, `threshold`, or `none`, like the CLI.
+
+### Examples
+
+```sh
+# Print markdown
+curl -X POST http://localhost:8000/print/markdown \
+  -H 'Content-Type: application/json' \
+  -d '{"content": "# Shopping\n\n- milk\n- eggs", "copies": 2}'
+
+# Print a QR code with a caption
+curl -X POST http://localhost:8000/print/qr \
+  -H 'Content-Type: application/json' \
+  -d '{"data": "https://example.com", "caption": "scan me"}'
+
+# Preview an image (returns a PNG, no printing)
+curl -X POST http://localhost:8000/preview/image \
+  -F file=@photo.png -F dither=atkinson -o preview.png
+```
+
+### Errors
+
+Errors come back as `{"error": "message"}` JSON: 400 for invalid input, 409 when the printer is out of paper, 502 when a URL failed to render, and 503 when no printer is found. While a print job is running, `/status` returns `{"printing": true}` immediately instead of waiting for the printer; concurrent print requests queue.
+
+### Trust model
+
+There is no authentication — anyone on the LAN can print. Worst case that's wasted paper, but if you'd rather keep the API to yourself, bind it to the Mac only with `--bind 127.0.0.1`.
+
+### URL printing
+
+`/preview/url` and `/print/url` (like the CLI's `--url`) render pages through headless Google Chrome, which must be installed. Only `http://` and `https://` URLs are accepted. Build with `--no-default-features` to disable URL printing entirely; the routes then return 404 and `/health` reports `"url_printing": false`.
 
 ## Configuration
 

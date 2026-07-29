@@ -7,8 +7,56 @@ use super::bitmap::{Bitmap, WIDTH};
 pub enum Dither {
     /// Floyd–Steinberg error diffusion.
     FloydSteinberg,
+    /// Atkinson error diffusion (only 6/8 of the error is propagated,
+    /// giving higher contrast in highlights and shadows).
+    Atkinson,
     /// Plain threshold at 128.
     Threshold,
+}
+
+/// Floyd–Steinberg kernel: (dx, dy, weight); weights sum to 16/16.
+const FLOYD_STEINBERG_KERNEL: &[(isize, usize, f32)] = &[
+    (1, 0, 7.0 / 16.0),
+    (-1, 1, 3.0 / 16.0),
+    (0, 1, 5.0 / 16.0),
+    (1, 1, 1.0 / 16.0),
+];
+
+/// Atkinson kernel: (dx, dy, weight); only 6/8 of the error is diffused —
+/// the deliberately "lost" 2/8 is the algorithm's signature look.
+const ATKINSON_KERNEL: &[(isize, usize, f32)] = &[
+    (1, 0, 1.0 / 8.0),
+    (2, 0, 1.0 / 8.0),
+    (-1, 1, 1.0 / 8.0),
+    (0, 1, 1.0 / 8.0),
+    (1, 1, 1.0 / 8.0),
+    (0, 2, 1.0 / 8.0),
+];
+
+/// Error-diffusion dither of `img` into `bitmap` using `kernel`, a list of
+/// (dx, dy, weight) taps applied to the quantization error of each pixel.
+fn diffuse(img: &image::GrayImage, bitmap: &mut Bitmap, kernel: &[(isize, usize, f32)]) {
+    let width = (img.width() as usize).min(WIDTH);
+    let height = img.height() as usize;
+    let mut buf: Vec<f32> = (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .map(|(x, y)| f32::from(img.get_pixel(x as u32, y as u32).0[0]))
+        .collect();
+    for y in 0..height {
+        for x in 0..width {
+            let old = buf[y * width + x];
+            let black = old < 128.0;
+            bitmap.set(x, y, black);
+            let new = if black { 0.0 } else { 255.0 };
+            let err = old - new;
+            for &(dx, dy, w) in kernel {
+                let (tx, ty) = (x.wrapping_add_signed(dx), y + dy);
+                if tx < width && ty < height {
+                    buf[ty * width + tx] += err * w;
+                }
+            }
+        }
+    }
 }
 
 /// Maximum output height of [`prepare`] in rows: about half a meter of
@@ -47,33 +95,8 @@ pub fn image_to_bitmap(img: &image::GrayImage, dither: Dither) -> Bitmap {
                 }
             }
         }
-        Dither::FloydSteinberg => {
-            let mut buf: Vec<f32> = (0..height)
-                .flat_map(|y| (0..width).map(move |x| (x, y)))
-                .map(|(x, y)| f32::from(img.get_pixel(x as u32, y as u32).0[0]))
-                .collect();
-            for y in 0..height {
-                for x in 0..width {
-                    let old = buf[y * width + x];
-                    let black = old < 128.0;
-                    bitmap.set(x, y, black);
-                    let new = if black { 0.0 } else { 255.0 };
-                    let err = old - new;
-                    if x + 1 < width {
-                        buf[y * width + x + 1] += err * 7.0 / 16.0;
-                    }
-                    if y + 1 < height {
-                        if x > 0 {
-                            buf[(y + 1) * width + x - 1] += err * 3.0 / 16.0;
-                        }
-                        buf[(y + 1) * width + x] += err * 5.0 / 16.0;
-                        if x + 1 < width {
-                            buf[(y + 1) * width + x + 1] += err * 1.0 / 16.0;
-                        }
-                    }
-                }
-            }
-        }
+        Dither::FloydSteinberg => diffuse(img, &mut bitmap, FLOYD_STEINBERG_KERNEL),
+        Dither::Atkinson => diffuse(img, &mut bitmap, ATKINSON_KERNEL),
     }
     bitmap
 }
@@ -116,6 +139,38 @@ mod tests {
             .count();
         let ratio = black as f64 / (384.0 * 100.0);
         assert!((0.4..0.6).contains(&ratio), "ratio {ratio}");
+    }
+
+    #[test]
+    fn atkinson_mid_gray_is_roughly_half_black() {
+        let mut img = GrayImage::new(384, 100);
+        for p in img.pixels_mut() {
+            *p = Luma([128]);
+        }
+        let b = image_to_bitmap(&img, Dither::Atkinson);
+        let black: usize = (0..100)
+            .flat_map(|y| (0..384).map(move |x| (x, y)))
+            .filter(|&(x, y)| b.get(x, y))
+            .count();
+        let ratio = black as f64 / (384.0 * 100.0);
+        // Atkinson only diffuses 6/8 of the error, so the band is wider
+        // than Floyd–Steinberg's.
+        assert!((0.35..0.65).contains(&ratio), "ratio {ratio}");
+    }
+
+    #[test]
+    fn atkinson_differs_from_floyd() {
+        // Horizontal gradient: plenty of mid-tones for both kernels to bite.
+        let img = GrayImage::from_fn(384, 50, |x, _| Luma([(x * 255 / 383) as u8]));
+        let a = image_to_bitmap(&img, Dither::Atkinson);
+        let f = image_to_bitmap(&img, Dither::FloydSteinberg);
+        let same = (0..50)
+            .flat_map(|y| (0..384).map(move |x| (x, y)))
+            .all(|(x, y)| a.get(x, y) == f.get(x, y));
+        assert!(
+            !same,
+            "Atkinson and Floyd–Steinberg produced identical bitmaps"
+        );
     }
 
     #[test]

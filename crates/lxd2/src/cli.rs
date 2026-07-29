@@ -100,7 +100,12 @@ pub struct DeviceArgs {
 
 #[derive(Copy, Clone, PartialEq, Eq, clap::ValueEnum)]
 pub enum DitherArg {
+    /// Floyd–Steinberg error diffusion
     Floyd,
+    /// Atkinson error diffusion (higher contrast)
+    Atkinson,
+    /// Plain threshold at 128, no dithering
+    #[value(alias = "none")]
     Threshold,
 }
 
@@ -108,6 +113,7 @@ impl From<DitherArg> for lxd2_core::raster::Dither {
     fn from(d: DitherArg) -> Self {
         match d {
             DitherArg::Floyd => Self::FloydSteinberg,
+            DitherArg::Atkinson => Self::Atkinson,
             DitherArg::Threshold => Self::Threshold,
         }
     }

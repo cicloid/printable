@@ -40,7 +40,7 @@ lxd2 print "hello" --copies 3
 | `--device <NAME>` | Device name or identifier substring (default: first device named `LX*`) |
 | `--density <1-7>` | Print density (default: 3) |
 | `--feed <LINES>` | Blank feed lines after printing (default: 40) |
-| `--dither <floyd\|threshold>` | Dithering for images (default: floyd) |
+| `--dither <floyd\|atkinson\|threshold>` | Dithering for images (default: floyd; `none` is an alias for `threshold`) |
 | `--size <PX>` | Font size for text in pixels (default: 24) |
 | `--preview <PATH>` | Render to a PNG file instead of printing |
 | `--copies <1-20>` | Number of copies to print (default: 1) |

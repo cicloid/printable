@@ -4,6 +4,7 @@ mod chrome;
 mod cli;
 mod config;
 mod print_service;
+mod server;
 
 use std::io::Read as _;
 use std::path::PathBuf;
@@ -50,6 +51,9 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Status(device) => cmd_status(device).await.map(|()| 0),
         Command::Print(args) => cmd_print(args).await.map(|()| 0),
         Command::Qr(args) => cmd_qr(args).await.map(|()| 0),
+        Command::Serve { port, bind, device } => {
+            server::serve(&bind, port, device.device).await.map(|()| 0)
+        }
     }
 }
 

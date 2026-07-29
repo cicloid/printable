@@ -12,6 +12,7 @@ url = ["dep:chromiumoxide"]
 lxd2-core = { path = "../lxd2-core" }
 chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"], optional = true }
 anyhow = "1"
+axum = { version = "0.8", features = ["multipart"] }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 btleplug = "0.11"
@@ -19,5 +20,10 @@ futures = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
 dirs = "5"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

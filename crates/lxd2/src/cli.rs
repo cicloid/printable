@@ -27,6 +27,17 @@ pub enum Command {
     Print(PrintArgs),
     /// Print a QR code
     Qr(QrArgs),
+    /// Run the HTTP print server (REST API + web UI)
+    Serve {
+        /// Port to listen on
+        #[arg(long, default_value_t = 8000)]
+        port: u16,
+        /// Address to bind (0.0.0.0 = every interface, for LAN printing)
+        #[arg(long, default_value = "0.0.0.0")]
+        bind: String,
+        #[command(flatten)]
+        device: DeviceArgs,
+    },
 }
 
 #[derive(clap::Args)]

@@ -4,7 +4,7 @@ A Rust CLI for printing to LX-D02 / LX-D2 Bluetooth thermal printers (the "Funny
 
 ## Status
 
-Phase 1: `scan`, `status`, and `print` (text and images) with PNG preview. Markdown rendering, QR codes, a print server, and a Web Bluetooth version are planned — see [docs/plans/](docs/plans/).
+Phases 1 and 2 are done: `scan`, `status`, and `print` (text, images, and markdown) with PNG preview, QR codes via `qr`, multiple copies with `--copies`, and a config file that remembers the last-connected printer. A print server (phase 3) and a Web Bluetooth version (phase 4) are upcoming — see [docs/plans/](docs/plans/).
 
 ## Install
 
@@ -28,6 +28,9 @@ lxd2 print "hello world"
 lxd2 print -f photo.png --dither floyd
 lxd2 print -f notes.txt --size 28
 lxd2 print "test" --preview out.png   # render without printing
+lxd2 print -f notes.md                # markdown: headings, lists, bold/italic, code, rules
+lxd2 qr "https://example.com" --caption "scan me"
+lxd2 print "hello" --copies 3
 ```
 
 ### Options
@@ -40,6 +43,15 @@ lxd2 print "test" --preview out.png   # render without printing
 | `--dither <floyd\|threshold>` | Dithering for images (default: floyd) |
 | `--size <PX>` | Font size for text in pixels (default: 24) |
 | `--preview <PATH>` | Render to a PNG file instead of printing |
+| `--copies <1-20>` | Number of copies to print (default: 1) |
+
+### QR codes
+
+`lxd2 qr <DATA>` prints a QR code encoding a URL or arbitrary text, centered at the printer's full width. `--caption <TEXT>` prints a caption below the code. The `--device`, `--density`, `--feed`, `--preview`, and `--copies` options work the same as for `print`.
+
+### Markdown
+
+`lxd2 print -f notes.md` (or `.markdown`) renders the file as formatted output rather than plain text. Supported: headings (H1-H3 at decreasing sizes; deeper levels render like H3), **bold** and *italic*, bulleted and ordered lists (including nesting), inline code and code blocks, blockquotes, and horizontal rules. Links render as their text. Tables and images are not supported.
 
 ### macOS Bluetooth permission
 
@@ -55,6 +67,10 @@ The first run triggers a Bluetooth permission prompt for your terminal app. If y
 | 4 | Print failed |
 
 Invalid command-line usage also exits 2 (clap's convention).
+
+## Configuration
+
+After each successful connection, lxd2 saves the printer's identifier and name to a config file — `~/Library/Application Support/lxd2/config.toml` on macOS (the platform config directory elsewhere) — and prefers that printer on later runs, falling back to any `LX*` device if it is not seen. `--device` overrides the saved printer, and the newly connected device is saved in its place. Delete the file to forget the saved printer.
 
 ## Architecture
 

@@ -13,8 +13,12 @@
 //! glyphs), and a tear marker: a thematic break written with interior spaces
 //! (`- - -`) renders as a dashed line (8 px on / 8 px off) instead of a solid
 //! rule. Links render their inner text only; images and raw HTML are skipped.
-//! Table parsing is enabled but layout is deferred (Task 2): each table row
-//! flattens to a plain space-separated text line for now.
+//! Tables render as monospace text blocks (code-style Regular 20 px): each
+//! cell's inline content flattens to plain text (bold/italic dropped), columns
+//! are padded to their widest cell with two-space gutters, a dashed separator
+//! row follows the header, and over-wide tables shrink their widest columns —
+//! truncating cells with `…` — to fit the 384 px roll. Left-aligned only;
+//! markdown alignment markers are ignored.
 //!
 //! Deviation from the plan's break mapping: a soft break renders as a space
 //! (standard markdown behavior, reads better on a 384 px roll); only a hard
@@ -106,6 +110,100 @@ fn stack(bitmaps: Vec<Bitmap>) -> Bitmap {
     out
 }
 
+/// Two-space gutter between table columns.
+const TABLE_GUTTER: usize = 2;
+/// Chars that fit one 20 px monospace line (~12 px advance in 384 px).
+const TABLE_MAX_CHARS: usize = 32;
+/// Smallest a column may shrink to when a table overflows the budget.
+const TABLE_MIN_COL: usize = 3;
+
+/// Lay a markdown table out as monospace text lines: one padded [`String`] per
+/// rendered row (header, a dashed separator, then each body row).
+///
+/// Cells are already flattened to plain text. Ragged rows (fewer cells than the
+/// header) are padded with empty strings; extra cells are dropped. Column
+/// widths start at each column's widest cell, then — while the line would
+/// exceed [`TABLE_MAX_CHARS`] — the widest column is shrunk one char at a time
+/// (down to [`TABLE_MIN_COL`]), and any cell longer than its final width is
+/// truncated to `width - 1` chars plus `…`. Cells are left-justified with a
+/// [`TABLE_GUTTER`]-space gutter; the separator uses `-` runs. An empty header
+/// yields no lines.
+fn build_table_lines(header: &[String], rows: &[Vec<String>]) -> Vec<String> {
+    let cols = header.len();
+    if cols == 0 {
+        return Vec::new();
+    }
+
+    // Normalize every row to exactly `cols` cells (pad short, drop extra).
+    let normalize = |row: &[String]| -> Vec<String> {
+        (0..cols)
+            .map(|i| row.get(i).cloned().unwrap_or_default())
+            .collect()
+    };
+    let header = normalize(header);
+    let rows: Vec<Vec<String>> = rows.iter().map(|r| normalize(r)).collect();
+
+    // Natural width = widest cell per column (at least 1, so the separator
+    // always shows a dash).
+    let mut widths: Vec<usize> = (0..cols)
+        .map(|i| {
+            let cell_len = |cells: &[String]| cells[i].chars().count();
+            let mut w = cell_len(&header);
+            for r in &rows {
+                w = w.max(cell_len(r));
+            }
+            w.max(1)
+        })
+        .collect();
+
+    // Shrink the widest column until the line fits (or all hit the floor).
+    let line_width = |w: &[usize]| w.iter().sum::<usize>() + TABLE_GUTTER * (cols - 1);
+    while line_width(&widths) > TABLE_MAX_CHARS {
+        let widest = widths.iter().copied().enumerate().max_by_key(|&(_, w)| w);
+        match widest {
+            Some((idx, w)) if w > TABLE_MIN_COL => widths[idx] = w - 1,
+            _ => break,
+        }
+    }
+
+    // Fit a cell to its column: truncate with `…` when it overflows.
+    let fit = |text: &str, w: usize| -> String {
+        if text.chars().count() <= w {
+            return text.to_string();
+        }
+        match w {
+            0 => String::new(),
+            1 => "…".to_string(),
+            _ => {
+                let kept: String = text.chars().take(w - 1).collect();
+                format!("{kept}…")
+            }
+        }
+    };
+    let render_row = |cells: &[String]| -> String {
+        cells
+            .iter()
+            .zip(&widths)
+            .map(|(c, &w)| format!("{:<width$}", fit(c, w), width = w))
+            .collect::<Vec<_>>()
+            .join(&" ".repeat(TABLE_GUTTER))
+    };
+
+    let separator = widths
+        .iter()
+        .map(|&w| "-".repeat(w))
+        .collect::<Vec<_>>()
+        .join(&" ".repeat(TABLE_GUTTER));
+
+    let mut lines = Vec::with_capacity(rows.len() + 2);
+    lines.push(render_row(&header));
+    lines.push(separator);
+    for r in &rows {
+        lines.push(render_row(r));
+    }
+    lines
+}
+
 /// Event-stream lowering state: markdown events → [`MdBlock`]s.
 struct Lowering {
     blocks: Vec<MdBlock>,
@@ -128,6 +226,16 @@ struct Lowering {
     code_buf: String,
     /// Image nesting depth; while > 0 all events are skipped.
     image_depth: u32,
+    /// True while inside a table: cell text collects into `table_cell`.
+    in_table: bool,
+    /// Header cells (plain text) for the table being collected.
+    table_header: Vec<String>,
+    /// Body rows (each a Vec of plain-text cells).
+    table_rows: Vec<Vec<String>>,
+    /// Cells accumulated for the row currently being read.
+    table_row: Vec<String>,
+    /// Plain-text buffer for the cell currently being read.
+    table_cell: String,
 }
 
 fn lower(md: &str) -> Vec<MdBlock> {
@@ -144,6 +252,11 @@ fn lower(md: &str) -> Vec<MdBlock> {
         in_code: false,
         code_buf: String::new(),
         image_depth: 0,
+        in_table: false,
+        table_header: Vec::new(),
+        table_rows: Vec::new(),
+        table_row: Vec::new(),
+        table_cell: String::new(),
     };
     let options =
         Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_TABLES;
@@ -256,15 +369,35 @@ impl Lowering {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
             Event::Text(text) => {
-                if self.in_code {
+                if self.in_table {
+                    self.table_cell.push_str(&text);
+                } else if self.in_code {
                     self.push_code_text(&text);
                 } else {
                     self.push_span(&text);
                 }
             }
-            Event::Code(text) => self.push_span(&text),
-            Event::SoftBreak => self.push_span(" "),
-            Event::HardBreak => self.flush_line(),
+            Event::Code(text) => {
+                if self.in_table {
+                    self.table_cell.push_str(&text);
+                } else {
+                    self.push_span(&text);
+                }
+            }
+            Event::SoftBreak => {
+                if self.in_table {
+                    self.table_cell.push(' ');
+                } else {
+                    self.push_span(" ");
+                }
+            }
+            Event::HardBreak => {
+                if self.in_table {
+                    self.table_cell.push(' ');
+                } else {
+                    self.flush_line();
+                }
+            }
             // Rule events are routed to `rule` (they need the source text).
             Event::Rule => self.rule(""),
             Event::TaskListMarker(checked) => {
@@ -333,18 +466,21 @@ impl Lowering {
             Tag::Strong => self.bold += 1,
             Tag::Emphasis => self.italic += 1,
             Tag::Strikethrough => self.strike += 1,
-            // Task 2 adds real table layout; for now each row (header
-            // included) flattens to a plain space-separated text line.
+            // Tables collect plain-text cells here; layout happens at TableEnd
+            // (see `build_table_lines`). Alignment markers are ignored.
             Tag::Table(_) => {
                 self.flush_line();
-                self.current.indent = self.quote_indent();
+                self.push_blank();
+                self.in_table = true;
+                self.table_header.clear();
+                self.table_rows.clear();
+                self.table_row.clear();
+                self.table_cell.clear();
             }
-            Tag::TableHead | Tag::TableRow => self.flush_line(),
-            Tag::TableCell => {
-                if !self.current.spans.is_empty() {
-                    self.push_span(" ");
-                }
-            }
+            // A `TableHead` holds the header cells directly; body rows come as
+            // `TableRow`. Either way, start a fresh row buffer.
+            Tag::TableHead | Tag::TableRow => self.table_row.clear(),
+            Tag::TableCell => self.table_cell.clear(),
             Tag::Image { .. } => self.image_depth = 1,
             // Links render their inner text; everything else just flows.
             _ => {}
@@ -390,8 +526,28 @@ impl Lowering {
             TagEnd::Strong => self.bold = self.bold.saturating_sub(1),
             TagEnd::Emphasis => self.italic = self.italic.saturating_sub(1),
             TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
+            TagEnd::TableCell => {
+                self.table_row.push(std::mem::take(&mut self.table_cell));
+            }
+            TagEnd::TableHead => {
+                self.table_header = std::mem::take(&mut self.table_row);
+            }
+            TagEnd::TableRow => {
+                self.table_rows.push(std::mem::take(&mut self.table_row));
+            }
             TagEnd::Table => {
-                self.flush_line();
+                self.in_table = false;
+                let header = std::mem::take(&mut self.table_header);
+                let body = std::mem::take(&mut self.table_rows);
+                for text in build_table_lines(&header, &body) {
+                    self.lines.push(RichLine {
+                        spans: vec![Span {
+                            text,
+                            style: Style::new(FontStyle::Regular, CODE_SIZE),
+                        }],
+                        indent: 0,
+                    });
+                }
                 self.push_blank();
                 self.current.indent = 0;
             }
@@ -606,33 +762,109 @@ mod tests {
     }
 
     #[test]
-    fn table_flattens_to_text_lines() {
-        // Task 2 adds real table layout; until then cell text flattens to
-        // plain space-separated lines (one per row, pipes and the alignment
-        // row consumed) so nothing is silently lost.
-        let b = render_markdown("| a | b |\n| --- | --- |\n| c | d |");
-        let expected = render_rich(&[
-            RichLine {
-                spans: vec![Span {
-                    text: "a b".to_string(),
-                    style: Style::default(),
-                }],
-                indent: 0,
-            },
-            RichLine {
-                spans: vec![Span {
-                    text: "c d".to_string(),
-                    style: Style::default(),
-                }],
-                indent: 0,
-            },
-        ]);
-        assert!(has_ink(&b), "table render has no ink");
-        assert_eq!(
-            rows(&b),
-            rows(&expected),
-            "table should flatten to one plain line per row"
+    fn table_renders_ink() {
+        let table = render_markdown("| a | b |\n| --- | --- |\n| c | d |");
+        let line = render_markdown("`a  b`");
+        assert!(has_ink(&table), "table render has no ink");
+        assert!(
+            table.height() > line.height(),
+            "table {} (header + separator + body) should be taller than one line {}",
+            table.height(),
+            line.height()
         );
+    }
+
+    #[test]
+    fn table_has_separator_row() {
+        // Header, dashed separator, and one body row → three text rows.
+        let table = render_markdown("| a | b |\n|---|---|\n| c | d |");
+        let one = render_markdown("| a | b |\n|---|---|");
+        assert!(
+            table.height() > one.height(),
+            "three-row table {} should exceed a header+separator {}",
+            table.height(),
+            one.height()
+        );
+        // The separator is the pure-text line the builder emits second.
+        let lines = build_table_lines(&["a".into(), "b".into()], &[vec!["c".into(), "d".into()]]);
+        assert_eq!(lines.len(), 3, "header, separator, body");
+        assert!(
+            lines[1].chars().all(|c| c == '-' || c == ' '),
+            "separator row is dashes and gutters, got {:?}",
+            lines[1]
+        );
+        assert!(
+            lines[1].contains('-'),
+            "separator row has dashes, got {:?}",
+            lines[1]
+        );
+    }
+
+    #[test]
+    fn build_table_lines_pads_and_gutters() {
+        let lines = build_table_lines(
+            &["Item".into(), "Qty".into()],
+            &[vec!["Coffee".into(), "2".into()]],
+        );
+        // Column widths: max("Item",6=Coffee)=6, max("Qty",1)=3. Gutter = 2.
+        assert_eq!(lines[0], "Item    Qty");
+        assert_eq!(lines[1], "------  ---");
+        assert_eq!(lines[2], "Coffee  2  ");
+        for l in &lines {
+            assert_eq!(l.chars().count(), 11, "every row is the same width: {l:?}");
+        }
+    }
+
+    #[test]
+    fn table_truncates_overwide_cells() {
+        let long = "x".repeat(50);
+        let lines = build_table_lines(&["col".into(), "b".into()], &[vec![long, "y".into()]]);
+        for l in &lines {
+            assert!(
+                l.chars().count() <= TABLE_MAX_CHARS,
+                "line {:?} exceeds {TABLE_MAX_CHARS} chars",
+                l
+            );
+        }
+        // The over-wide body cell is truncated with an ellipsis.
+        assert!(
+            lines.last().unwrap().contains('…'),
+            "over-wide cell should be truncated with '…', got {:?}",
+            lines.last()
+        );
+        // And it still renders without panicking.
+        let md = format!("| col | b |\n|---|---|\n| {} | y |", "x".repeat(50));
+        assert!(has_ink(&render_markdown(&md)), "wide table has no ink");
+    }
+
+    #[test]
+    fn table_single_column_ok() {
+        let lines = build_table_lines(&["only".into()], &[vec!["one".into()], vec!["two".into()]]);
+        assert_eq!(lines, vec!["only", "----", "one ", "two "]);
+        assert!(has_ink(&render_markdown(
+            "| only |\n|---|\n| one |\n| two |"
+        )));
+    }
+
+    #[test]
+    fn table_ragged_rows_padded() {
+        // A body row shorter than the header is padded with empty cells.
+        let lines = build_table_lines(&["a".into(), "b".into(), "c".into()], &[vec!["1".into()]]);
+        assert_eq!(lines[0], "a  b  c");
+        // "1" (col0) + gutter + " " (empty col1) + gutter + " " (empty col2).
+        assert_eq!(lines[2], "1      ");
+        assert_eq!(lines[2].chars().count(), 7);
+        // A row with more cells than the header drops the extras.
+        let over = build_table_lines(&["a".into()], &[vec!["1".into(), "2".into()]]);
+        assert_eq!(over, vec!["a", "-", "1"]);
+        assert!(has_ink(&render_markdown(
+            "| a | b | c |\n|---|---|---|\n| 1 |"
+        )));
+    }
+
+    #[test]
+    fn table_empty_header_no_lines() {
+        assert!(build_table_lines(&[], &[vec!["x".into()]]).is_empty());
     }
 
     #[test]

@@ -140,14 +140,28 @@ pub fn render_markdown(md: &str) -> Bitmap {
 /// [`render_markdown_with`]. Destinations are returned verbatim, exactly as
 /// they must appear as keys in that map. A document without images yields an
 /// empty vector.
+///
+/// Only destinations the renderer can actually use are reported, so a caller
+/// never wastes a fetch — or, worse, resolves a meaningless path. Two kinds are
+/// left out: an empty destination (`![]()`, which has nothing to fetch), and an
+/// image nested inside another image's alt text (`![a ![b](b.png)](a.png)`,
+/// whose inner events are consumed as alt text and never rendered).
 pub fn markdown_image_refs(md: &str) -> Vec<String> {
     let mut refs: Vec<String> = Vec::new();
+    let mut depth: u32 = 0;
     for event in Parser::new_ext(md, options()) {
-        if let Event::Start(Tag::Image { dest_url, .. }) = event {
-            let dest = dest_url.into_string();
-            if !refs.contains(&dest) {
-                refs.push(dest);
+        match event {
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                depth += 1;
+                let dest = dest_url.into_string();
+                // `depth == 1` keeps only the outermost image of a nest — the
+                // one the lowering actually looks up.
+                if depth == 1 && !dest.is_empty() && !refs.contains(&dest) {
+                    refs.push(dest);
+                }
             }
+            Event::End(TagEnd::Image) => depth = depth.saturating_sub(1),
+            _ => {}
         }
     }
     refs
@@ -218,10 +232,15 @@ fn fence_bitmap<E: std::fmt::Display>(rendered: Result<Bitmap, E>, built_in: usi
 }
 
 /// A missing image's placeholder text: its alt text if it has any, else its
-/// destination, so the reader at least learns what failed to load.
+/// destination, so the reader at least learns what failed to load. An image
+/// with neither (`![]()`) gets a `?` rather than an empty-looking `[image: ]`,
+/// which reads as a rendering glitch.
 fn placeholder_text(alt: &str, dest: &str) -> String {
-    let alt = alt.trim();
-    let what = if alt.is_empty() { dest } else { alt };
+    let what = match (alt.trim(), dest.trim()) {
+        ("", "") => "?",
+        ("", dest) => dest,
+        (alt, _) => alt,
+    };
     format!("[image: {what}]")
 }
 
@@ -562,6 +581,16 @@ impl Lowering<'_> {
     fn finish_image(&mut self) {
         let dest = std::mem::take(&mut self.image_dest);
         let alt = std::mem::take(&mut self.image_alt);
+        // A table is laid out as monospace text, so nothing can stack inside a
+        // cell: a supplied image collapses to the same placeholder text a
+        // missing one gets. Escaping here instead would put the image block
+        // before the whole table (rows are still buffered) and leave the cell
+        // empty — the picture would land in the wrong place either way.
+        if self.in_table {
+            let text = placeholder_text(&alt, &dest);
+            self.table_cell.push_str(&text);
+            return;
+        }
         match self.images.get(&dest) {
             Some(image) => {
                 // Like a rule or a fence, an image interrupts the text flow and
@@ -1326,6 +1355,82 @@ mod tests {
             indent: 0,
         }]);
         assert_eq!(rows(&b), rows(&expected), "styled alt text should flatten");
+    }
+
+    #[test]
+    fn image_refs_skips_empty_and_nested_dests() {
+        // Nothing to fetch, so nothing to report.
+        assert!(markdown_image_refs("![alt]()").is_empty());
+        // An image inside another's alt text is consumed as alt text and never
+        // rendered, so its destination would be a wasted fetch.
+        assert_eq!(
+            markdown_image_refs("![a ![b](inner.png)](outer.png)"),
+            vec!["outer.png"]
+        );
+    }
+
+    #[test]
+    fn placeholder_marks_a_wholly_empty_image() {
+        assert_eq!(placeholder_text("", ""), "[image: ?]");
+        assert!(
+            has_ink(&render_markdown("![]()")),
+            "an empty image should still print a placeholder"
+        );
+    }
+
+    /// Count the blocks a document lowers to, by kind, for "no stray block"
+    /// assertions: (lines blocks, image blocks, other blocks).
+    fn block_kinds(md: &str, images: &HashMap<String, Bitmap>) -> (usize, usize, usize) {
+        let mut counts = (0, 0, 0);
+        for block in lower(md, images) {
+            match block {
+                MdBlock::Lines(_) => counts.0 += 1,
+                MdBlock::Image(_) => counts.1 += 1,
+                _ => counts.2 += 1,
+            }
+        }
+        counts
+    }
+
+    #[test]
+    fn image_in_table_cell_renders_inside_the_cell() {
+        let md = "| a | b |\n|---|---|\n| 1 | ![Cat](cat.png) |";
+        // A table cell is monospace text: the placeholder belongs *in* the
+        // cell, not as a stray line after the table.
+        assert_eq!(
+            block_kinds(md, &HashMap::new()),
+            (1, 0, 0),
+            "a table with an image should lower to exactly one lines block"
+        );
+        // The cell holds the placeholder text, so the table renders identically
+        // to one whose cell contains that text literally (escaped brackets).
+        let literal = "| a | b |\n|---|---|\n| 1 | \\[image: Cat\\] |";
+        assert_eq!(
+            rows(&render_markdown(md)),
+            rows(&render_markdown(literal)),
+            "image cell should render as its placeholder text"
+        );
+    }
+
+    #[test]
+    fn supplied_image_in_table_cell_stays_in_the_cell() {
+        let md = "| a | b |\n|---|---|\n| 1 | ![Cat](cat.png) |";
+        let mut pic = Bitmap::new(40);
+        pic.set(10, 5, true);
+        let images = HashMap::from([("cat.png".to_string(), pic)]);
+        // Nothing can stack inside a monospace cell, so a supplied image
+        // collapses to the same placeholder rather than escaping the table —
+        // which, with rows still buffered, would emit it *before* the table.
+        assert_eq!(
+            block_kinds(md, &images),
+            (1, 0, 0),
+            "a supplied image in a cell must not become its own block"
+        );
+        assert_eq!(
+            rows(&render_markdown_with(md, &images)),
+            rows(&render_markdown(md)),
+            "a supplied image in a cell renders like a missing one"
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! touching the printer, and print endpoints that run the same rendering
 //! through the shared print pipeline, serialized by [`AppState::print_lock`].
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,13 +17,14 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use printa_ble_core::protocol::job::JobError;
 use printa_ble_core::raster::{
-    bitmap_to_png, render_markdown, render_qr, render_text, Bitmap, Dither,
+    bitmap_to_png, render_markdown_with, render_qr, render_text, Bitmap, Dither,
 };
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::ble;
 use crate::config::Config;
+use crate::md_images;
 use crate::print_service::{
     self, NoPaper, NoPrinterFound, PrintFailure, PrintOptions, SCAN_TIMEOUT,
 };
@@ -274,11 +276,23 @@ async fn preview_text(Json(body): Json<TextBody>) -> Result<Response, ApiError> 
     Ok(png_response(bitmap_to_png(&bitmap)))
 }
 
+/// Fetch the images a markdown document references, for the HTTP surface.
+///
+/// SECURITY BOUNDARY: `allow_local = false`. The server is reachable from the
+/// LAN, so a caller must never be able to make it read its own filesystem —
+/// `![x](/etc/hosts)` renders a placeholder, not the file. `base_dir` is `None`
+/// for the same reason: a posted document has no directory of its own.
+/// Remote http(s) images are still fetched.
+async fn resolve_images(md: &str) -> HashMap<String, Bitmap> {
+    md_images::resolve(md, None, false).await
+}
+
 async fn preview_markdown(Json(body): Json<MarkdownBody>) -> Result<Response, ApiError> {
     if body.content.trim().is_empty() {
         return Err(ApiError::bad_request("content must not be empty"));
     }
-    Ok(png_response(bitmap_to_png(&render_markdown(&body.content))))
+    let bitmap = render_markdown_with(&body.content, &resolve_images(&body.content).await);
+    Ok(png_response(bitmap_to_png(&bitmap)))
 }
 
 async fn preview_qr(Json(body): Json<QrBody>) -> Result<Response, ApiError> {
@@ -400,7 +414,8 @@ async fn print_markdown(
     if body.content.trim().is_empty() {
         return Err(ApiError::bad_request("content must not be empty"));
     }
-    print_and_respond(&state, render_markdown(&body.content), body.opts).await
+    let bitmap = render_markdown_with(&body.content, &resolve_images(&body.content).await);
+    print_and_respond(&state, bitmap, body.opts).await
 }
 
 async fn print_qr(
@@ -669,6 +684,20 @@ mod tests {
     async fn preview_markdown_returns_png() {
         assert_png(post_json("/preview/markdown", r##"{"content":"# Hi\n\n- a\n- b"}"##).await)
             .await;
+    }
+
+    /// Security boundary: a local path in a posted document must not be read.
+    /// It renders as a placeholder, so the response is a normal 200 PNG.
+    #[tokio::test]
+    async fn preview_markdown_ignores_local_image_paths() {
+        assert_png(
+            post_json(
+                "/preview/markdown",
+                r##"{"content":"![x](/etc/hosts)\n\ntext"}"##,
+            )
+            .await,
+        )
+        .await;
     }
 
     #[tokio::test]

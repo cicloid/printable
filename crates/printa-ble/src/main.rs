@@ -3,6 +3,7 @@ mod ble;
 mod chrome;
 mod cli;
 mod config;
+mod md_images;
 mod print_service;
 mod server;
 
@@ -13,7 +14,7 @@ use std::time::Duration;
 use anyhow::{bail, Context as _};
 use clap::Parser;
 use printa_ble_core::raster::{
-    bitmap_to_png, render_markdown, render_qr, render_text, Bitmap, Dither,
+    bitmap_to_png, render_markdown_with, render_qr, render_text, Bitmap, Dither,
 };
 
 use crate::cli::{Cli, Command, DeviceArgs, PrintArgs, QrArgs};
@@ -212,7 +213,10 @@ async fn build_bitmap(args: &PrintArgs) -> anyhow::Result<Bitmap> {
                 if text.trim().is_empty() {
                     bail!("nothing to print");
                 }
-                Ok(render_markdown(&text))
+                // Local refs resolve relative to the document. Local reads are
+                // allowed here: this is the user's own shell and filesystem.
+                let images = md_images::resolve(&text, path.parent(), true).await;
+                Ok(render_markdown_with(&text, &images))
             }
             _ => bail!(
                 "unsupported file type: {} (expected .png, .jpg, .jpeg, .txt, .md or .markdown)",

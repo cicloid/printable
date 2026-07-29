@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lxd2</title>
+<style>
+  :root {
+    --bg: #f4f4f2;
+    --card: #ffffff;
+    --text: #1c1c1a;
+    --muted: #6b6b66;
+    --border: #d9d9d4;
+    --accent: #2563eb;
+    --accent-text: #ffffff;
+    --danger: #b91c1c;
+    --ok: #15803d;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131315;
+      --card: #1e1e21;
+      --text: #ececea;
+      --muted: #9a9a94;
+      --border: #35353a;
+      --accent: #3b82f6;
+      --danger: #f87171;
+      --ok: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 16px 16px 48px;
+  }
+  header { margin-bottom: 16px; }
+  h1 {
+    margin: 0 0 4px;
+    font-size: 28px;
+    letter-spacing: -0.02em;
+  }
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 32px;
+  }
+  #status {
+    color: var(--muted);
+    font-size: 14px;
+    flex: 1;
+  }
+  #refresh {
+    flex: none;
+    padding: 4px 12px;
+    min-height: 32px;
+    font-size: 13px;
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  nav {
+    display: flex;
+    gap: 4px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 4px;
+    margin-bottom: 12px;
+  }
+  nav button {
+    flex: 1;
+    padding: 10px 0;
+    font-size: 14px;
+    background: transparent;
+    color: var(--muted);
+    border: none;
+    border-radius: 8px;
+  }
+  nav button.active {
+    background: var(--accent);
+    color: var(--accent-text);
+  }
+  nav button[hidden] { display: none; }
+  .tab { display: none; }
+  .tab.active { display: block; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+  textarea, input[type=text], input[type=url], select {
+    width: 100%;
+    padding: 10px 12px;
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  textarea { min-height: 120px; resize: vertical; }
+  input[type=file] { width: 100%; font-size: 14px; padding: 8px 0; }
+  label {
+    display: block;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .field + .field { margin-top: 10px; }
+  .options {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .options .density { grid-column: 1 / -1; }
+  .density-row { display: flex; align-items: center; gap: 12px; }
+  input[type=range] { flex: 1; accent-color: var(--accent); }
+  #density-val {
+    min-width: 1.5em;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  input[type=number] {
+    width: 100%;
+    padding: 10px 12px;
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .actions {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .actions button {
+    flex: 1;
+    padding: 14px 0;
+    font-size: 16px;
+    font-weight: 600;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+  }
+  .actions button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
+  button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #toast {
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    margin-bottom: 12px;
+    border: 1px solid var(--border);
+  }
+  #toast.err { color: var(--danger); border-color: var(--danger); }
+  #toast.ok { color: var(--ok); border-color: var(--ok); }
+  #preview-wrap { text-align: center; }
+  #preview-img {
+    width: 384px;
+    max-width: 100%;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+  #preview-hint {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 6px;
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>lxd2</h1>
+    <div class="status-row">
+      <span id="status">checking printer…</span>
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <nav id="tabs">
+    <button type="button" data-tab="text" class="active">Text</button>
+    <button type="button" data-tab="markdown">Markdown</button>
+    <button type="button" data-tab="image">Image</button>
+    <button type="button" data-tab="qr">QR</button>
+    <button type="button" data-tab="url" id="url-tab-btn" hidden>URL</button>
+  </nav>
+
+  <section class="tab card active" id="tab-text">
+    <textarea id="text-content" placeholder="Text to print…"></textarea>
+  </section>
+
+  <section class="tab card" id="tab-markdown">
+    <textarea id="md-content" placeholder="# Markdown to print…"></textarea>
+  </section>
+
+  <section class="tab card" id="tab-image">
+    <div class="field">
+      <label for="image-file">Image (PNG or JPEG)</label>
+      <input type="file" id="image-file" accept="image/png,image/jpeg">
+    </div>
+    <div class="field">
+      <label for="image-dither">Dither</label>
+      <select id="image-dither">
+        <option value="floyd">Floyd–Steinberg</option>
+        <option value="atkinson">Atkinson</option>
+        <option value="threshold">Threshold</option>
+      </select>
+    </div>
+  </section>
+
+  <section class="tab card" id="tab-qr">
+    <div class="field">
+      <label for="qr-data">Data</label>
+      <input type="text" id="qr-data" placeholder="https://example.com">
+    </div>
+    <div class="field">
+      <label for="qr-caption">Caption (optional)</label>
+      <input type="text" id="qr-caption" placeholder="scan me">
+    </div>
+  </section>
+
+  <section class="tab card" id="tab-url">
+    <div class="field">
+      <label for="url-input">Page URL</label>
+      <input type="url" id="url-input" placeholder="https://example.com">
+    </div>
+  </section>
+
+  <div class="card options">
+    <div class="density">
+      <label for="density">Density</label>
+      <div class="density-row">
+        <input type="range" id="density" min="1" max="7" step="1" value="3">
+        <span id="density-val">3</span>
+      </div>
+    </div>
+    <div>
+      <label for="feed">Feed</label>
+      <input type="number" id="feed" min="0" max="2000" value="40">
+    </div>
+    <div>
+      <label for="copies">Copies</label>
+      <input type="number" id="copies" min="1" max="20" value="1">
+    </div>
+  </div>
+
+  <div class="actions">
+    <button type="button" id="preview-btn">Preview</button>
+    <button type="button" id="print-btn" class="primary">Print</button>
+  </div>
+
+  <div id="toast" hidden></div>
+
+  <div id="preview-wrap" hidden>
+    <img id="preview-img" alt="Print preview">
+    <div id="preview-hint">Preview at printer width (384 px)</div>
+  </div>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let activeTab = "text";
+
+// --- Tabs ---
+document.querySelectorAll("#tabs button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    activeTab = btn.dataset.tab;
+    document.querySelectorAll("#tabs button").forEach((b) =>
+      b.classList.toggle("active", b === btn));
+    document.querySelectorAll(".tab").forEach((s) =>
+      s.classList.toggle("active", s.id === "tab-" + activeTab));
+  });
+});
+
+// URL tab only exists when the server was built with URL printing.
+fetch("/health")
+  .then((r) => r.json())
+  .then((h) => { if (h.url_printing) $("url-tab-btn").hidden = false; })
+  .catch(() => {});
+
+// --- Printer status (one fetch per explicit action; /status hits BLE) ---
+async function refreshStatus() {
+  const el = $("status");
+  el.textContent = "checking printer…";
+  $("refresh").disabled = true;
+  try {
+    const r = await fetch("/status");
+    const s = await r.json();
+    if (!r.ok) { el.textContent = "printer unreachable"; return; }
+    if (s.printing) { el.textContent = "printing…"; return; }
+    const parts = [
+      "battery " + s.battery_pct + "%",
+      s.no_paper ? "paper OUT" : "paper OK",
+    ];
+    if (s.charged) parts.push("charged");
+    else if (s.charging) parts.push("charging");
+    if (s.overheat) parts.push("overheat");
+    if (s.low_battery) parts.push("low battery");
+    el.textContent = parts.join(" · ");
+  } catch {
+    el.textContent = "printer unreachable";
+  } finally {
+    $("refresh").disabled = false;
+  }
+}
+$("refresh").addEventListener("click", refreshStatus);
+refreshStatus();
+
+// --- Toast ---
+function toast(msg, isError) {
+  const t = $("toast");
+  t.hidden = !msg;
+  t.textContent = msg;
+  t.className = isError ? "err" : "ok";
+}
+
+// --- Submit (shared by Preview and Print) ---
+// Builds the request body for the active tab. Preview endpoints ignore the
+// print-only fields, so one payload works for both.
+function buildPayload() {
+  const opts = {
+    density: Number($("density").value),
+    feed: Number($("feed").value),
+    copies: Number($("copies").value),
+  };
+  switch (activeTab) {
+    case "text":
+      return { json: { content: $("text-content").value, ...opts } };
+    case "markdown":
+      return { json: { content: $("md-content").value, ...opts } };
+    case "qr":
+      return { json: {
+        data: $("qr-data").value,
+        caption: $("qr-caption").value || undefined,
+        ...opts,
+      } };
+    case "url":
+      return { json: { url: $("url-input").value, ...opts } };
+    case "image": {
+      const file = $("image-file").files[0];
+      if (!file) throw new Error("choose an image first");
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("dither", $("image-dither").value);
+      fd.append("density", String(opts.density));
+      fd.append("feed", String(opts.feed));
+      fd.append("copies", String(opts.copies));
+      return { form: fd };
+    }
+  }
+}
+
+function setBusy(busy) {
+  $("preview-btn").disabled = busy;
+  $("print-btn").disabled = busy;
+}
+
+async function submit(print) {
+  let payload;
+  try {
+    payload = buildPayload();
+  } catch (e) {
+    toast(e.message, true);
+    return;
+  }
+  toast("", false);
+  setBusy(true);
+  try {
+    const init = payload.form
+      ? { method: "POST", body: payload.form }
+      : {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload.json),
+        };
+    const r = await fetch((print ? "/print/" : "/preview/") + activeTab, init);
+    if (!r.ok) {
+      let msg = "request failed (" + r.status + ")";
+      try { msg = (await r.json()).error || msg; } catch {}
+      toast(msg, true);
+      return;
+    }
+    if (print) {
+      const j = await r.json();
+      let msg = "Printed " + j.printed_lines + " lines";
+      if (j.copies > 1) msg += " × " + j.copies + " copies";
+      toast(msg, false);
+    } else {
+      const img = $("preview-img");
+      if (img.src) URL.revokeObjectURL(img.src);
+      img.src = URL.createObjectURL(await r.blob());
+      $("preview-wrap").hidden = false;
+    }
+  } catch (e) {
+    toast("network error: " + e.message, true);
+  } finally {
+    setBusy(false);
+  }
+}
+$("preview-btn").addEventListener("click", () => submit(false));
+$("print-btn").addEventListener("click", () => submit(true));
+
+// Density slider readout.
+$("density").addEventListener("input", () => {
+  $("density-val").textContent = $("density").value;
+});
+</script>
+</body>
+</html>

@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use axum::extract::{DefaultBodyLimit, Multipart, State};
 use axum::http::{header, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use lxd2_core::protocol::job::JobError;
@@ -140,6 +140,7 @@ impl IntoResponse for ApiError {
 /// Build the application router.
 pub fn router(state: Arc<AppState>) -> Router {
     let router = Router::new()
+        .route("/", get(index))
         .route("/health", get(health))
         .route("/status", get(status))
         .route("/preview/text", post(preview_text))
@@ -150,10 +151,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/print/markdown", post(print_markdown))
         .route("/print/qr", post(print_qr))
         .route("/print/image", post(print_image));
-    // Without the `url` feature the route does not exist (404); /health
+    // Without the `url` feature the routes do not exist (404); /health
     // advertises the capability as `url_printing`.
     #[cfg(feature = "url")]
-    let router = router.route("/print/url", post(print_url));
+    let router = router
+        .route("/preview/url", post(preview_url))
+        .route("/print/url", post(print_url));
     router
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .with_state(state)
@@ -194,6 +197,11 @@ fn lan_ip() -> Option<std::net::IpAddr> {
 // 384-px-wide bitmap), so they run directly in the async handlers — no
 // spawn_blocking needed at this scale.
 // ---------------------------------------------------------------------------
+
+/// Serve the embedded web UI (a single self-contained HTML file).
+async fn index() -> Html<&'static str> {
+    Html(include_str!("server/ui.html"))
+}
 
 async fn health() -> Json<serde_json::Value> {
     Json(json!({
@@ -309,6 +317,29 @@ async fn preview_image(mut multipart: Multipart) -> Result<Response, ApiError> {
     let bytes = file.ok_or_else(|| ApiError::bad_request("missing `file` field"))?;
     let bitmap = print_service::bitmap_from_image_bytes(&bytes, dither)
         .map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+    Ok(png_response(bitmap_to_png(&bitmap)))
+}
+
+#[cfg(feature = "url")]
+#[derive(Deserialize)]
+struct UrlBody {
+    url: String,
+}
+
+/// Render a URL through headless Chrome to a preview PNG: same pipeline as
+/// `/print/url` (screenshot → dithered bitmap) minus the printer.
+#[cfg(feature = "url")]
+async fn preview_url(Json(body): Json<UrlBody>) -> Result<Response, ApiError> {
+    // Scheme check up front: a bad URL must fail before Chrome launches.
+    crate::chrome::validate_url(&body.url).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let png = crate::chrome::render_url_png(&body.url)
+        .await
+        .map_err(|e| ApiError {
+            status: StatusCode::BAD_GATEWAY,
+            message: format!("failed to render URL: {e:#}"),
+        })?;
+    let bitmap = print_service::bitmap_from_image_bytes(&png, Dither::FloydSteinberg)
+        .map_err(|e| ApiError::internal(format!("{e:#}")))?;
     Ok(png_response(bitmap_to_png(&bitmap)))
 }
 
@@ -597,6 +628,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn root_serves_ui() {
+        let resp = app()
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let content_type = resp.headers().get(header::CONTENT_TYPE).unwrap().clone();
+        assert!(
+            content_type.to_str().unwrap().starts_with("text/html"),
+            "content-type: {content_type:?}"
+        );
+        let body = String::from_utf8(body_bytes(resp).await).unwrap();
+        assert!(body.contains("lxd2"), "UI page should mention lxd2");
+    }
+
+    #[tokio::test]
     async fn health_ok() {
         let resp = app()
             .oneshot(Request::get("/health").body(Body::empty()).unwrap())
@@ -776,6 +823,16 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let body = String::from_utf8(body_bytes(resp).await).unwrap();
         assert!(body.contains("error"), "body: {body}");
+    }
+
+    /// Scheme validation runs before Chrome is launched.
+    #[cfg(feature = "url")]
+    #[tokio::test]
+    async fn preview_url_bad_scheme_is_400() {
+        let resp = post_json("/preview/url", r#"{"url":"file:///etc/passwd"}"#).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = String::from_utf8(body_bytes(resp).await).unwrap();
+        assert!(body.contains("http"), "body: {body}");
     }
 
     /// Scheme validation runs before Chrome is launched (and before BLE).

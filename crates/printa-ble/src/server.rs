@@ -7,11 +7,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
-use axum::extract::{DefaultBodyLimit, Multipart, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Request, State};
 use axum::http::{header, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -21,6 +22,7 @@ use printa_ble_core::raster::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use tracing::{debug, info, warn};
 
 use crate::ble;
 use crate::config::Config;
@@ -167,7 +169,29 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/print/url", post(print_url));
     router
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        .layer(middleware::from_fn(log_request))
         .with_state(state)
+}
+
+/// Log one line per request: method, path, status and elapsed milliseconds.
+///
+/// Server errors log at warn so a default-level (`warn`) server still records
+/// its own failures; everything else needs `-v`.
+async fn log_request(req: Request, next: Next) -> Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_owned();
+    let started = Instant::now();
+
+    let response = next.run(req).await;
+
+    let status = response.status().as_u16();
+    let ms = started.elapsed().as_millis();
+    if response.status().is_server_error() {
+        warn!("{method} {path} -> {status} in {ms}ms");
+    } else {
+        info!("{method} {path} -> {status} in {ms}ms");
+    }
+    response
 }
 
 /// Bind and run the server until interrupted.
@@ -232,6 +256,7 @@ async fn health() -> Json<serde_json::Value> {
 /// `{"printing": true}` with no other fields instead.
 async fn status(State(state): State<Arc<AppState>>) -> Result<Response, ApiError> {
     let Ok(_guard) = state.print_lock.try_lock() else {
+        debug!("/status: a print job holds the printer, reporting busy");
         return Ok(Json(json!({ "printing": true })).into_response());
     };
     let mut config = Config::load();
@@ -241,11 +266,23 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Response, ApiError
         SCAN_TIMEOUT,
     )
     .await
-    .map_err(|e| ApiError::unavailable(format!("{e:#}")))?;
+    .map_err(|e| {
+        warn!("/status: cannot reach the printer: {e:#}");
+        ApiError::unavailable(format!("{e:#}"))
+    })?;
     print_service::remember_device(&mut config, &printer);
     let status = printer.wait_status(STATUS_TIMEOUT).await;
     printer.disconnect().await;
-    let s = status.map_err(|e| ApiError::unavailable(format!("{e:#}")))?;
+    let s = status.map_err(|e| {
+        warn!("/status: no status frame from the printer: {e:#}");
+        ApiError::unavailable(format!("{e:#}"))
+    })?;
+    debug!(
+        "/status: battery {}%, paper {}, overheat {}",
+        s.battery_pct,
+        if s.no_paper { "out" } else { "ok" },
+        s.overheat
+    );
 
     let mut body = json!({
         "battery_pct": s.battery_pct,
@@ -294,7 +331,16 @@ async fn preview_text(Json(body): Json<TextBody>) -> Result<Response, ApiError> 
 /// for the same reason: a posted document has no directory of its own.
 /// Remote http(s) images are fetched unless `--no-remote-images` was given.
 async fn resolve_images(state: &AppState, md: &str) -> HashMap<String, Bitmap> {
-    md_images::resolve(md, None, false, state.remote_images).await
+    let started = Instant::now();
+    let images = md_images::resolve(md, None, false, state.remote_images).await;
+    if !images.is_empty() {
+        debug!(
+            "resolved {} markdown images in {}ms",
+            images.len(),
+            started.elapsed().as_millis()
+        );
+    }
+    images
 }
 
 async fn preview_markdown(
@@ -362,15 +408,36 @@ struct UrlBody {
 async fn preview_url(Json(body): Json<UrlBody>) -> Result<Response, ApiError> {
     // Scheme check up front: a bad URL must fail before Chrome launches.
     crate::chrome::validate_url(&body.url).map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let png = crate::chrome::render_url_png(&body.url)
-        .await
-        .map_err(|e| ApiError {
-            status: StatusCode::BAD_GATEWAY,
-            message: format!("failed to render URL: {e:#}"),
-        })?;
+    let png = render_url(&body.url).await?;
     let bitmap = print_service::bitmap_from_image_bytes(&png, Dither::FloydSteinberg)
         .map_err(|e| ApiError::internal(format!("{e:#}")))?;
     Ok(png_response(bitmap_to_png(&bitmap)))
+}
+
+/// Screenshot `url` through headless Chrome, logging how long it took.
+///
+/// Chrome launch plus page load is often the slowest part of a URL print and
+/// happens before the printer is ever touched, so it gets its own timing.
+#[cfg(feature = "url")]
+async fn render_url(url: &str) -> Result<Vec<u8>, ApiError> {
+    info!("rendering {url} with headless Chrome");
+    let started = Instant::now();
+    let png = crate::chrome::render_url_png(url).await.map_err(|e| {
+        warn!(
+            "Chrome failed to render {url} after {}ms: {e:#}",
+            started.elapsed().as_millis()
+        );
+        ApiError {
+            status: StatusCode::BAD_GATEWAY,
+            message: format!("failed to render URL: {e:#}"),
+        }
+    })?;
+    info!(
+        "rendered {url} to {} KiB in {}ms",
+        png.len() / 1024,
+        started.elapsed().as_millis()
+    );
+    Ok(png)
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +484,7 @@ async fn print_text(
 ) -> Result<Response, ApiError> {
     body.opts.validate()?;
     let bitmap = render_text(&body.content, validate_text(&body.content, body.size)?);
-    print_and_respond(&state, bitmap, body.opts).await
+    print_and_respond(&state, "text", bitmap, body.opts).await
 }
 
 async fn print_markdown(
@@ -430,7 +497,7 @@ async fn print_markdown(
     }
     let images = resolve_images(&state, &body.content).await;
     let bitmap = render_markdown_with(&body.content, &images);
-    print_and_respond(&state, bitmap, body.opts).await
+    print_and_respond(&state, "markdown", bitmap, body.opts).await
 }
 
 async fn print_qr(
@@ -440,7 +507,7 @@ async fn print_qr(
     body.opts.validate()?;
     let bitmap = render_qr(&body.data, body.caption.as_deref())
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    print_and_respond(&state, bitmap, body.opts).await
+    print_and_respond(&state, "qr", bitmap, body.opts).await
 }
 
 /// Multipart like `/preview/image`, plus optional `density`, `feed` and
@@ -484,7 +551,7 @@ async fn print_image(
     let bytes = file.ok_or_else(|| ApiError::bad_request("missing `file` field"))?;
     let bitmap = print_service::bitmap_from_image_bytes(&bytes, dither)
         .map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
-    print_and_respond(&state, bitmap, opts).await
+    print_and_respond(&state, "image", bitmap, opts).await
 }
 
 /// Render a URL through headless Chrome, then print it.
@@ -496,31 +563,84 @@ async fn print_url(
     body.opts.validate()?;
     // Scheme check up front: a bad URL must fail before Chrome or BLE.
     crate::chrome::validate_url(&body.url).map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let png = crate::chrome::render_url_png(&body.url)
-        .await
-        .map_err(|e| ApiError {
-            status: StatusCode::BAD_GATEWAY,
-            message: format!("failed to render URL: {e:#}"),
-        })?;
+    let png = render_url(&body.url).await?;
     let bitmap = print_service::bitmap_from_image_bytes(&png, Dither::FloydSteinberg)
         .map_err(|e| ApiError::internal(format!("{e:#}")))?;
-    print_and_respond(&state, bitmap, body.opts).await
+    print_and_respond(&state, "url", bitmap, body.opts).await
 }
 
 /// Take the print lock, run the shared print pipeline, report what printed.
 ///
 /// The lock is held across the whole connect-print-disconnect flow, so
 /// concurrent print requests queue rather than fighting over the printer.
+///
+/// `kind` names the content for the log — the request line alone cannot say
+/// whether `/print/markdown` was two lines or two thousand.
 async fn print_and_respond(
     state: &AppState,
+    kind: &str,
     bitmap: Bitmap,
     opts: PrintOpts,
 ) -> Result<Response, ApiError> {
-    let _guard = state.print_lock.lock().await;
+    info!(
+        "print job starting: {kind}, {} lines, density {}, feed {}, {} copies",
+        bitmap.height(),
+        opts.density,
+        opts.feed,
+        opts.copies
+    );
+
+    let _guard = acquire_print_lock(state).await;
     let outcome = print_service::print_bitmap(bitmap, state.device.as_deref(), opts.into())
         .await
-        .map_err(|e| print_error_to_api(&e))?;
-    Ok(Json(json!({ "printed_lines": outcome.lines, "copies": opts.copies })).into_response())
+        .map_err(|e| {
+            let api = print_error_to_api(&e);
+            warn!("print job failed ({}): {e:#}", api.status.as_u16());
+            api
+        })?;
+
+    let stats = outcome.stats;
+    info!(
+        "print job done: {kind}, {} lines in {}ms ({} packets, {} holds, {} cooldowns, \
+         {} resends)",
+        outcome.lines,
+        outcome.elapsed.as_millis(),
+        stats.packets_sent,
+        stats.holds,
+        stats.cooldowns,
+        stats.retransmits,
+    );
+
+    // The same diagnostics the log carries, for clients that never see it.
+    Ok(Json(json!({
+        "printed_lines": outcome.lines,
+        "copies": opts.copies,
+        "elapsed_ms": outcome.elapsed.as_millis(),
+        "packets_sent": stats.packets_sent,
+        "holds": stats.holds,
+        "cooldowns": stats.cooldowns,
+        "retransmits": stats.retransmits,
+    }))
+    .into_response())
+}
+
+/// Take the print lock, saying so when the caller has to queue.
+///
+/// A request stuck behind another job is indistinguishable from a hang at the
+/// client end, so it is logged going in and again with the wait on the way
+/// out. There is no timeout: the printer takes as long as it takes.
+async fn acquire_print_lock(state: &AppState) -> tokio::sync::MutexGuard<'_, ()> {
+    if let Ok(guard) = state.print_lock.try_lock() {
+        return guard;
+    }
+    info!("printer is busy with another job; this request is queued");
+    let waited = Instant::now();
+    let guard = state.print_lock.lock().await;
+    info!(
+        "printer free; queued for {}ms",
+        waited.elapsed().as_millis()
+    );
+    guard
 }
 
 /// Map a print pipeline error to an API error by downcasting the marker
@@ -809,6 +929,18 @@ mod tests {
         assert!(body.contains("dither"), "body: {body}");
     }
 
+    /// The request log wraps every route, so it must be transparent: a 404
+    /// stays a 404 and a PNG body arrives intact through the layer. Both are
+    /// covered by every other test in this module going through `router()`;
+    /// this one pins the failure path explicitly.
+    #[tokio::test]
+    async fn request_logging_layer_preserves_error_responses() {
+        let resp = post_json("/print/text", r#"{"content":"x","density":9}"#).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = String::from_utf8(body_bytes(resp).await).unwrap();
+        assert!(body.contains("density"), "body: {body}");
+    }
+
     #[tokio::test]
     async fn unknown_route_is_404() {
         let resp = app()
@@ -913,6 +1045,49 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = String::from_utf8(body_bytes(resp).await).unwrap();
         assert_eq!(body, r#"{"printing":true}"#);
+    }
+
+    /// A free lock is taken without going down the queueing path at all.
+    #[tokio::test]
+    async fn print_lock_is_taken_immediately_when_free() {
+        let state = AppState {
+            device: None,
+            print_lock: tokio::sync::Mutex::new(()),
+            remote_images: true,
+        };
+        let guard = tokio::time::timeout(Duration::from_millis(100), acquire_print_lock(&state))
+            .await
+            .expect("an uncontended lock must not block");
+        drop(guard);
+    }
+
+    /// The queueing case: a second print request waits for the running job
+    /// instead of failing or racing it. This is the wait that looks like a
+    /// hang from the client end, which is why it is logged.
+    #[tokio::test]
+    async fn print_lock_queues_behind_a_running_job() {
+        let state = Arc::new(AppState {
+            device: None,
+            print_lock: tokio::sync::Mutex::new(()),
+            remote_images: true,
+        });
+
+        let held = state.print_lock.lock().await;
+        let waiter = tokio::spawn({
+            let state = Arc::clone(&state);
+            async move {
+                let _guard = acquire_print_lock(&state).await;
+            }
+        });
+
+        // While the first job holds the printer, the second cannot proceed.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), waiter)
+                .await
+                .is_err(),
+            "second request must queue, not barge in"
+        );
+        drop(held);
     }
 
     /// Errors synthesized exactly like the production code constructs them.

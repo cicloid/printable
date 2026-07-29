@@ -67,6 +67,10 @@ Everything else (periodic `5A 02` status frames) is ignored by the FSM. Paper an
 
 Bounds live in the constructor: more than `u16::MAX` raster packets (131,070 rows) is `JobError::TooLarge`, rejected before a single byte goes out.
 
+`PrintJob::stats()` exposes counters for the same reason the challenge is a parameter: a stalled thermal printer and a hung one look identical from outside, so the FSM counts raster writes, retransmits, holds and cooldowns — and stops there. It has no clock and no logger; the transport decides how to report them.
+
+Full byte-level detail lives in [PROTOCOL.md](PROTOCOL.md).
+
 ### Two transports, one FSM
 
 This is the architectural centerpiece. The same `PrintJob` is pumped by native Rust over btleplug and by JavaScript over Web Bluetooth. Neither transport knows the protocol.
@@ -142,6 +146,8 @@ Each block renders to its own `Bitmap` independently — text through `render_ri
 This is why graphics are full-width and never inherit list or quote indentation (see [MARKDOWN.md](MARKDOWN.md#layout-limitations-worth-knowing)): they are siblings of the text block, not spans inside it. It is also why a failed fence prints its error text with the same margins a successful one would have had — otherwise it would collide with the neighbouring paragraph.
 
 ## The four surfaces
+
+User-facing detail for the first two lives in [CLI.md](CLI.md) and [API.md](API.md); this section is about what they share.
 
 | Surface | Entry point | Renders where | Talks to the printer how |
 |---|---|---|---|

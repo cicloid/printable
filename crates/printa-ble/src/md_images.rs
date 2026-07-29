@@ -8,9 +8,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use printa_ble_core::raster::{markdown_image_refs, Bitmap, Dither};
+use tracing::{debug, warn};
 
 use crate::print_service::bitmap_from_image_bytes;
 
@@ -50,7 +51,7 @@ const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 /// one request can trigger.
 ///
 /// Never panics and never fails: unreachable, oversized, or undecodable images
-/// warn on stderr and are left out of the map (the document then shows a
+/// log a warning and are left out of the map (the document then shows a
 /// placeholder in their place). Anything left unresolved when the budget runs
 /// out is treated the same way.
 pub async fn resolve(
@@ -62,8 +63,8 @@ pub async fn resolve(
     let mut refs = markdown_image_refs(md);
     let mut out = HashMap::new();
     if refs.len() > MAX_IMAGE_REFS {
-        eprintln!(
-            "warning: document references {} images; resolving the first {MAX_IMAGE_REFS}, \
+        warn!(
+            "document references {} images; resolving the first {MAX_IMAGE_REFS}, \
              the rest render as placeholders",
             refs.len()
         );
@@ -76,8 +77,8 @@ pub async fn resolve(
     // Dropping the future on expiry leaves `out` holding whatever finished.
     let pass = resolve_into(&mut out, refs, base_dir, allow_local, allow_remote);
     if tokio::time::timeout(TOTAL_BUDGET, pass).await.is_err() {
-        eprintln!(
-            "warning: image resolution gave up after {}s; unresolved images render as placeholders",
+        warn!(
+            "image resolution gave up after {}s; unresolved images render as placeholders",
             TOTAL_BUDGET.as_secs()
         );
     }
@@ -98,7 +99,7 @@ async fn resolve_into(
         match build_client() {
             Ok(c) => Some(c),
             Err(e) => {
-                eprintln!("warning: cannot create HTTP client, skipping remote images: {e:#}");
+                warn!("cannot create HTTP client, skipping remote images: {e:#}");
                 None
             }
         }
@@ -109,16 +110,24 @@ async fn resolve_into(
     for dest in refs {
         let bytes = if is_http(&dest) {
             if !allow_remote {
-                eprintln!("warning: skipping remote image {dest}: remote images are disabled");
+                debug!("skipping remote image {dest}: remote images are disabled");
                 continue;
             }
             let Some(client) = client.as_ref() else {
                 continue;
             };
+            let started = Instant::now();
             match fetch_remote(client, &dest).await {
-                Ok(b) => b,
+                Ok(b) => {
+                    debug!(
+                        "fetched {dest}: {} bytes in {}ms",
+                        b.len(),
+                        started.elapsed().as_millis()
+                    );
+                    b
+                }
                 Err(e) => {
-                    eprintln!("warning: skipping image {dest}: {e:#}");
+                    warn!("skipping image {dest}: {e:#}");
                     continue;
                 }
             }
@@ -126,16 +135,19 @@ async fn resolve_into(
             // CLI only. Reading any path the user can already read is fine here
             // — it is their own shell, their own filesystem.
             match std::fs::read(local_path(&dest, base_dir)) {
-                Ok(b) => b,
+                Ok(b) => {
+                    debug!("read local image {dest}: {} bytes", b.len());
+                    b
+                }
                 Err(e) => {
-                    eprintln!("warning: skipping image {dest}: {e:#}");
+                    warn!("skipping image {dest}: {e:#}");
                     continue;
                 }
             }
         } else {
             // SECURITY BOUNDARY: no filesystem access for network-facing
             // callers. Move on before touching the path in any way.
-            eprintln!("warning: skipping local image {dest}: only http(s) images are allowed here");
+            warn!("skipping local image {dest}: only http(s) images are allowed here");
             continue;
         };
 
@@ -143,7 +155,7 @@ async fn resolve_into(
             Ok(bitmap) => {
                 out.insert(dest, bitmap);
             }
-            Err(e) => eprintln!("warning: skipping image {dest}: {e:#}"),
+            Err(e) => warn!("skipping image {dest}: {e:#}"),
         }
     }
 }

@@ -1,9 +1,9 @@
 //! HTTP print server (`lxd2 serve`).
 //!
-//! Exposes a printa-style REST API on the LAN: health/status plus preview
+//! Exposes a printa-style REST API on the LAN: health/status, preview
 //! endpoints that render text, markdown, QR codes and images to PNG without
-//! touching the printer. Print endpoints build on the same handlers in a
-//! later task, serialized through [`AppState::print_lock`].
+//! touching the printer, and print endpoints that run the same rendering
+//! through the shared print pipeline, serialized by [`AppState::print_lock`].
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,13 +14,16 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use lxd2_core::raster::{bitmap_to_png, render_markdown, render_qr, render_text, Dither};
+use lxd2_core::protocol::job::JobError;
+use lxd2_core::raster::{bitmap_to_png, render_markdown, render_qr, render_text, Bitmap, Dither};
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::ble;
 use crate::config::Config;
-use crate::print_service::{self, SCAN_TIMEOUT};
+use crate::print_service::{
+    self, NoPaper, NoPrinterFound, PrintFailure, PrintOptions, SCAN_TIMEOUT,
+};
 
 /// Largest accepted request body (image uploads), in bytes.
 const BODY_LIMIT: usize = 20 * 1024 * 1024;
@@ -39,9 +42,9 @@ pub struct AppState {
     /// `--device` filter given at serve time (overrides the saved device).
     pub device: Option<String>,
     /// Serializes print jobs: one printer, one job at a time. Held across
-    /// the whole connect-print-disconnect flow by the print endpoints
-    /// (added in a later task); preview endpoints never take it.
-    #[allow(dead_code)] // taken by the print endpoints (next task)
+    /// the whole connect-print-disconnect flow by the print endpoints, so
+    /// concurrent print requests queue (no explicit timeout — the BLE layer
+    /// has its own). `/status` only try-locks it; previews never take it.
     pub print_lock: tokio::sync::Mutex<()>,
 }
 
@@ -65,6 +68,67 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: message.into(),
+        }
+    }
+
+    fn internal(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.into(),
+        }
+    }
+}
+
+/// Print job knobs shared by every print endpoint, embedded in request
+/// bodies via `#[serde(flatten)]`. Missing fields take the defaults below.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct PrintOpts {
+    pub density: u8,
+    pub feed: usize,
+    pub copies: u16,
+}
+
+impl Default for PrintOpts {
+    fn default() -> Self {
+        Self {
+            density: 3,
+            feed: 40,
+            copies: 1,
+        }
+    }
+}
+
+impl PrintOpts {
+    /// Range-check the options; called by every print handler before
+    /// rendering or taking the print lock.
+    fn validate(&self) -> Result<(), ApiError> {
+        if !(1..=7).contains(&self.density) {
+            return Err(ApiError::bad_request("density must be between 1 and 7"));
+        }
+        if !(1..=20).contains(&self.copies) {
+            return Err(ApiError::bad_request("copies must be between 1 and 20"));
+        }
+        if self.feed > 2000 {
+            return Err(ApiError::bad_request("feed must be at most 2000"));
+        }
+        Ok(())
+    }
+}
+
+impl From<PrintOpts> for PrintOptions {
+    fn from(o: PrintOpts) -> Self {
+        Self {
+            density: o.density,
+            feed: o.feed,
+            copies: o.copies,
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -75,13 +139,22 @@ impl IntoResponse for ApiError {
 
 /// Build the application router.
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health))
         .route("/status", get(status))
         .route("/preview/text", post(preview_text))
         .route("/preview/markdown", post(preview_markdown))
         .route("/preview/qr", post(preview_qr))
         .route("/preview/image", post(preview_image))
+        .route("/print/text", post(print_text))
+        .route("/print/markdown", post(print_markdown))
+        .route("/print/qr", post(print_qr))
+        .route("/print/image", post(print_image));
+    // Without the `url` feature the route does not exist (404); /health
+    // advertises the capability as `url_printing`.
+    #[cfg(feature = "url")]
+    let router = router.route("/print/url", post(print_url));
+    router
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .with_state(state)
 }
@@ -131,7 +204,14 @@ async fn health() -> Json<serde_json::Value> {
 }
 
 /// Connect to the printer, wait for a status frame, disconnect.
+///
+/// If a print job holds the lock, don't queue behind it (a long print would
+/// stall this request) and don't open a second BLE connection — report
+/// `{"printing": true}` with no other fields instead.
 async fn status(State(state): State<Arc<AppState>>) -> Result<Response, ApiError> {
+    let Ok(_guard) = state.print_lock.try_lock() else {
+        return Ok(Json(json!({ "printing": true })).into_response());
+    };
     let mut config = Config::load();
     let mut printer = ble::connect_resolved(
         state.device.as_deref(),
@@ -216,10 +296,7 @@ async fn preview_image(mut multipart: Multipart) -> Result<Response, ApiError> {
                 file = Some(bytes.to_vec());
             }
             Some("dither") => {
-                let value = field
-                    .text()
-                    .await
-                    .map_err(|e| ApiError::bad_request(format!("failed to read dither: {e}")))?;
+                let value = text_field(field, "dither").await?;
                 dither = dither_from_str(&value).ok_or_else(|| {
                     ApiError::bad_request(format!(
                         "unknown dither `{value}` (expected floyd, atkinson, threshold or none)"
@@ -233,6 +310,199 @@ async fn preview_image(mut multipart: Multipart) -> Result<Response, ApiError> {
     let bitmap = print_service::bitmap_from_image_bytes(&bytes, dither)
         .map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
     Ok(png_response(bitmap_to_png(&bitmap)))
+}
+
+// ---------------------------------------------------------------------------
+// Print endpoints. Shared shape: validate options and content first (no test
+// may reach BLE/Chrome — validation gates before the lock), render exactly
+// like the matching preview endpoint, then take the print lock and hand the
+// bitmap to the shared print pipeline.
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct TextPrintBody {
+    content: String,
+    size: Option<f32>,
+    #[serde(flatten)]
+    opts: PrintOpts,
+}
+
+#[derive(Deserialize)]
+struct MarkdownPrintBody {
+    content: String,
+    #[serde(flatten)]
+    opts: PrintOpts,
+}
+
+#[derive(Deserialize)]
+struct QrPrintBody {
+    data: String,
+    caption: Option<String>,
+    #[serde(flatten)]
+    opts: PrintOpts,
+}
+
+#[cfg(feature = "url")]
+#[derive(Deserialize)]
+struct UrlPrintBody {
+    url: String,
+    #[serde(flatten)]
+    opts: PrintOpts,
+}
+
+async fn print_text(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TextPrintBody>,
+) -> Result<Response, ApiError> {
+    body.opts.validate()?;
+    let bitmap = render_text(&body.content, validate_text(&body.content, body.size)?);
+    print_and_respond(&state, bitmap, body.opts).await
+}
+
+async fn print_markdown(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<MarkdownPrintBody>,
+) -> Result<Response, ApiError> {
+    body.opts.validate()?;
+    if body.content.trim().is_empty() {
+        return Err(ApiError::bad_request("content must not be empty"));
+    }
+    print_and_respond(&state, render_markdown(&body.content), body.opts).await
+}
+
+async fn print_qr(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<QrPrintBody>,
+) -> Result<Response, ApiError> {
+    body.opts.validate()?;
+    let bitmap = render_qr(&body.data, body.caption.as_deref())
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    print_and_respond(&state, bitmap, body.opts).await
+}
+
+/// Multipart like `/preview/image`, plus optional `density`, `feed` and
+/// `copies` text fields.
+async fn print_image(
+    State(state): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> Result<Response, ApiError> {
+    let mut file: Option<Vec<u8>> = None;
+    let mut dither = Dither::FloydSteinberg;
+    let mut opts = PrintOpts::default();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError::bad_request(format!("invalid multipart body: {e}")))?
+    {
+        let name = field.name().map(str::to_owned);
+        match name.as_deref() {
+            Some("file") => {
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| ApiError::bad_request(format!("failed to read file: {e}")))?;
+                file = Some(bytes.to_vec());
+            }
+            Some("dither") => {
+                let value = text_field(field, "dither").await?;
+                dither = dither_from_str(&value).ok_or_else(|| {
+                    ApiError::bad_request(format!(
+                        "unknown dither `{value}` (expected floyd, atkinson, threshold or none)"
+                    ))
+                })?;
+            }
+            Some("density") => opts.density = parse_field(field, "density").await?,
+            Some("feed") => opts.feed = parse_field(field, "feed").await?,
+            Some("copies") => opts.copies = parse_field(field, "copies").await?,
+            _ => {} // ignore unknown fields
+        }
+    }
+    opts.validate()?;
+    let bytes = file.ok_or_else(|| ApiError::bad_request("missing `file` field"))?;
+    let bitmap = print_service::bitmap_from_image_bytes(&bytes, dither)
+        .map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+    print_and_respond(&state, bitmap, opts).await
+}
+
+/// Render a URL through headless Chrome, then print it.
+#[cfg(feature = "url")]
+async fn print_url(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<UrlPrintBody>,
+) -> Result<Response, ApiError> {
+    body.opts.validate()?;
+    // Scheme check up front: a bad URL must fail before Chrome or BLE.
+    crate::chrome::validate_url(&body.url).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let png = crate::chrome::render_url_png(&body.url)
+        .await
+        .map_err(|e| ApiError {
+            status: StatusCode::BAD_GATEWAY,
+            message: format!("failed to render URL: {e:#}"),
+        })?;
+    let bitmap = print_service::bitmap_from_image_bytes(&png, Dither::FloydSteinberg)
+        .map_err(|e| ApiError::internal(format!("{e:#}")))?;
+    print_and_respond(&state, bitmap, body.opts).await
+}
+
+/// Take the print lock, run the shared print pipeline, report what printed.
+///
+/// The lock is held across the whole connect-print-disconnect flow, so
+/// concurrent print requests queue rather than fighting over the printer.
+async fn print_and_respond(
+    state: &AppState,
+    bitmap: Bitmap,
+    opts: PrintOpts,
+) -> Result<Response, ApiError> {
+    let _guard = state.print_lock.lock().await;
+    let lines = print_service::print_bitmap(bitmap, state.device.as_deref(), opts.into())
+        .await
+        .map_err(|e| print_error_to_api(&e))?;
+    Ok(Json(json!({ "printed_lines": lines, "copies": opts.copies })).into_response())
+}
+
+/// Map a print pipeline error to an API error by downcasting the marker
+/// types, mirroring the CLI's `exit_code`.
+///
+/// Order matters: `NoPaper` is a root cause that context wrappers (like
+/// `PrintFailure`) may be layered on top of, so the more specific markers
+/// are checked before the generic print-failure context.
+fn print_error_to_api(e: &anyhow::Error) -> ApiError {
+    if e.downcast_ref::<NoPrinterFound>().is_some() {
+        ApiError::unavailable(format!("{e:#}"))
+    } else if e.downcast_ref::<NoPaper>().is_some() {
+        ApiError::conflict("printer is out of paper")
+    } else if e.downcast_ref::<PrintFailure>().is_some() {
+        ApiError::internal(format!("{e:#}"))
+    } else if matches!(
+        e.downcast_ref::<JobError>(),
+        Some(JobError::TooLarge { .. })
+    ) {
+        ApiError::bad_request(format!("{e:#}"))
+    } else {
+        ApiError::internal(format!("{e:#}"))
+    }
+}
+
+/// Read a multipart text field, 400 on failure.
+async fn text_field(
+    field: axum::extract::multipart::Field<'_>,
+    name: &str,
+) -> Result<String, ApiError> {
+    field
+        .text()
+        .await
+        .map_err(|e| ApiError::bad_request(format!("failed to read {name}: {e}")))
+}
+
+/// Read a multipart text field and parse it, 400 on failure.
+async fn parse_field<T: std::str::FromStr>(
+    field: axum::extract::multipart::Field<'_>,
+    name: &str,
+) -> Result<T, ApiError> {
+    let value = text_field(field, name).await?;
+    value
+        .parse()
+        .map_err(|_| ApiError::bad_request(format!("invalid {name} `{value}`")))
 }
 
 // ---------------------------------------------------------------------------
@@ -269,10 +539,12 @@ fn png_response(png: Vec<u8>) -> Response {
 }
 
 // ---------------------------------------------------------------------------
-// Tests. `/status` is deliberately untested here: any request to it scans
-// for and connects to a real printer over BLE, which a unit test must not
-// do. Its connect/status/disconnect flow is the same code path as the
-// hardware-validated `lxd2 status` command.
+// Tests. `/status` with a free lock and successful `/print/*` requests are
+// deliberately untested here: they scan for and connect to a real printer
+// over BLE, which a unit test must not do. Those flows are the same code
+// paths as the hardware-validated `lxd2 status` / `lxd2 print` commands.
+// The tests below only exercise what runs before BLE: validation, error
+// mapping, and the busy branch of `/status`.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -447,5 +719,137 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -----------------------------------------------------------------------
+    // Print endpoints: validation paths only. No test below may reach BLE or
+    // Chrome — every handler validates (and /status try-locks) before any
+    // connect, which is what these tests pin down.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn print_opts_validate_defaults_ok() {
+        assert!(PrintOpts::default().validate().is_ok());
+    }
+
+    #[test]
+    fn print_opts_validate_rejects_out_of_range() {
+        let ok = PrintOpts::default();
+        for (opts, what) in [
+            (PrintOpts { density: 0, ..ok }, "density 0"),
+            (PrintOpts { density: 8, ..ok }, "density 8"),
+            (PrintOpts { copies: 0, ..ok }, "copies 0"),
+            (PrintOpts { copies: 21, ..ok }, "copies 21"),
+            (PrintOpts { feed: 2001, ..ok }, "feed 2001"),
+        ] {
+            assert!(opts.validate().is_err(), "{what} should be rejected");
+        }
+    }
+
+    #[test]
+    fn print_opts_validate_accepts_bounds() {
+        let ok = PrintOpts::default();
+        for opts in [
+            PrintOpts { density: 1, ..ok },
+            PrintOpts { density: 7, ..ok },
+            PrintOpts { copies: 20, ..ok },
+            PrintOpts { feed: 2000, ..ok },
+            PrintOpts { feed: 0, ..ok },
+        ] {
+            assert!(opts.validate().is_ok());
+        }
+    }
+
+    /// Options are validated before render/lock/connect, so an out-of-range
+    /// density fails fast without any BLE attempt.
+    #[tokio::test]
+    async fn density_out_of_range_is_400() {
+        let resp = post_json("/print/text", r#"{"content":"x","density":9}"#).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = String::from_utf8(body_bytes(resp).await).unwrap();
+        assert!(body.contains("density"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn print_text_empty_is_400() {
+        let resp = post_json("/print/text", r#"{"content":"  "}"#).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = String::from_utf8(body_bytes(resp).await).unwrap();
+        assert!(body.contains("error"), "body: {body}");
+    }
+
+    /// Scheme validation runs before Chrome is launched (and before BLE).
+    #[cfg(feature = "url")]
+    #[tokio::test]
+    async fn print_url_bad_scheme_is_400() {
+        let resp = post_json("/print/url", r#"{"url":"file:///etc/passwd"}"#).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = String::from_utf8(body_bytes(resp).await).unwrap();
+        assert!(body.contains("http"), "body: {body}");
+    }
+
+    /// While a print job holds the lock, `/status` must not queue behind it
+    /// (or open a second BLE connection): try_lock fails and the handler
+    /// returns immediately, before any connect attempt.
+    #[tokio::test]
+    async fn status_busy_returns_printing() {
+        let state = Arc::new(AppState {
+            device: None,
+            print_lock: tokio::sync::Mutex::new(()),
+        });
+        let _guard = state.print_lock.lock().await;
+        let resp = router(state.clone())
+            .oneshot(Request::get("/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = String::from_utf8(body_bytes(resp).await).unwrap();
+        assert_eq!(body, r#"{"printing":true}"#);
+    }
+
+    /// Errors synthesized exactly like the production code constructs them.
+    #[test]
+    fn print_errors_map_to_statuses() {
+        use crate::print_service::{NoPaper, NoPrinterFound, PrintFailure};
+        use lxd2_core::protocol::job::JobError;
+
+        // ble.rs: anyhow::Error::msg(NoPrinterFound)
+        let e = anyhow::Error::msg(NoPrinterFound);
+        assert_eq!(
+            print_error_to_api(&e).status,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        // print_service.rs: anyhow::Error::msg(NoPaper)
+        let e = anyhow::Error::msg(NoPaper);
+        assert_eq!(print_error_to_api(&e).status, StatusCode::CONFLICT);
+
+        // print_service.rs: run_job error wrapped with .context(PrintFailure)
+        let e = anyhow::anyhow!("write failed").context(PrintFailure);
+        assert_eq!(
+            print_error_to_api(&e).status,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+
+        // print_service.rs: PrintJob::new error + .context("cannot print…")
+        let e = anyhow::Error::from(JobError::TooLarge { packets: 70_000 })
+            .context("cannot print this job");
+        assert_eq!(print_error_to_api(&e).status, StatusCode::BAD_REQUEST);
+
+        // Anything else stays a plain 500.
+        let e = anyhow::anyhow!("boom");
+        assert_eq!(
+            print_error_to_api(&e).status,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    /// Downcast order: with both markers in the chain, the root cause
+    /// (NoPaper) must win over the PrintFailure context wrapper.
+    #[test]
+    fn print_error_no_paper_wins_over_print_failure() {
+        use crate::print_service::{NoPaper, PrintFailure};
+        let e = anyhow::Error::msg(NoPaper).context(PrintFailure);
+        assert_eq!(print_error_to_api(&e).status, StatusCode::CONFLICT);
     }
 }

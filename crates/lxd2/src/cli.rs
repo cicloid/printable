@@ -38,6 +38,10 @@ pub struct PrintArgs {
     /// File to print (.png/.jpg/.jpeg/.txt/.md/.markdown)
     #[arg(short, long)]
     pub file: Option<std::path::PathBuf>,
+    /// Web page to render (via headless Chrome) and print
+    #[cfg(feature = "url")]
+    #[arg(long, conflicts_with_all = ["text", "file"])]
+    pub url: Option<String>,
     /// Density 1-7
     #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u8).range(1..=7))]
     pub density: u8,

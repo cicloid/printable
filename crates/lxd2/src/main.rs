@@ -1,4 +1,6 @@
 mod ble;
+#[cfg(feature = "url")]
+mod chrome;
 mod cli;
 mod config;
 mod print_service;
@@ -104,18 +106,15 @@ async fn cmd_status(device: DeviceArgs) -> anyhow::Result<()> {
 }
 
 async fn cmd_print(args: PrintArgs) -> anyhow::Result<()> {
+    let bitmap = build_bitmap(&args).await?;
     let PrintArgs {
         device,
-        text,
-        file,
         density,
         feed,
-        dither,
-        size,
         preview,
         copies,
+        ..
     } = args;
-    let bitmap = build_bitmap(text, file, dither.into(), size)?;
     dispatch(bitmap, device, density, feed, preview, copies).await
 }
 
@@ -170,15 +169,19 @@ async fn dispatch(
     Ok(())
 }
 
-/// Build the bitmap to print from the text argument, a file, or stdin.
-fn build_bitmap(
-    text: Option<String>,
-    file: Option<PathBuf>,
-    dither: Dither,
-    size: f32,
-) -> anyhow::Result<Bitmap> {
-    if let Some(path) = file {
-        if text.is_some() {
+/// Build the bitmap to print from the text argument, a file, a URL, or stdin.
+async fn build_bitmap(args: &PrintArgs) -> anyhow::Result<Bitmap> {
+    let dither: Dither = args.dither.into();
+    let size = args.size;
+
+    #[cfg(feature = "url")]
+    if let Some(url) = &args.url {
+        let png = chrome::render_url_png(url).await?;
+        return print_service::bitmap_from_image_bytes(&png, dither);
+    }
+
+    if let Some(path) = &args.file {
+        if args.text.is_some() {
             bail!("cannot combine a text argument with --file");
         }
         let ext = path
@@ -188,17 +191,17 @@ fn build_bitmap(
             .unwrap_or_default();
         return match ext.as_str() {
             "png" | "jpg" | "jpeg" => {
-                let bytes = std::fs::read(&path)
+                let bytes = std::fs::read(path)
                     .with_context(|| format!("failed to open {}", path.display()))?;
                 print_service::bitmap_from_image_bytes(&bytes, dither)
             }
             "txt" => {
-                let text = std::fs::read_to_string(&path)
+                let text = std::fs::read_to_string(path)
                     .with_context(|| format!("failed to read {}", path.display()))?;
                 text_bitmap(&text, size)
             }
             "md" | "markdown" => {
-                let text = std::fs::read_to_string(&path)
+                let text = std::fs::read_to_string(path)
                     .with_context(|| format!("failed to read {}", path.display()))?;
                 if text.trim().is_empty() {
                     bail!("nothing to print");
@@ -212,17 +215,16 @@ fn build_bitmap(
         };
     }
 
-    let text = match text {
-        Some(t) => t,
+    match &args.text {
+        Some(t) => text_bitmap(t, size),
         None => {
             let mut buf = String::new();
             std::io::stdin()
                 .read_to_string(&mut buf)
                 .context("failed to read stdin")?;
-            buf
+            text_bitmap(&buf, size)
         }
-    };
-    text_bitmap(&text, size)
+    }
 }
 
 fn text_bitmap(text: &str, size: f32) -> anyhow::Result<Bitmap> {

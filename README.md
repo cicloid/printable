@@ -8,6 +8,8 @@ The name **printa-ble** derives from *printa* (the ancestor project) plus *BLE* 
 
 All four phases of the [original design](docs/plans/2026-07-27-lxd2-design.md) are delivered: `scan`, `status`, and `print` (text, images, markdown, and web pages via `--url`) with PNG preview, QR codes via `qr`, multiple copies with `--copies`, a config file that remembers the last-connected printer, an HTTP print server with a phone-friendly web UI via `serve`, and a serverless Web Bluetooth page that prints straight from the browser.
 
+A [follow-up phase](docs/plans/2026-07-29-lxd2-phase5-implementation.md) extended the markdown renderer with tables, task-list checkboxes, strikethrough, embedded QR codes and barcodes, images, and a tear marker — see [Markdown](#markdown).
+
 ## Install
 
 ```
@@ -30,7 +32,7 @@ printable print "hello world"
 printable print -f photo.png --dither floyd
 printable print -f notes.txt --size 28
 printable print "test" --preview out.png   # render without printing
-printable print -f notes.md                # markdown: headings, lists, bold/italic, code, rules
+printable print -f notes.md                # markdown: headings, tables, task lists, QR/barcode fences, images
 printable qr "https://example.com" --caption "scan me"
 printable print "hello" --copies 3
 printable print --url https://example.com    # render a web page via headless Chrome
@@ -55,7 +57,84 @@ printable print --url https://example.com    # render a web page via headless Ch
 
 ### Markdown
 
-`printable print -f notes.md` (or `.markdown`) renders the file as formatted output rather than plain text. Supported: headings (H1-H3 at decreasing sizes; deeper levels render like H3), **bold** and *italic*, bulleted and ordered lists (including nesting), inline code and code blocks, blockquotes, and horizontal rules. Links render as their text. Tables and images are not supported.
+`printable print -f notes.md` (or `.markdown`) renders the file as formatted output rather than plain text. The same renderer backs the server's `/print/markdown` and the web app's Markdown tab.
+
+````markdown
+# Receipt
+
+**Bold**, *italic*, ~~struck through~~.
+
+- [x] beans ground
+- [ ] water boiled
+
+| item  | qty |
+|-------|-----|
+| beans | 250 |
+| filter | 1   |
+
+```qr
+https://example.com/order/42
+```
+
+```barcode
+ORDER-42
+```
+
+![logo](logo.png)
+
+---
+
+Thanks! Tear here:
+
+- - -
+````
+
+#### Supported
+
+| Feature | Notes |
+|---|---|
+| Headings | H1-H3 at decreasing sizes; deeper levels render like H3 |
+| Emphasis | `**bold**`, `*italic*`, `~~strikethrough~~` (a 2 px line through the text); they compose |
+| Lists | Bulleted and ordered, nested; `• ` / `N. ` prefixes |
+| Task lists | `- [x]` / `- [ ]` render as ASCII `[x]` / `[ ]` markers (the font has no ballot-box glyphs) |
+| Tables | Monospace text blocks; see below |
+| Code | Inline code and fenced/indented blocks, exact line breaks preserved |
+| Blockquotes | Indented and italic |
+| Rules | `---` renders a solid full-width bar |
+| Tear marker | A thematic break written with interior spaces — `- - -` or `* * *` — renders a **dashed** line instead, marking where to tear the paper |
+| `qr` fence | A fenced code block tagged `qr` — the body is encoded as a QR code |
+| `barcode` fence | A fenced code block tagged `barcode` — the body is encoded as a Code128 barcode |
+| Images | `![alt](dest)` — resolved per surface, see below |
+
+Links render as their text; raw HTML is skipped.
+
+#### Tables
+
+Tables lay out as monospace text (the embedded font is monospace, so column math is exact): cell contents flatten to plain text (bold/italic inside a cell is dropped), columns are padded to their widest cell with two-space gutters, and a dashed separator row follows the header. Everything is left-aligned — markdown alignment markers (`:---:`) are ignored. A row of cells fits 32 characters across the 384 px roll; a wider table shrinks its widest columns and truncates those cells with `…` rather than overflowing.
+
+#### QR and barcode fences
+
+A fenced code block whose info string's first word is `qr` or `barcode` (matched case-insensitively, so `QR` counts) renders as a graphic instead of code text. Every other info string — including none at all — still renders as plain code.
+
+Barcodes are **Code128**, character set B: the payload must be printable ASCII (U+0020 space through U+007E tilde), which covers digits, both letter cases, and punctuation. Anything else (accents, emoji, tabs, newlines) is rejected. The maximum is **28 characters** — beyond that the bars cannot stay at least one pixel wide on 384 px paper. The payload is plain text: there are no escape characters, and the character-set prefix Code128 needs is added for you.
+
+A payload the encoder rejects — too long for any QR version, non-ASCII in a barcode — prints its error message as code text instead. A bad code never panics and never costs you the rest of the document.
+
+#### Images
+
+Image references are resolved by whichever surface is rendering, then handed to the renderer; the rendering core itself never performs I/O. What each surface will fetch differs on purpose:
+
+| Surface | Local paths | `http(s)` URLs |
+|---|---|---|
+| CLI (`printable print -f notes.md`) | Yes — relative to the `.md` file's directory | Yes |
+| Server (`/print/markdown`, `/preview/markdown`) | **Never** | Yes, unless `--no-remote-images` |
+| Web app (Markdown tab) | No — a browser cannot read them | Yes, subject to CORS |
+
+The server refusing local paths is a security boundary, not an omission: without it, anyone on the LAN could read files off the machine running the server by asking for `![x](/etc/hosts)`. Images are PNG or JPEG, scaled to the 384 px roll and dithered with Floyd-Steinberg (`--dither` applies to `-f photo.png`, not to images inside a document); remote fetches are capped at 5 MB and 15 s each.
+
+Resolution is bounded per document: at most **32 images**, and **30 seconds** for the whole pass. References past those limits, and any that fail to fetch or decode, are simply left unresolved.
+
+An unresolved reference renders as an italic **`[image: alt text]`** placeholder (falling back to the destination when there is no alt text), so a broken image never fails a print. *This is a behavior change:* markdown images used to render nothing at all.
 
 ### macOS Bluetooth permission
 
@@ -78,7 +157,7 @@ Invalid command-line usage also exits 2 (clap's convention).
 printable serve
 ```
 
-starts an HTTP print server (REST API + web UI) on `0.0.0.0:8000`. `--port` and `--bind` change the listen address, and `--device` pins the printer just like the other commands. Open `http://<mac-ip>:8000` from any device on the LAN — the built-in web UI is phone-friendly and shows a live preview before printing.
+starts an HTTP print server (REST API + web UI) on `0.0.0.0:8000`. `--port` and `--bind` change the listen address, `--device` pins the printer just like the other commands, and `--no-remote-images` stops the server fetching http(s) images referenced by markdown. Open `http://<mac-ip>:8000` from any device on the LAN — the built-in web UI is phone-friendly and shows a live preview before printing.
 
 ### Endpoints
 
@@ -123,7 +202,12 @@ Errors come back as `{"error": "message"}` JSON: 400 for invalid input, 409 when
 
 ### Trust model
 
-There is no authentication — anyone on the LAN can print. Worst case that's wasted paper, but if you'd rather keep the API to yourself, bind it to the Mac only with `--bind 127.0.0.1`.
+There is no authentication — anyone on the LAN can print. Worst case that's usually wasted paper, but the server also makes outbound requests on a caller's behalf, so run it only on a network you trust:
+
+- **Markdown images.** `/print/markdown` and `/preview/markdown` fetch any `http(s)` URL the body references, so a caller can make the server issue requests to hosts it can reach and you cannot — internal addresses, cloud metadata endpoints, and the like (an SSRF surface), and `/preview/markdown` hands back what was fetched as a 1-bit dithered image. `--no-remote-images` removes the surface entirely. Local file paths are always refused, with or without that flag.
+- **URL printing.** `/print/url` and `/preview/url` render a caller-supplied page through headless Chrome, which is the same exposure plus a browser engine. `--no-default-features` removes those routes at build time.
+
+If you'd rather keep the API to yourself, bind it to the Mac only with `--bind 127.0.0.1`.
 
 ### URL printing
 
@@ -132,6 +216,8 @@ There is no authentication — anyone on the LAN can print. Worst case that's wa
 ## Web app (Web Bluetooth)
 
 A static web page that prints directly from the browser — no server, no install. Rendering (text, markdown, QR, images) runs entirely client-side via `printa-ble-core` compiled to WebAssembly, and the page talks to the printer over Web Bluetooth.
+
+Markdown images are fetched by the browser, so only `http(s)` URLs work and only when the host allows cross-origin reads — a server without CORS headers is unreachable from the page. Anything that cannot be fetched renders as an `[image: alt]` placeholder and the page reports how many were skipped.
 
 ### Browser support
 

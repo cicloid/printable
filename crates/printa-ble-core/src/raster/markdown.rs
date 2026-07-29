@@ -12,7 +12,7 @@
 //! rendered as ASCII `[ ]` / `[x]` markers — JetBrains Mono has no ballot-box
 //! glyphs), and a tear marker: a thematic break written with interior spaces
 //! (`- - -`) renders as a dashed line (8 px on / 8 px off) instead of a solid
-//! rule. Links render their inner text only; images and raw HTML are skipped.
+//! rule. Links render their inner text only; raw HTML is skipped.
 //! Tables render as monospace text blocks (code-style Regular 20 px): each
 //! cell's inline content flattens to plain text (bold/italic dropped), columns
 //! are padded to their widest cell with two-space gutters, a dashed separator
@@ -29,11 +29,29 @@
 //! encoder rejects prints its error message as code text: a bad code never
 //! panics or costs the reader the rest of the document.
 //!
+//! Images are rendered in two passes, because this crate is sans-IO and never
+//! fetches anything: [`markdown_image_refs`] lists a document's image
+//! destinations, the caller decodes and dithers each one to a [`Bitmap`] its own
+//! way, and [`render_markdown_with`] renders the document against that map. A
+//! destination present in the map is stacked as its own block with
+//! [`IMAGE_MARGIN`] px of white above and below.
+//!
+//! **Behavior change (Phase 5):** an image whose destination is *not* in the map
+//! used to be dropped silently, alt text and all. It now renders an italic
+//! placeholder line — `[image: <alt text>]`, falling back to `[image: <dest>]`
+//! when there is no alt text — at the surrounding indent, so it nests inside
+//! lists and blockquotes. [`render_markdown`] delegates to
+//! [`render_markdown_with`] with an empty map, so every caller that has not been
+//! taught to supply images now prints placeholders where it used to print
+//! nothing.
+//!
 //! Deviation from the plan's break mapping: a soft break renders as a space
 //! (standard markdown behavior, reads better on a 384 px roll); only a hard
 //! break starts a new line. Trailing blank space after the last block is
 //! trimmed, as are blank lines abutting a horizontal rule (the rule carries
 //! its own margins).
+
+use std::collections::HashMap;
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -59,6 +77,8 @@ const TEAR_DASH: usize = 8;
 /// Total white margin above and below a rendered ` ```qr ` / ` ```barcode `
 /// fence, including whatever margin the renderer draws itself.
 const FENCE_MARGIN: usize = 24;
+/// White margin above and below a caller-supplied image, in pixels.
+const IMAGE_MARGIN: usize = 8;
 
 /// A vertically-stacked unit of lowered markdown.
 enum MdBlock {
@@ -70,6 +90,8 @@ enum MdBlock {
     Qr(String),
     /// A ` ```barcode ` fence: the payload to encode.
     Barcode(String),
+    /// A caller-supplied image, already decoded to a full-width bitmap.
+    Image(Bitmap),
 }
 
 /// Which renderer a code block's info string selects.
@@ -99,11 +121,47 @@ fn fence_kind(info: &str) -> Fence {
     }
 }
 
-/// Render markdown to a 1-bit bitmap.
+/// Render markdown to a 1-bit bitmap, with no images available.
+///
+/// Equivalent to [`render_markdown_with`] against an empty map: every image in
+/// the document renders as a placeholder line. Callers that can fetch image
+/// bytes should use [`markdown_image_refs`] + [`render_markdown_with`].
 ///
 /// Empty (or whitespace-only) markdown yields a zero-height bitmap.
 pub fn render_markdown(md: &str) -> Bitmap {
-    let blocks = lower(md);
+    render_markdown_with(md, &HashMap::new())
+}
+
+/// Every image destination in `md`, in document order, deduplicated.
+///
+/// This is the first half of the two-pass image flow: the caller resolves each
+/// destination to a [`Bitmap`] however it likes (local file, HTTP, browser
+/// fetch — this crate does no I/O) and passes the results to
+/// [`render_markdown_with`]. Destinations are returned verbatim, exactly as
+/// they must appear as keys in that map. A document without images yields an
+/// empty vector.
+pub fn markdown_image_refs(md: &str) -> Vec<String> {
+    let mut refs: Vec<String> = Vec::new();
+    for event in Parser::new_ext(md, options()) {
+        if let Event::Start(Tag::Image { dest_url, .. }) = event {
+            let dest = dest_url.into_string();
+            if !refs.contains(&dest) {
+                refs.push(dest);
+            }
+        }
+    }
+    refs
+}
+
+/// Render markdown to a 1-bit bitmap, resolving images through `images`.
+///
+/// Keys are image destinations exactly as [`markdown_image_refs`] reports them.
+/// A hit is stacked as its own block with [`IMAGE_MARGIN`] px of white above and
+/// below; the bitmap is used as given (every [`Bitmap`] is 384 px wide by
+/// construction, so it already matches the roll). A miss renders an italic
+/// placeholder line — see the module docs.
+pub fn render_markdown_with(md: &str, images: &HashMap<String, Bitmap>) -> Bitmap {
+    let blocks = lower(md, images);
     let bitmaps = blocks
         .iter()
         .map(|block| match block {
@@ -114,9 +172,29 @@ pub fn render_markdown(md: &str) -> Bitmap {
             // both end up spaced identically on the page.
             MdBlock::Qr(data) => fence_bitmap(render_qr(data, None), qr::MARGIN),
             MdBlock::Barcode(data) => fence_bitmap(render_barcode(data), 0),
+            MdBlock::Image(image) => padded(image, IMAGE_MARGIN),
         })
         .collect();
     stack(bitmaps)
+}
+
+/// The parser options every entry point shares, so [`markdown_image_refs`] sees
+/// exactly the document [`render_markdown_with`] renders.
+fn options() -> Options {
+    Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_TABLES
+}
+
+/// A copy of `src` with `margin` px of white above and below.
+fn padded(src: &Bitmap, margin: usize) -> Bitmap {
+    let mut out = Bitmap::new(2 * margin + src.height());
+    for y in 0..src.height() {
+        for x in 0..WIDTH {
+            if src.get(x, y) {
+                out.set(x, margin + y, true);
+            }
+        }
+    }
+    out
 }
 
 /// Lay out a ` ```qr ` / ` ```barcode ` fence's render.
@@ -136,16 +214,15 @@ fn fence_bitmap<E: std::fmt::Display>(rendered: Result<Bitmap, E>, built_in: usi
         Ok(code) => code,
         Err(e) => return fence_error(&e.to_string()),
     };
-    let pad = FENCE_MARGIN.saturating_sub(built_in);
-    let mut out = Bitmap::new(2 * pad + code.height());
-    for y in 0..code.height() {
-        for x in 0..WIDTH {
-            if code.get(x, y) {
-                out.set(x, pad + y, true);
-            }
-        }
-    }
-    out
+    padded(&code, FENCE_MARGIN.saturating_sub(built_in))
+}
+
+/// A missing image's placeholder text: its alt text if it has any, else its
+/// destination, so the reader at least learns what failed to load.
+fn placeholder_text(alt: &str, dest: &str) -> String {
+    let alt = alt.trim();
+    let what = if alt.is_empty() { dest } else { alt };
+    format!("[image: {what}]")
 }
 
 /// A failed fence's message, as one code-style line (Regular 20 px, indent 16).
@@ -294,7 +371,9 @@ fn build_table_lines(header: &[String], rows: &[Vec<String>]) -> Vec<String> {
 }
 
 /// Event-stream lowering state: markdown events → [`MdBlock`]s.
-struct Lowering {
+struct Lowering<'a> {
+    /// Caller-supplied images, keyed by markdown destination.
+    images: &'a HashMap<String, Bitmap>,
     blocks: Vec<MdBlock>,
     /// Lines of the [`MdBlock::Lines`] block being accumulated.
     lines: Vec<RichLine>,
@@ -317,8 +396,13 @@ struct Lowering {
     fence_buf: String,
     /// Partial code line, pending its `\n` (or the block's end).
     code_buf: String,
-    /// Image nesting depth; while > 0 all events are skipped.
+    /// Image nesting depth; while > 0 inner events feed `image_alt` instead of
+    /// the page.
     image_depth: u32,
+    /// Destination of the open image.
+    image_dest: String,
+    /// Flattened alt text of the open image (its inner text content).
+    image_alt: String,
     /// True while inside a table: cell text collects into `table_cell`.
     in_table: bool,
     /// Header cells (plain text) for the table being collected.
@@ -331,8 +415,9 @@ struct Lowering {
     table_cell: String,
 }
 
-fn lower(md: &str) -> Vec<MdBlock> {
+fn lower(md: &str, images: &HashMap<String, Bitmap>) -> Vec<MdBlock> {
     let mut st = Lowering {
+        images,
         blocks: Vec::new(),
         lines: Vec::new(),
         current: RichLine::default(),
@@ -347,17 +432,17 @@ fn lower(md: &str) -> Vec<MdBlock> {
         fence_buf: String::new(),
         code_buf: String::new(),
         image_depth: 0,
+        image_dest: String::new(),
+        image_alt: String::new(),
         in_table: false,
         table_header: Vec::new(),
         table_rows: Vec::new(),
         table_row: Vec::new(),
         table_cell: String::new(),
     };
-    let options =
-        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_TABLES;
     // The offset iterator is only consulted for Rule events: the source text
     // distinguishes a tear marker (`- - -`) from a plain rule (`---`).
-    for (event, range) in Parser::new_ext(md, options).into_offset_iter() {
+    for (event, range) in Parser::new_ext(md, options()).into_offset_iter() {
         match event {
             Event::Rule => st.rule(md[range].trim()),
             _ => st.handle(event),
@@ -366,7 +451,7 @@ fn lower(md: &str) -> Vec<MdBlock> {
     st.finish()
 }
 
-impl Lowering {
+impl Lowering<'_> {
     /// The style for inline text under the current nesting.
     fn style(&self) -> Style {
         let font = if self.heading_size.is_some() || self.bold > 0 {
@@ -450,14 +535,54 @@ impl Lowering {
         }
     }
 
-    fn handle(&mut self, event: Event) {
-        // Inside an image: swallow everything (alt text included) until it ends.
-        if self.image_depth > 0 {
-            match event {
-                Event::Start(Tag::Image { .. }) => self.image_depth += 1,
-                Event::End(TagEnd::Image) => self.image_depth -= 1,
-                _ => {}
+    /// Collect an open image's inner events as alt text; emit the image (or its
+    /// placeholder) when the outermost one closes.
+    ///
+    /// Inner events never reach the page: an image's content is its alt text,
+    /// not document text. Emphasis and other inline markup inside the alt text
+    /// is flattened away — only the characters survive.
+    fn handle_in_image(&mut self, event: Event) {
+        match event {
+            Event::Start(Tag::Image { .. }) => self.image_depth += 1,
+            Event::End(TagEnd::Image) => {
+                self.image_depth -= 1;
+                if self.image_depth == 0 {
+                    self.finish_image();
+                }
             }
+            Event::Text(text) | Event::Code(text) => self.image_alt.push_str(&text),
+            Event::SoftBreak | Event::HardBreak => self.image_alt.push(' '),
+            _ => {}
+        }
+    }
+
+    /// Lower the just-closed image: a supplied bitmap becomes its own stacked
+    /// block, an unsupplied one an italic placeholder line at the current
+    /// indent (so it nests inside lists and blockquotes).
+    fn finish_image(&mut self) {
+        let dest = std::mem::take(&mut self.image_dest);
+        let alt = std::mem::take(&mut self.image_alt);
+        match self.images.get(&dest) {
+            Some(image) => {
+                // Like a rule or a fence, an image interrupts the text flow and
+                // stacks on its own. `flush_block` keeps `current.indent`, so
+                // whatever follows stays in its list or quote.
+                let image = image.clone();
+                self.flush_block();
+                self.blocks.push(MdBlock::Image(image));
+            }
+            None => {
+                self.current.spans.push(Span {
+                    text: placeholder_text(&alt, &dest),
+                    style: Style::new(FontStyle::Italic, BODY_SIZE),
+                });
+            }
+        }
+    }
+
+    fn handle(&mut self, event: Event) {
+        if self.image_depth > 0 {
+            self.handle_in_image(event);
             return;
         }
         match event {
@@ -587,7 +712,13 @@ impl Lowering {
             // `TableRow`. Either way, start a fresh row buffer.
             Tag::TableHead | Tag::TableRow => self.table_row.clear(),
             Tag::TableCell => self.table_cell.clear(),
-            Tag::Image { .. } => self.image_depth = 1,
+            // The image's inner events are its alt text: `handle_in_image`
+            // collects them and emits the block when the tag closes.
+            Tag::Image { dest_url, .. } => {
+                self.image_depth = 1;
+                self.image_dest = dest_url.into_string();
+                self.image_alt.clear();
+            }
             // Links render their inner text; everything else just flows.
             _ => {}
         }
@@ -1100,6 +1231,118 @@ mod tests {
             assert_eq!(tall, 0, "invalid barcode {md:?} drew bars");
             assert!(ink_before(&b, 40), "no error text at the code indent");
         }
+    }
+
+    #[test]
+    fn image_refs_extracts_in_order_deduped() {
+        let md = "![a](a.png)\n\n![b](b.png)\n\n![again](a.png)";
+        assert_eq!(markdown_image_refs(md), vec!["a.png", "b.png"]);
+        assert!(markdown_image_refs("# Just text\n\nno pictures here").is_empty());
+        assert!(markdown_image_refs("").is_empty());
+    }
+
+    #[test]
+    fn image_refs_ignores_links() {
+        assert!(markdown_image_refs("[text](page.html)").is_empty());
+        // A link wrapping an image still yields the image's destination.
+        assert_eq!(
+            markdown_image_refs("[![alt](pic.png)](page.html)"),
+            vec!["pic.png"]
+        );
+    }
+
+    #[test]
+    fn render_with_supplied_bitmap_stacks_it() {
+        let mut pic = Bitmap::new(40);
+        pic.set(10, 5, true);
+        let images = HashMap::from([("pic.png".to_string(), pic)]);
+
+        let base = render_markdown("# Hi");
+        let with = render_markdown_with("# Hi\n\n![p](pic.png)", &images);
+        assert_eq!(
+            with.height(),
+            base.height() + 40 + 2 * IMAGE_MARGIN,
+            "image should add its height plus top and bottom margins"
+        );
+        // The supplied ink lands below the heading and the top margin.
+        assert!(
+            with.get(10, base.height() + IMAGE_MARGIN + 5),
+            "supplied image pixel missing at its stacked offset"
+        );
+        // ...and nowhere else on that row of the image block.
+        assert!(
+            !with.get(11, base.height() + IMAGE_MARGIN + 5),
+            "supplied image should not smear sideways"
+        );
+    }
+
+    #[test]
+    fn missing_image_renders_placeholder() {
+        assert_eq!(placeholder_text("Cat", "cat.png"), "[image: Cat]");
+        let b = render_markdown("![Cat](cat.png)");
+        assert!(has_ink(&b), "missing image rendered nothing");
+        let expected = render_rich(&[RichLine {
+            spans: vec![Span {
+                text: "[image: Cat]".to_string(),
+                style: Style::new(FontStyle::Italic, BODY_SIZE),
+            }],
+            indent: 0,
+        }]);
+        assert_eq!(
+            rows(&b),
+            rows(&expected),
+            "missing image should render an italic placeholder line"
+        );
+    }
+
+    #[test]
+    fn placeholder_uses_dest_when_no_alt() {
+        assert_eq!(placeholder_text("", "x.png"), "[image: x.png]");
+        let b = render_markdown("![](x.png)");
+        let expected = render_rich(&[RichLine {
+            spans: vec![Span {
+                text: "[image: x.png]".to_string(),
+                style: Style::new(FontStyle::Italic, BODY_SIZE),
+            }],
+            indent: 0,
+        }]);
+        assert_eq!(
+            rows(&b),
+            rows(&expected),
+            "empty alt should fall back to dest"
+        );
+    }
+
+    #[test]
+    fn placeholder_flattens_styled_alt_text() {
+        // Alt text is the image's inner text content, emphasis dropped.
+        assert!(markdown_image_refs("![*a* b](x.png)") == vec!["x.png"]);
+        let b = render_markdown("![*a* b](x.png)");
+        let expected = render_rich(&[RichLine {
+            spans: vec![Span {
+                text: "[image: a b]".to_string(),
+                style: Style::new(FontStyle::Italic, BODY_SIZE),
+            }],
+            indent: 0,
+        }]);
+        assert_eq!(rows(&b), rows(&expected), "styled alt text should flatten");
+    }
+
+    #[test]
+    fn image_in_list_keeps_indent() {
+        let b = render_markdown("- ![Cat](cat.png)");
+        assert!(has_ink(&b), "list image placeholder has no ink");
+        assert!(!ink_before(&b, 24), "ink left of the 24 px list indent");
+    }
+
+    #[test]
+    fn render_markdown_delegates() {
+        let md = "# Title\n\n![Cat](cat.png)\n\ntext";
+        assert_eq!(
+            rows(&render_markdown(md)),
+            rows(&render_markdown_with(md, &HashMap::new())),
+            "render_markdown should equal render_markdown_with an empty map"
+        );
     }
 
     #[test]

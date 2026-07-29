@@ -12,7 +12,7 @@ pub mod text;
 pub use barcode::{render_barcode, BarcodeError};
 pub use bitmap::Bitmap;
 pub use dither::{image_to_bitmap, prepare, Dither};
-pub use markdown::render_markdown;
+pub use markdown::{markdown_image_refs, render_markdown, render_markdown_with};
 pub use preview::bitmap_to_png;
 pub use qr::{render_qr, QrError};
 pub use rich::{render_rich, FontStyle, RichLine, Span, Style};

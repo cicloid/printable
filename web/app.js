@@ -21,6 +21,11 @@ const WATCHDOG_MS = 10_000;
 // Image tab's dither select applies to that tab's single upload only — a
 // markdown document has no per-image control.
 const MD_IMAGE_DITHER = "floyd";
+// Mirrors MAX_IMAGE_REFS in the CLI/server resolver: a document with hundreds
+// of image references would otherwise fetch them all before the preview drew
+// anything. References past the cap render as `[image: alt]` placeholders, the
+// same as one that fails to load.
+const MAX_IMAGE_REFS = 32;
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -104,9 +109,12 @@ let renderNotice = null;
 async function renderMarkdown(md) {
   const refs = markdown_image_refs(md);
   const images = new ImageSet();
-  let skipped = 0;
+  // Refs past MAX_IMAGE_REFS are never fetched, but they are still unresolved,
+  // so they count toward the same note.
+  const overCap = Math.max(0, refs.length - MAX_IMAGE_REFS);
+  let skipped = overCap;
   try {
-    for (const ref of refs) {
+    for (const ref of refs.slice(0, MAX_IMAGE_REFS)) {
       if (!/^https?:\/\//i.test(ref)) {
         skipped++;
         continue;
@@ -123,6 +131,11 @@ async function renderMarkdown(md) {
       renderNotice =
         skipped + (skipped === 1 ? " image" : " images") +
         " could not be loaded (CORS, network, or a local path)";
+      if (overCap > 0) {
+        renderNotice +=
+          " — including " + overCap + " past the " + MAX_IMAGE_REFS +
+          "-image limit per document";
+      }
     }
     return render_markdown_with_images(md, images);
   } finally {

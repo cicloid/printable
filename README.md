@@ -112,6 +112,8 @@ Links render as their text; raw HTML is skipped.
 
 Tables lay out as monospace text (the embedded font is monospace, so column math is exact): cell contents flatten to plain text (bold/italic inside a cell is dropped), columns are padded to their widest cell with two-space gutters, and a dashed separator row follows the header. Everything is left-aligned — markdown alignment markers (`:---:`) are ignored. A row of cells fits 32 characters across the 384 px roll; a wider table shrinks its widest columns and truncates those cells with `…` rather than overflowing.
 
+Columns will not shrink below 3 characters, so **six columns is the practical ceiling**: seven or more need more than 32 characters even at that floor, and the rows word-wrap instead of staying aligned. Nothing is lost or clipped — every cell still prints — but the table reads as wrapped text rather than a grid. Split a wider table, or transpose it, if alignment matters.
+
 #### QR and barcode fences
 
 A fenced code block whose info string's first word is `qr` or `barcode` (matched case-insensitively, so `QR` counts) renders as a graphic instead of code text. Every other info string — including none at all — still renders as plain code.
@@ -130,9 +132,9 @@ Image references are resolved by whichever surface is rendering, then handed to 
 | Server (`/print/markdown`, `/preview/markdown`) | **Never** | Yes, unless `--no-remote-images` |
 | Web app (Markdown tab) | No — a browser cannot read them | Yes, subject to CORS |
 
-The server refusing local paths is a security boundary, not an omission: without it, anyone on the LAN could read files off the machine running the server by asking for `![x](/etc/hosts)`. Images are PNG or JPEG, scaled to the 384 px roll and dithered with Floyd-Steinberg (`--dither` applies to `-f photo.png`, not to images inside a document); remote fetches are capped at 5 MB and 15 s each.
+The server refusing local paths is a security boundary, not an omission: without it, anyone on the LAN could read files off the machine running the server by asking for `![x](/etc/hosts)`. Images are PNG or JPEG, scaled to the 384 px roll and dithered with Floyd-Steinberg (`--dither` applies to `-f photo.png`, not to images inside a document); remote fetches are capped at 5 MB and 15 s each (CLI and server; the web app hands fetching to the browser and inherits its limits).
 
-Resolution is bounded per document: at most **32 images**, and **30 seconds** for the whole pass. References past those limits, and any that fail to fetch or decode, are simply left unresolved.
+Resolution is bounded per document: at most **32 images**, and — on the CLI and server — **30 seconds** for the whole pass. (The web app applies the same 32-image cap but no overall deadline; each fetch is bounded only by the browser.) References past those limits, and any that fail to fetch or decode, are simply left unresolved.
 
 An unresolved reference renders as an italic **`[image: alt text]`** placeholder (falling back to the destination when there is no alt text), so a broken image never fails a print. *This is a behavior change:* markdown images used to render nothing at all.
 

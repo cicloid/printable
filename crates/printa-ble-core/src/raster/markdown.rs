@@ -18,7 +18,11 @@
 //! are padded to their widest cell with two-space gutters, a dashed separator
 //! row follows the header, and over-wide tables shrink their widest columns —
 //! truncating cells with `…` — to fit the 384 px roll. Left-aligned only;
-//! markdown alignment markers are ignored.
+//! markdown alignment markers are ignored. The shrink has a floor (3 chars per
+//! column), so the roll fits **at most six columns**: seven or more need more
+//! than the 32-char budget even at the floor, and the rows word-wrap instead,
+//! losing column alignment. Nothing panics and no ink leaves the paper — the
+//! table just stops being a table.
 //!
 //! Two fence names turn a code block into a graphic instead of text, matched
 //! case-insensitively on the info string's first word (so ` ```QR ` and
@@ -223,14 +227,18 @@ fn padded(src: &Bitmap, margin: usize) -> Bitmap {
 /// [`qr::MARGIN`]) and a barcode (which carries none) sit equally spaced on
 /// the page instead of the barcode looking cramped.
 ///
-/// On failure the encoder's message renders as code-style text instead. A
-/// payload that cannot be encoded — too long for any QR version, non-ASCII in
-/// a barcode — must never panic or abort the surrounding document: the reader
-/// gets a printed diagnostic and the rest of the page.
+/// On failure the encoder's message renders as code-style text instead, padded
+/// by the full [`FENCE_MARGIN`] (text carries no built-in margin). A payload
+/// that cannot be encoded — too long for any QR version, non-ASCII in a
+/// barcode — must never panic or abort the surrounding document: the reader
+/// gets a printed diagnostic and the rest of the page. The error keeps the
+/// margin a successful fence would have had, because a fence is its own block:
+/// `flush_block` trims the blank line around it, so unpadded error text would
+/// collide with the neighbouring paragraph.
 fn fence_bitmap<E: std::fmt::Display>(rendered: Result<Bitmap, E>, built_in: usize) -> Bitmap {
     let code = match rendered {
         Ok(code) => code,
-        Err(e) => return fence_error(&e.to_string()),
+        Err(e) => return padded(&fence_error(&e.to_string()), FENCE_MARGIN),
     };
     padded(&code, FENCE_MARGIN.saturating_sub(built_in))
 }
@@ -317,6 +325,12 @@ const TABLE_MIN_COL: usize = 3;
 /// truncated to `width - 1` chars plus `…`. Cells are left-justified with a
 /// [`TABLE_GUTTER`]-space gutter; the separator uses `-` runs. An empty header
 /// yields no lines.
+///
+/// The floor caps the column count: `cols * TABLE_MIN_COL + TABLE_GUTTER *
+/// (cols - 1)` stays within [`TABLE_MAX_CHARS`] only up to six columns. Seven
+/// or more return lines wider than the budget, which the renderer word-wraps —
+/// alignment is lost, but the cells are all still on the paper. Dropping the
+/// extra columns instead would silently lose data, which is worse.
 fn build_table_lines(header: &[String], rows: &[Vec<String>]) -> Vec<String> {
     let cols = header.len();
     if cols == 0 {
@@ -1123,6 +1137,57 @@ mod tests {
         assert!(has_ink(&render_markdown(&md)), "wide table has no ink");
     }
 
+    /// Seven columns already exceed the budget at the 3-char floor, so wide
+    /// tables word-wrap instead of staying aligned. This is a documented
+    /// ceiling, not a bug — pin it so a change is deliberate.
+    #[test]
+    fn table_over_six_columns_exceeds_budget_and_wraps() {
+        // Six columns still fit: 6*3 + 2*5 = 28 <= 32.
+        let six: Vec<String> = (0..6).map(|i| format!("h{i}")).collect();
+        let lines = build_table_lines(&six, std::slice::from_ref(&six));
+        for l in &lines {
+            assert!(
+                l.chars().count() <= TABLE_MAX_CHARS,
+                "six columns should fit, got {:?} ({} chars)",
+                l,
+                l.chars().count()
+            );
+        }
+
+        // Eight do not: every column bottoms out at TABLE_MIN_COL and the line
+        // is still 8*3 + 2*7 = 38 chars.
+        let eight: Vec<String> = (0..8).map(|i| format!("header{i}")).collect();
+        let lines = build_table_lines(&eight, std::slice::from_ref(&eight));
+        assert_eq!(
+            lines[0].chars().count(),
+            8 * TABLE_MIN_COL + TABLE_GUTTER * 7,
+            "eight columns bottom out at the floor: {:?}",
+            lines[0]
+        );
+        assert!(
+            lines[0].chars().count() > TABLE_MAX_CHARS,
+            "eight columns should overflow the budget"
+        );
+
+        // The renderer wraps rather than clipping: ink stays on the paper and
+        // the block is taller than the three rows it would be if it fit.
+        let head = eight
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let md = format!("| {head} |\n|{}\n| {head} |", "---|".repeat(8));
+        let wide = render_markdown(&md);
+        assert!(has_ink(&wide), "eight-column table has no ink");
+        let narrow = render_markdown("| a | b |\n|---|---|\n| 1 | 2 |");
+        assert!(
+            wide.height() > narrow.height(),
+            "wrapped table {} should be taller than an aligned one {}",
+            wide.height(),
+            narrow.height()
+        );
+    }
+
     #[test]
     fn table_single_column_ok() {
         let lines = build_table_lines(&["only".into()], &[vec!["one".into()], vec!["two".into()]]);
@@ -1217,11 +1282,14 @@ mod tests {
         let b = render_markdown(&md);
         assert!(has_ink(&b), "over-long qr fence rendered nothing");
         // Error text, not a code: far shorter than a QR block and left-aligned
-        // at the code indent rather than centered in a quiet zone.
+        // at the code indent rather than centered in a quiet zone. Both carry
+        // the same FENCE_MARGIN, so compare against a real QR fence.
+        let real = render_markdown("```qr\nhttps://example.com\n```");
         assert!(
-            b.height() < 100,
-            "height {} looks like a QR, not error text",
-            b.height()
+            b.height() * 2 < real.height(),
+            "height {} looks like a QR ({}), not error text",
+            b.height(),
+            real.height()
         );
         assert!(ink_before(&b, 40), "no ink at the 16 px code indent");
     }
@@ -1263,6 +1331,77 @@ mod tests {
             let tall = (0..WIDTH).filter(|&x| tallest_run(&b, x) >= 60).count();
             assert_eq!(tall, 0, "invalid barcode {md:?} drew bars");
             assert!(ink_before(&b, 40), "no error text at the code indent");
+        }
+    }
+
+    /// A fence gets the same breathing room whether it encoded or not. A fence
+    /// is its own block, so the blank line around it is trimmed; if only the
+    /// success branch padded, a failed fence's error text would print flush
+    /// against the neighbouring paragraph.
+    #[test]
+    fn fence_margins_match_in_both_branches() {
+        // Padding added by the block = document blanks minus the content's own.
+        // The success branch's built-in margin is subtracted, so both branches
+        // add the same FENCE_MARGIN of white.
+        let pad = |doc: &Bitmap, inner: &Bitmap| {
+            let (_, doc_top, _, doc_bot) = ink_bbox(doc).expect("document has no ink");
+            let (_, in_top, _, in_bot) = ink_bbox(inner).expect("content has no ink");
+            (
+                doc_top - in_top,
+                (doc.height() - 1 - doc_bot) - (inner.height() - 1 - in_bot),
+            )
+        };
+
+        let ok_inner = render_barcode("HELLO123").expect("HELLO123 is a valid payload");
+        let ok_doc = render_markdown("```barcode\nHELLO123\n```");
+        assert_eq!(
+            pad(&ok_doc, &ok_inner),
+            (FENCE_MARGIN, FENCE_MARGIN),
+            "successful fence margins"
+        );
+
+        let err = render_barcode("café ☕").expect_err("non-ASCII payload must be rejected");
+        let err_inner = fence_error(&err.to_string());
+        let err_doc = render_markdown("```barcode\ncafé ☕\n```");
+        assert_eq!(
+            pad(&err_doc, &err_inner),
+            (FENCE_MARGIN, FENCE_MARGIN),
+            "failed fence margins"
+        );
+
+        // And the visible symptom: with text on both sides, a failed fence
+        // keeps at least FENCE_MARGIN of white from its neighbours instead of
+        // colliding with them.
+        let doc = render_markdown("before\n\n```barcode\ncafé ☕\n```\n\nafter");
+        let blank_runs: Vec<usize> = {
+            let inked: Vec<bool> = (0..doc.height())
+                .map(|y| (0..WIDTH).any(|x| doc.get(x, y)))
+                .collect();
+            let mut runs = Vec::new();
+            let mut run = 0;
+            for (i, &ink) in inked.iter().enumerate() {
+                if ink {
+                    if run > 0 && i > run {
+                        runs.push(run);
+                    }
+                    run = 0;
+                } else {
+                    run += 1;
+                }
+            }
+            runs
+        };
+        // The error message wraps, so the interior runs are line gaps; the
+        // first and last are the fence's own margins.
+        assert!(
+            blank_runs.len() >= 2,
+            "expected gaps above and below the fence, got {blank_runs:?}"
+        );
+        for gap in [blank_runs[0], *blank_runs.last().unwrap()] {
+            assert!(
+                gap >= FENCE_MARGIN,
+                "gap of {gap} px around a failed fence is below the {FENCE_MARGIN} px margin"
+            );
         }
     }
 

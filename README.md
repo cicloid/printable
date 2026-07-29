@@ -4,7 +4,7 @@ A Rust CLI for printing to LX-D02 / LX-D2 Bluetooth thermal printers (the "Funny
 
 ## Status
 
-Phases 1-3 are done: `scan`, `status`, and `print` (text, images, markdown, and web pages via `--url`) with PNG preview, QR codes via `qr`, multiple copies with `--copies`, a config file that remembers the last-connected printer, and an HTTP print server with a phone-friendly web UI via `serve`. A Web Bluetooth page (phase 4) is upcoming — see [docs/plans/](docs/plans/).
+All four phases of the [original design](docs/plans/2026-07-27-lxd2-design.md) are delivered: `scan`, `status`, and `print` (text, images, markdown, and web pages via `--url`) with PNG preview, QR codes via `qr`, multiple copies with `--copies`, a config file that remembers the last-connected printer, an HTTP print server with a phone-friendly web UI via `serve`, and a serverless Web Bluetooth page that prints straight from the browser.
 
 ## Install
 
@@ -127,13 +127,42 @@ There is no authentication — anyone on the LAN can print. Worst case that's wa
 
 `/preview/url` and `/print/url` (like the CLI's `--url`) render pages through headless Google Chrome, which must be installed. Only `http://` and `https://` URLs are accepted. Build with `--no-default-features` to disable URL printing entirely; the routes then return 404 and `/health` reports `"url_printing": false`.
 
+## Web app (Web Bluetooth)
+
+A static web page that prints directly from the browser — no server, no install. Rendering (text, markdown, QR, images) runs entirely client-side via `lxd2-core` compiled to WebAssembly, and the page talks to the printer over Web Bluetooth.
+
+### Browser support
+
+Chrome and Edge on desktop and Android support Web Bluetooth; Safari (including all of iOS) and Firefox do not. The preview works everywhere — only printing needs Web Bluetooth.
+
+### Build
+
+```
+rustup target add wasm32-unknown-unknown
+scripts/build-web.sh    # needs wasm-pack
+```
+
+This builds `crates/lxd2-web` with [wasm-pack](https://rustwasm.github.io/wasm-pack/) and puts the WASM package in `web/pkg/`.
+
+### Run locally
+
+```
+python3 -m http.server 8080 -d web
+```
+
+then open http://localhost:8080. Web Bluetooth requires a secure context — `localhost` or `https` — so plain `http` on a LAN address will not work.
+
+### Hosting
+
+The `web/` directory (with `pkg/` built) is fully static — host it anywhere that serves over `https`, such as GitHub Pages.
+
 ## Configuration
 
 After each successful connection, lxd2 saves the printer's identifier and name to a config file — `~/Library/Application Support/lxd2/config.toml` on macOS (the platform config directory elsewhere) — and prefers that printer on later runs. If it is not seen, lxd2 falls back to a device advertising the saved name, or failing that any `LX*` device. `--device` overrides the saved printer, and the newly connected device is saved in its place. Delete the file to forget the saved printer.
 
 ## Architecture
 
-The workspace has two crates. `lxd2-core` is a sans-IO crate containing the protocol (packet building, CRC, auth, print-job state machine) and the rendering pipeline (text layout, dithering, raster chunking, PNG preview); it has no Bluetooth dependencies, keeping it WASM-ready for a future Web Bluetooth version. `lxd2` is the CLI, which drives `lxd2-core` over BLE using [btleplug](https://github.com/deviceplug/btleplug).
+The workspace has three crates. `lxd2-core` is a sans-IO crate containing the protocol (packet building, CRC, auth, print-job state machine) and the rendering pipeline (text layout, dithering, raster chunking, PNG preview); it has no Bluetooth dependencies. `lxd2` is the CLI, which drives `lxd2-core` over BLE using [btleplug](https://github.com/deviceplug/btleplug). `lxd2-web` compiles `lxd2-core` to WebAssembly for the static Web Bluetooth page in `web/`.
 
 ## Credits
 

@@ -20,15 +20,26 @@
 //! truncating cells with `…` — to fit the 384 px roll. Left-aligned only;
 //! markdown alignment markers are ignored.
 //!
+//! Two fence names turn a code block into a graphic instead of text, matched
+//! case-insensitively on the info string's first word (so ` ```QR ` and
+//! ` ```barcode utf8 ` both count): ` ```qr ` encodes its trimmed body as a QR
+//! code, ` ```barcode ` as a Code128 barcode (printable ASCII only, roughly 29
+//! characters — see [`barcode`](super::barcode)). Every other info string,
+//! including none at all, still renders as plain code text. A payload the
+//! encoder rejects prints its error message as code text: a bad code never
+//! panics or costs the reader the rest of the document.
+//!
 //! Deviation from the plan's break mapping: a soft break renders as a space
 //! (standard markdown behavior, reads better on a 384 px roll); only a hard
 //! break starts a new line. Trailing blank space after the last block is
 //! trimmed, as are blank lines abutting a horizontal rule (the rule carries
 //! its own margins).
 
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
+use super::barcode::render_barcode;
 use super::bitmap::{Bitmap, WIDTH};
+use super::qr::render_qr;
 use super::rich::{render_rich, FontStyle, RichLine, Span, Style};
 
 /// Body text size in pixels.
@@ -45,6 +56,8 @@ const RULE_MARGIN: usize = 12;
 const RULE_THICKNESS: usize = 2;
 /// Dash (and gap) length of a tear marker's dashed line, in pixels.
 const TEAR_DASH: usize = 8;
+/// White margin above and below a rendered ` ```qr ` / ` ```barcode ` fence.
+const FENCE_MARGIN: usize = 8;
 
 /// A vertically-stacked unit of lowered markdown.
 enum MdBlock {
@@ -52,6 +65,37 @@ enum MdBlock {
     Rule,
     /// A dashed tear-off line (`- - -` in the source).
     Tear,
+    /// A ` ```qr ` fence: the payload to encode.
+    Qr(String),
+    /// A ` ```barcode ` fence: the payload to encode.
+    Barcode(String),
+}
+
+/// Which renderer a code block's info string selects.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fence {
+    /// Plain code text — the default for indented blocks and every info
+    /// string that is not a recognized fence name.
+    Code,
+    Qr,
+    Barcode,
+}
+
+/// Classify a fence info string: its first whitespace-separated token, compared
+/// case-insensitively. Everything unrecognized (including `rust` and the empty
+/// info string of a bare ` ``` ` fence) stays plain code text.
+fn fence_kind(info: &str) -> Fence {
+    match info
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "qr" => Fence::Qr,
+        "barcode" => Fence::Barcode,
+        _ => Fence::Code,
+    }
 }
 
 /// Render markdown to a 1-bit bitmap.
@@ -65,9 +109,48 @@ pub fn render_markdown(md: &str) -> Bitmap {
             MdBlock::Lines(lines) => render_rich(lines),
             MdBlock::Rule => rule_bitmap(),
             MdBlock::Tear => tear_bitmap(),
+            MdBlock::Qr(data) => fence_bitmap(render_qr(data, None)),
+            MdBlock::Barcode(data) => fence_bitmap(render_barcode(data)),
         })
         .collect();
     stack(bitmaps)
+}
+
+/// Lay out a ` ```qr ` / ` ```barcode ` fence's render.
+///
+/// On success the code (already 384 px wide and centered) gets a
+/// [`FENCE_MARGIN`] px white margin above and below — on top of whatever
+/// margin the renderer itself contributes, so a QR ends up with 24 px.
+///
+/// On failure the encoder's message renders as code-style text instead. A
+/// payload that cannot be encoded — too long for any QR version, non-ASCII in
+/// a barcode — must never panic or abort the surrounding document: the reader
+/// gets a printed diagnostic and the rest of the page.
+fn fence_bitmap<E: std::fmt::Display>(rendered: Result<Bitmap, E>) -> Bitmap {
+    let code = match rendered {
+        Ok(code) => code,
+        Err(e) => return fence_error(&e.to_string()),
+    };
+    let mut out = Bitmap::new(2 * FENCE_MARGIN + code.height());
+    for y in 0..code.height() {
+        for x in 0..WIDTH {
+            if code.get(x, y) {
+                out.set(x, FENCE_MARGIN + y, true);
+            }
+        }
+    }
+    out
+}
+
+/// A failed fence's message, as one code-style line (Regular 20 px, indent 16).
+fn fence_error(message: &str) -> Bitmap {
+    render_rich(&[RichLine {
+        spans: vec![Span {
+            text: message.to_string(),
+            style: Style::new(FontStyle::Regular, CODE_SIZE),
+        }],
+        indent: CODE_INDENT,
+    }])
 }
 
 /// A full-width 2 px black bar with white margins above and below.
@@ -222,6 +305,10 @@ struct Lowering {
     lists: Vec<Option<u64>>,
     /// True inside a fenced or indented code block.
     in_code: bool,
+    /// Which renderer the open code block's info string selected.
+    fence: Fence,
+    /// Raw content of an open `qr`/`barcode` fence.
+    fence_buf: String,
     /// Partial code line, pending its `\n` (or the block's end).
     code_buf: String,
     /// Image nesting depth; while > 0 all events are skipped.
@@ -250,6 +337,8 @@ fn lower(md: &str) -> Vec<MdBlock> {
         heading_size: None,
         lists: Vec::new(),
         in_code: false,
+        fence: Fence::Code,
+        fence_buf: String::new(),
         code_buf: String::new(),
         image_depth: 0,
         in_table: false,
@@ -372,7 +461,11 @@ impl Lowering {
                 if self.in_table {
                     self.table_cell.push_str(&text);
                 } else if self.in_code {
-                    self.push_code_text(&text);
+                    match self.fence {
+                        Fence::Code => self.push_code_text(&text),
+                        // A qr/barcode fence's body is data, not text to set.
+                        Fence::Qr | Fence::Barcode => self.fence_buf.push_str(&text),
+                    }
                 } else {
                     self.push_span(&text);
                 }
@@ -458,10 +551,17 @@ impl Lowering {
                 };
                 self.push_span(&prefix);
             }
-            Tag::CodeBlock(_) => {
+            Tag::CodeBlock(kind) => {
                 self.flush_line();
                 self.in_code = true;
-                self.current.indent = self.quote_indent() + CODE_INDENT;
+                self.fence = match &kind {
+                    CodeBlockKind::Fenced(info) => fence_kind(info),
+                    CodeBlockKind::Indented => Fence::Code,
+                };
+                match self.fence {
+                    Fence::Code => self.current.indent = self.quote_indent() + CODE_INDENT,
+                    Fence::Qr | Fence::Barcode => self.fence_buf.clear(),
+                }
             }
             Tag::Strong => self.bold += 1,
             Tag::Emphasis => self.italic += 1,
@@ -514,14 +614,30 @@ impl Lowering {
             }
             TagEnd::Item => self.flush_line(),
             TagEnd::CodeBlock => {
-                // A fenced block's text ends in `\n`, leaving an empty buffer;
-                // flush any remainder so a missing final newline still prints.
-                if !self.code_buf.is_empty() {
-                    self.flush_code_line();
-                }
                 self.in_code = false;
-                self.current.indent = 0;
-                self.push_blank();
+                match std::mem::replace(&mut self.fence, Fence::Code) {
+                    Fence::Code => {
+                        // A fenced block's text ends in `\n`, leaving an empty
+                        // buffer; flush any remainder so a missing final
+                        // newline still prints.
+                        if !self.code_buf.is_empty() {
+                            self.flush_code_line();
+                        }
+                        self.current.indent = 0;
+                        self.push_blank();
+                    }
+                    // A qr/barcode fence is its own stacked block, like a rule.
+                    kind => {
+                        let data = std::mem::take(&mut self.fence_buf).trim().to_string();
+                        self.flush_block();
+                        self.blocks.push(if kind == Fence::Qr {
+                            MdBlock::Qr(data)
+                        } else {
+                            MdBlock::Barcode(data)
+                        });
+                        self.current.indent = 0;
+                    }
+                }
             }
             TagEnd::Strong => self.bold = self.bold.saturating_sub(1),
             TagEnd::Emphasis => self.italic = self.italic.saturating_sub(1),
@@ -872,5 +988,117 @@ mod tests {
         let b = render_markdown("> quote");
         assert!(has_ink(&b), "blockquote has no ink");
         assert!(!ink_before(&b, 24), "ink left of the 24 px quote indent");
+    }
+
+    /// Bounding box of black pixels: (min_x, min_y, max_x, max_y).
+    fn ink_bbox(b: &Bitmap) -> Option<(usize, usize, usize, usize)> {
+        let mut bbox: Option<(usize, usize, usize, usize)> = None;
+        for y in 0..b.height() {
+            for x in 0..WIDTH {
+                if b.get(x, y) {
+                    bbox = Some(match bbox {
+                        None => (x, y, x, y),
+                        Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                    });
+                }
+            }
+        }
+        bbox
+    }
+
+    /// Longest run of consecutive black pixels down column `x`.
+    fn tallest_run(b: &Bitmap, x: usize) -> usize {
+        let (mut best, mut run) = (0, 0);
+        for y in 0..b.height() {
+            run = if b.get(x, y) { run + 1 } else { 0 };
+            best = best.max(run);
+        }
+        best
+    }
+
+    #[test]
+    fn qr_fence_renders_block() {
+        let b = render_markdown("```qr\nhttps://example.com\n```");
+        let (min_x, min_y, max_x, max_y) = ink_bbox(&b).expect("qr fence has no ink");
+        let w = max_x - min_x + 1;
+        let h = max_y - min_y + 1;
+        assert!(
+            w.abs_diff(h) * 10 <= w,
+            "bbox {w}x{h} is not square within 10%"
+        );
+        assert!(min_x >= 16, "ink at x = {min_x}, inside the quiet zone");
+        assert!(min_y >= 8, "ink at y = {min_y}, inside the top margin");
+    }
+
+    #[test]
+    fn qr_fence_case_insensitive() {
+        let upper = render_markdown("```QR\nhttps://example.com\n```");
+        let lower = render_markdown("```qr\nhttps://example.com\n```");
+        assert!(has_ink(&upper), "uppercase QR fence has no ink");
+        assert_eq!(rows(&upper), rows(&lower), "```QR should match ```qr");
+        // An info string with attributes after the name still selects the fence.
+        let attrs = render_markdown("```  Qr  extra\nhttps://example.com\n```");
+        assert_eq!(rows(&attrs), rows(&lower), "```Qr extra should match ```qr");
+    }
+
+    #[test]
+    fn qr_fence_too_long_renders_error_not_panic() {
+        let md = format!("```qr\n{}\n```", "a".repeat(4000));
+        let b = render_markdown(&md);
+        assert!(has_ink(&b), "over-long qr fence rendered nothing");
+        // Error text, not a code: far shorter than a QR block and left-aligned
+        // at the code indent rather than centered in a quiet zone.
+        assert!(
+            b.height() < 100,
+            "height {} looks like a QR, not error text",
+            b.height()
+        );
+        assert!(ink_before(&b, 40), "no ink at the 16 px code indent");
+    }
+
+    #[test]
+    fn barcode_fence_renders_bars() {
+        let b = render_markdown("```barcode\nHELLO123\n```");
+        assert!(has_ink(&b), "barcode fence has no ink");
+        assert!(!ink_before(&b, 16), "ink inside the 16 px quiet zone");
+        let tall = (0..WIDTH).filter(|&x| tallest_run(&b, x) >= 60).count();
+        assert!(tall >= 20, "only {tall} columns have a 60 px black run");
+    }
+
+    #[test]
+    fn barcode_fence_invalid_renders_error_not_panic() {
+        for md in [
+            "```barcode\n\n```",
+            "```barcode\ncafé ☕\n```",
+            "```barcode\nWAY TOO LONG FOR A 384 PIXEL ROLL OF PAPER\n```",
+        ] {
+            let b = render_markdown(md);
+            assert!(has_ink(&b), "invalid barcode {md:?} rendered nothing");
+            let tall = (0..WIDTH).filter(|&x| tallest_run(&b, x) >= 60).count();
+            assert_eq!(tall, 0, "invalid barcode {md:?} drew bars");
+            assert!(ink_before(&b, 40), "no error text at the code indent");
+        }
+    }
+
+    #[test]
+    fn plain_code_fence_unaffected() {
+        let expected = render_rich(&[RichLine {
+            spans: vec![Span {
+                text: "code".to_string(),
+                style: Style::new(FontStyle::Regular, CODE_SIZE),
+            }],
+            indent: CODE_INDENT,
+        }]);
+        for md in [
+            "```\ncode\n```",
+            "```rust\ncode\n```",
+            "```qrcode\ncode\n```",
+        ] {
+            assert_eq!(
+                rows(&render_markdown(md)),
+                rows(&expected),
+                "{md:?} should still render as code text"
+            );
+        }
     }
 }

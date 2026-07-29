@@ -86,7 +86,13 @@ impl WasmJob {
             .map_err(|e| e.to_string())
     }
 
-    /// Next step for the JS pump, as a tagged object (see [`ActionMsg`]).
+    /// Next step for the JS pump, as one of four tagged objects:
+    ///
+    /// - `{kind: "send", bytes: Uint8Array}` — write `bytes` to 0xFFE1
+    /// - `{kind: "waitMs", ms: number}` — sleep `ms` milliseconds
+    /// - `{kind: "waitNotification"}` — wait for a 0xFFE2 notification,
+    ///   feed it to `on_notification`, then call `next_action` again
+    /// - `{kind: "done"}` — job finished; check `error()`
     pub fn next_action(&mut self) -> JsValue {
         // Serializing ActionMsg cannot fail: it is a closed enum of
         // primitives and bytes, with no maps or non-string keys.

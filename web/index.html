@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lxd2 web</title>
+<style>
+  :root {
+    --bg: #f4f4f2;
+    --card: #ffffff;
+    --text: #1c1c1a;
+    --muted: #6b6b66;
+    --border: #d9d9d4;
+    --accent: #2563eb;
+    --accent-text: #ffffff;
+    --danger: #b91c1c;
+    --ok: #15803d;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131315;
+      --card: #1e1e21;
+      --text: #ececea;
+      --muted: #9a9a94;
+      --border: #35353a;
+      --accent: #3b82f6;
+      --danger: #f87171;
+      --ok: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 16px 16px 48px;
+  }
+  header { margin-bottom: 16px; }
+  h1 {
+    margin: 0 0 4px;
+    font-size: 28px;
+    letter-spacing: -0.02em;
+  }
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 32px;
+  }
+  #status {
+    color: var(--muted);
+    font-size: 14px;
+    flex: 1;
+  }
+  #connect {
+    flex: none;
+    padding: 4px 12px;
+    min-height: 32px;
+    font-size: 13px;
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  #banner {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    color: var(--muted);
+    margin-bottom: 12px;
+  }
+  nav {
+    display: flex;
+    gap: 4px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 4px;
+    margin-bottom: 12px;
+  }
+  nav button {
+    flex: 1;
+    padding: 10px 0;
+    font-size: 14px;
+    background: transparent;
+    color: var(--muted);
+    border: none;
+    border-radius: 8px;
+  }
+  nav button.active {
+    background: var(--accent);
+    color: var(--accent-text);
+  }
+  .tab { display: none; }
+  .tab.active { display: block; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+  textarea, input[type=text], select {
+    width: 100%;
+    padding: 10px 12px;
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  textarea { min-height: 120px; resize: vertical; }
+  input[type=file] { width: 100%; font-size: 14px; padding: 8px 0; }
+  label {
+    display: block;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .field + .field { margin-top: 10px; }
+  .options {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .options .density { grid-column: 1 / -1; }
+  .density-row { display: flex; align-items: center; gap: 12px; }
+  input[type=range] { flex: 1; accent-color: var(--accent); }
+  #density-val {
+    min-width: 1.5em;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  input[type=number] {
+    width: 100%;
+    padding: 10px 12px;
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .actions {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .actions button {
+    flex: 1;
+    padding: 14px 0;
+    font-size: 16px;
+    font-weight: 600;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+  }
+  .actions button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
+  button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #toast {
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    margin-bottom: 12px;
+    border: 1px solid var(--border);
+  }
+  #toast.err { color: var(--danger); border-color: var(--danger); }
+  #toast.ok { color: var(--ok); border-color: var(--ok); }
+  #preview-wrap { text-align: center; }
+  #preview-img {
+    width: 384px;
+    max-width: 100%;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+  #preview-hint {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 6px;
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>lxd2 web</h1>
+    <div class="status-row">
+      <span id="status">not connected</span>
+      <button id="connect" type="button">Connect</button>
+    </div>
+  </header>
+
+  <div id="banner" hidden>This browser doesn&rsquo;t support Web Bluetooth
+    (use Chrome or Edge on desktop/Android). Preview still works.</div>
+
+  <nav id="tabs">
+    <button type="button" data-tab="text" class="active">Text</button>
+    <button type="button" data-tab="markdown">Markdown</button>
+    <button type="button" data-tab="image">Image</button>
+    <button type="button" data-tab="qr">QR</button>
+  </nav>
+
+  <section class="tab card active" id="tab-text">
+    <textarea id="text-content" placeholder="Text to print…"></textarea>
+  </section>
+
+  <section class="tab card" id="tab-markdown">
+    <textarea id="md-content" placeholder="# Markdown to print…"></textarea>
+  </section>
+
+  <section class="tab card" id="tab-image">
+    <div class="field">
+      <label for="image-file">Image (PNG or JPEG)</label>
+      <input type="file" id="image-file" accept="image/png,image/jpeg">
+    </div>
+    <div class="field">
+      <label for="image-dither">Dither</label>
+      <select id="image-dither">
+        <option value="floyd">Floyd–Steinberg</option>
+        <option value="atkinson">Atkinson</option>
+        <option value="threshold">Threshold</option>
+      </select>
+    </div>
+  </section>
+
+  <section class="tab card" id="tab-qr">
+    <div class="field">
+      <label for="qr-data">Data</label>
+      <input type="text" id="qr-data" placeholder="https://example.com">
+    </div>
+    <div class="field">
+      <label for="qr-caption">Caption (optional)</label>
+      <input type="text" id="qr-caption" placeholder="scan me">
+    </div>
+  </section>
+
+  <div class="card options">
+    <div class="density">
+      <label for="density">Density</label>
+      <div class="density-row">
+        <input type="range" id="density" min="1" max="7" step="1" value="3">
+        <span id="density-val">3</span>
+      </div>
+    </div>
+    <div>
+      <label for="feed">Feed</label>
+      <input type="number" id="feed" min="0" max="2000" value="40">
+    </div>
+    <div>
+      <label for="copies">Copies</label>
+      <input type="number" id="copies" min="1" max="20" value="1">
+    </div>
+  </div>
+
+  <div class="actions">
+    <button type="button" id="preview-btn" disabled>Preview</button>
+    <button type="button" id="print-btn" class="primary" disabled>Print</button>
+  </div>
+
+  <div id="toast" hidden></div>
+
+  <div id="preview-wrap" hidden>
+    <img id="preview-img" alt="Print preview">
+    <div id="preview-hint">Preview at printer width (384 px)</div>
+  </div>
+</main>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

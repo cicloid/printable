@@ -1,5 +1,6 @@
 mod ble;
 mod cli;
+mod config;
 
 use std::fmt;
 use std::io::Read as _;
@@ -13,6 +14,7 @@ use lxd2_core::raster::{bitmap_to_png, image_to_bitmap, prepare, render_text, Bi
 
 use crate::ble::{NoPaper, NoPrinterFound};
 use crate::cli::{Cli, Command, DeviceArgs, PrintArgs};
+use crate::config::{Config, SavedDevice};
 
 /// How long `connect` keeps scanning for a matching device.
 const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -79,9 +81,32 @@ async fn cmd_scan(timeout: u64) -> anyhow::Result<i32> {
     Ok(0)
 }
 
+/// Remember the connected printer in the config file, if it changed.
+///
+/// Best effort: a failed save warns but never fails the command.
+fn remember_device(config: &mut Config, printer: &ble::Printer) {
+    let current = SavedDevice {
+        id: printer.id(),
+        name: printer.name().to_string(),
+    };
+    if config.device.as_ref() != Some(&current) {
+        config.device = Some(current);
+        if let Err(e) = config.save() {
+            eprintln!("warning: failed to save config: {e:#}");
+        }
+    }
+}
+
 async fn cmd_status(device: DeviceArgs) -> anyhow::Result<()> {
-    let mut printer = ble::connect(device.device.as_deref(), SCAN_TIMEOUT).await?;
+    let mut config = Config::load();
+    let mut printer = ble::connect_resolved(
+        device.device.as_deref(),
+        config.device.as_ref(),
+        SCAN_TIMEOUT,
+    )
+    .await?;
     eprintln!("Connected to {}.", printer.name());
+    remember_device(&mut config, &printer);
     let status = printer.wait_status(Duration::from_secs(5)).await;
     printer.disconnect().await;
     let s = status?;
@@ -135,8 +160,15 @@ async fn cmd_print(args: PrintArgs) -> anyhow::Result<()> {
     let mut job = PrintJob::new(&bitmap, density, rand::random(), INTER_PACKET_DELAY_MS)
         .context("cannot print this job")?;
 
-    let mut printer = ble::connect(device.device.as_deref(), SCAN_TIMEOUT).await?;
+    let mut config = Config::load();
+    let mut printer = ble::connect_resolved(
+        device.device.as_deref(),
+        config.device.as_ref(),
+        SCAN_TIMEOUT,
+    )
+    .await?;
     eprintln!("Connected to {}.", printer.name());
+    remember_device(&mut config, &printer);
 
     // Pre-print check, best effort: status frames arrive unsolicited after
     // subscribing, but not receiving one is not fatal.

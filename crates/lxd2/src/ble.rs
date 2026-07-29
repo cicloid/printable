@@ -18,6 +18,8 @@ use btleplug::api::{
 };
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use futures::StreamExt;
+
+use crate::config::SavedDevice;
 use lxd2_core::protocol::job::{Action, PrintJob};
 use lxd2_core::protocol::notifications::{self, Notification, Status};
 use tokio::sync::mpsc;
@@ -85,16 +87,46 @@ async fn start_scan(adapter: &Adapter) -> Result<()> {
     )
 }
 
-/// Returns the advertised name if the device matches: its name (or id)
-/// contains `filter`, or — with no filter — its name starts with "LX".
-async fn matching_name(p: &Peripheral, filter: Option<&str>) -> Option<String> {
+/// What a connect attempt is hunting for. Resolution order (highest first):
+///
+/// 1. `Filter` — an explicit `--device` string; name or id substring match.
+/// 2. `SavedId` — the id remembered in the config file; an exact id match
+///    wins, but any `LX*` name is kept as a fallback in case the saved
+///    device never shows up before the scan deadline.
+/// 3. `AnyLx` — no flag, no saved device: first device named `LX*`.
+enum Target<'a> {
+    Filter(&'a str),
+    SavedId(&'a str),
+    AnyLx,
+}
+
+/// How well a peripheral satisfies a [`Target`].
+enum MatchKind {
+    /// Take this device immediately.
+    Exact,
+    /// Use this device only once the scan deadline expires.
+    Fallback,
+}
+
+/// Match a peripheral against `target`, returning its advertised name.
+async fn match_target(p: &Peripheral, target: &Target<'_>) -> Option<(MatchKind, String)> {
     let props = p.properties().await.ok()??;
     let name = props.local_name?;
-    let matched = match filter {
-        Some(f) => name.contains(f) || p.id().to_string().contains(f),
-        None => name.starts_with("LX"),
-    };
-    matched.then_some(name)
+    match target {
+        Target::Filter(f) => {
+            (name.contains(f) || p.id().to_string().contains(f)).then_some((MatchKind::Exact, name))
+        }
+        Target::SavedId(id) => {
+            if p.id().to_string() == *id {
+                Some((MatchKind::Exact, name))
+            } else if name.starts_with("LX") {
+                Some((MatchKind::Fallback, name))
+            } else {
+                None
+            }
+        }
+        Target::AnyLx => name.starts_with("LX").then_some((MatchKind::Exact, name)),
+    }
 }
 
 /// Scan for `timeout`, returning (name, id) of every device named `LX*`.
@@ -105,7 +137,7 @@ pub async fn scan(timeout: Duration) -> Result<Vec<(String, String)>> {
 
     let mut found = Vec::new();
     for p in adapter.peripherals().await? {
-        if let Some(name) = matching_name(&p, None).await {
+        if let Some((_, name)) = match_target(&p, &Target::AnyLx).await {
             found.push((name, p.id().to_string()));
         }
     }
@@ -113,17 +145,22 @@ pub async fn scan(timeout: Duration) -> Result<Vec<(String, String)>> {
     Ok(found)
 }
 
-/// First device matching `filter` (see [`matching_name`]), if any.
+/// One pass over the currently discovered peripherals: the first exact match
+/// for `target`, plus the first fallback candidate (see [`MatchKind`]).
+#[allow(clippy::type_complexity)]
 async fn find_match(
     adapter: &Adapter,
-    filter: Option<&str>,
-) -> Result<Option<(Peripheral, String)>> {
+    target: &Target<'_>,
+) -> Result<(Option<(Peripheral, String)>, Option<(Peripheral, String)>)> {
+    let mut fallback = None;
     for p in adapter.peripherals().await? {
-        if let Some(name) = matching_name(&p, filter).await {
-            return Ok(Some((p, name)));
+        match match_target(&p, target).await {
+            Some((MatchKind::Exact, name)) => return Ok((Some((p, name)), fallback)),
+            Some((MatchKind::Fallback, name)) if fallback.is_none() => fallback = Some((p, name)),
+            _ => {}
         }
     }
-    Ok(None)
+    Ok((None, fallback))
 }
 
 /// A connected printer with its notification stream already subscribed.
@@ -140,18 +177,42 @@ pub struct Printer {
 
 /// Scan until a matching device appears (up to `scan_timeout`), then connect,
 /// discover characteristics, and subscribe to notifications.
-pub async fn connect(filter: Option<&str>, scan_timeout: Duration) -> Result<Printer> {
+///
+/// Resolution order (see [`Target`]): `explicit` filter > `saved` device id
+/// (falling back to any `LX*` name if the saved id is not seen before the
+/// deadline) > first device named `LX*`.
+pub async fn connect_resolved(
+    explicit: Option<&str>,
+    saved: Option<&SavedDevice>,
+    scan_timeout: Duration,
+) -> Result<Printer> {
+    let target = match (explicit, saved) {
+        (Some(f), _) => Target::Filter(f),
+        (None, Some(d)) => Target::SavedId(&d.id),
+        (None, None) => Target::AnyLx,
+    };
+
     let adapter = default_adapter().await?;
     start_scan(&adapter).await?;
 
     let deadline = tokio::time::Instant::now() + scan_timeout;
+    let mut fallback = None;
     let (peripheral, name) = loop {
-        if let Some(found) = find_match(&adapter, filter).await? {
+        let (exact, fb) = find_match(&adapter, &target).await?;
+        if let Some(found) = exact {
             break found;
         }
+        if fallback.is_none() {
+            fallback = fb;
+        }
         if tokio::time::Instant::now() >= deadline {
-            let _ = adapter.stop_scan().await;
-            return Err(anyhow::Error::msg(NoPrinterFound));
+            match fallback.take() {
+                Some(found) => break found,
+                None => {
+                    let _ = adapter.stop_scan().await;
+                    return Err(anyhow::Error::msg(NoPrinterFound));
+                }
+            }
         }
         tokio::time::sleep(DISCOVERY_POLL).await;
     };
@@ -235,6 +296,12 @@ impl Printer {
     /// The device's advertised name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The peripheral's platform identifier as a string (what the config
+    /// file stores to reconnect later).
+    pub fn id(&self) -> String {
+        self.peripheral.id().to_string()
     }
 
     /// Wait for the first Status notification. Status frames arrive

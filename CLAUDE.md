@@ -87,10 +87,12 @@ Before writing or changing any protocol byte:
 3. If neither is conclusive, say so rather than guessing. "The docs don't
    specify this and I couldn't confirm it in the source" is a correct answer.
 
-The same rule applies to the rendering limits (384 px width, 32 images, 5 MB and
-15 s per fetch, 30 s budget, 20 MB body, 28-character barcodes): grep for the
-constant rather than recalling it. Several of these were changed after the
-README was first written.
+The same rule applies to the rendering and transport limits (384 px width, 32
+images, 5 MB and 15 s per fetch, 30 s budget, 20 MiB body, 28-character
+barcodes, `feed` ≤ 2000 and `size` ≤ 128 on the server but unbounded on the
+CLI, and the five timeouts in `ble.rs`): grep for the constant rather than
+recalling it. Several of these were changed after the README was first written,
+and the CLI and server deliberately differ on some of them.
 
 ## The server's `allow_local = false`
 
@@ -103,8 +105,16 @@ paths. See [SECURITY.md](SECURITY.md).
 ## Debugging
 
 The CLI has a global `-v` flag: `-v` for flow-control events, `-vv` for parsed
-frames, `-vvv` for raw hex. `RUST_LOG` overrides it. Prefer this over adding
-`println!` calls, and never add logging to `printa-ble-core`.
+frames, `-vvv` for raw hex **plus dependency logs**. `RUST_LOG` overrides it.
+Prefer this over adding `println!` calls, and never add logging to
+`printa-ble-core`.
+
+The default filter is `printable=warn` — crate-scoped, with no bare level
+directive, so dependencies are disabled outright rather than merely quiet. That
+is load-bearing and pinned by a test: chromiumoxide reports harmless websocket
+deserialization failures at ERROR, and a global floor made a successful
+`print --url` look like it had failed. Do not "simplify" `cli::log_filter` into
+a plain level ladder.
 
 ## Plan documents are historical
 
@@ -135,6 +145,8 @@ cargo clippy -p printa-ble-web --target wasm32-unknown-unknown   # if core chang
 cargo test --workspace
 ```
 
-225 tests should pass, 1 ignored (it needs Chrome and network). If your change
-touched rendering, generate a `--preview` PNG and actually look at it before
-claiming the change works.
+Everything should pass, with exactly 1 ignored (it needs Chrome and network).
+Do not quote a test count from memory — [CONTRIBUTING.md](CONTRIBUTING.md#testing)
+holds the only one in the repository, and even that is a snapshot. If your
+change touched rendering, generate a `--preview` PNG and actually look at it
+before claiming the change works.

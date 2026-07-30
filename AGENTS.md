@@ -3,23 +3,23 @@
 ## Project Structure & Module Organization
 - `crates/printa-ble-core`: sans-IO library — protocol and rendering, no I/O deps.
   - `src/protocol/`: packets, CRC, auth, print-job state machine (`job.rs`, `JobStats`).
-  - `src/raster/`: text, markdown, dither, QR, barcode, bitmap, PNG preview.
+  - `src/raster/`: text, markdown, dither, QR, barcode, wagara, bitmap, PNG preview.
   - `assets/`: embedded JetBrains Mono (SIL OFL).
 - `crates/printa-ble`: CLI + HTTP server; builds the `printable` binary.
   - `ble.rs` (btleplug transport), `server.rs` (+ `server/ui.html`), `cli.rs`, `md_images.rs`, `chrome.rs`, `config.rs`, `print_service.rs`.
 - `crates/printa-ble-web`: WASM bindings for the static Web Bluetooth page.
 - `web/`: static page (`index.html`, `app.js`); `web/pkg/` is generated, gitignored.
-- `docs/`: `PROTOCOL.md`, `CLI.md`, `API.md`, `MARKDOWN.md`, `ARCHITECTURE.md`; `docs/plans/` is historical.
+- `docs/`: `PROTOCOL.md`, `CLI.md`, `API.md`, `MARKDOWN.md`, `ARCHITECTURE.md`; `docs/plans/` is historical. The `README.md` Documentation section indexes them all.
 
 ## Build, Test, and Development Commands
 - Build: `cargo build`; release: `cargo build --release`.
 - Run CLI: `cargo run -p printa-ble -- <cmd>`; install: `cargo install --path crates/printa-ble`.
-- Preview without printing: `cargo run -p printa-ble -- print "hi" --preview out.png`.
+- Preview without printing: `cargo run -p printa-ble -- print "hi" --preview out.png`; add `-m` to render the input as markdown.
 - Server: `cargo run -p printa-ble -- serve --bind 127.0.0.1`.
 - Web app: `rustup target add wasm32-unknown-unknown && scripts/build-web.sh` then `python3 -m http.server 8080 -d web`.
 - Test: `cargo test --workspace`; Chrome test: `cargo test -p printa-ble -- --ignored`.
 - Lint/format: `cargo fmt --all` and `cargo clippy --workspace --all-targets`, plus `cargo clippy -p printa-ble-web --target wasm32-unknown-unknown`.
-- Debug: global `-v` / `-vv` / `-vvv` (flow control / parsed frames / raw hex); `RUST_LOG` overrides it.
+- Debug: global `-v` / `-vv` / `-vvv` (flow control / parsed frames / raw hex plus dependency logs); the default filter is crate-scoped (`printable=warn`) and `RUST_LOG` overrides it.
 
 ## Coding Style & Naming Conventions
 - Rust 2021, stable toolchain, no MSRV pin; default rustfmt, no overrides.
@@ -30,7 +30,7 @@
 
 ## Testing Guidelines
 - Unit tests live in `mod tests` next to the code; integration tests in `crates/printa-ble/tests/`.
-- 225 tests, all runnable with no printer, no adapter, no network; one `#[ignore]`d test needs Chrome.
+- The whole suite runs with no printer, no adapter, no network; exactly one `#[ignore]`d test needs Chrome. `CONTRIBUTING.md` holds the only test count in the repo — count them rather than quoting one from elsewhere.
 - Test-first. Rendering changes need a pixel/dimension assertion or a `--preview` check; protocol changes need byte-level assertions against known-good frames.
 - Cover failure paths: bad QR payloads, oversized barcodes, undecodable images must not panic or abort the document.
 - Server routes are tested in-process via `tower::ServiceExt`; no live socket or printer required.

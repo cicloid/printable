@@ -5,8 +5,8 @@ workflow, and the architectural rules the codebase depends on.
 
 The single most important thing to know up front: **you never need a printer to
 develop this project.** Every rendering path has a `--preview` mode that writes
-a PNG instead of sending bytes over Bluetooth, and 200+ tests run on a plain
-laptop with no hardware attached.
+a PNG instead of sending bytes over Bluetooth, and the whole test suite runs on
+a plain laptop with no hardware attached.
 
 ## Development Setup
 
@@ -67,9 +67,17 @@ cargo test -p printa-ble-core
 cargo test --workspace markdown
 ```
 
-The suite is **225 tests** (116 in `printa-ble-core`, 80 unit + 8 integration in
-`printa-ble`, 21 in `printa-ble-web`), plus one `#[ignore]`d test. All of them
-run natively with no printer, no Bluetooth adapter, and no network.
+This is the one place in the repository that quotes a test count, because it is
+the one that goes stale. At the time of writing `cargo test --workspace`
+collects **259 tests** — 140 in `printa-ble-core`, 89 unit plus 8 integration in
+`printa-ble`, 21 in `printa-ble-web` — of which 258 run and one is `#[ignore]`d.
+The whole suite finishes in a couple of seconds with no printer, no Bluetooth
+adapter, and no network. If your change adds tests, the number here is expected
+to move; count them rather than trusting this line:
+
+```bash
+cargo test --workspace 2>&1 | grep 'test result:'
+```
 
 ### What Needs Hardware, and What Doesn't
 
@@ -102,9 +110,14 @@ it as a PNG instead. Use it constantly:
 ```bash
 cargo run -p printa-ble -- print "hello world" --preview /tmp/out.png
 cargo run -p printa-ble -- print -f notes.md --preview /tmp/out.png
+cargo run -p printa-ble -- print -m "# heading" --preview /tmp/out.png
 cargo run -p printa-ble -- qr "https://example.com" --caption "scan me" --preview /tmp/out.png
 open /tmp/out.png
 ```
+
+`-m` forces markdown rendering for input with no `.md` extension to give it
+away, which makes it the quickest way to preview a snippet without writing a
+file first.
 
 The server exposes the same thing over HTTP at `/preview/text`,
 `/preview/markdown`, `/preview/qr`, `/preview/image`, and `/preview/url` — all
@@ -113,13 +126,24 @@ of which return a PNG and never touch the printer. See [docs/API.md](docs/API.md
 ### Debugging
 
 The CLI has structured logging on a global `-v` flag (it works before or after
-the subcommand):
+the subcommand). Everything goes to **stderr**; stdout carries the command's
+actual output, and scripts parse it.
 
-| Flag | Shows |
-|---|---|
-| `-v` | Flow-control events — connection, job progress, retransmits, holds |
-| `-vv` | Parsed protocol frames |
-| `-vvv` | Raw hex on the wire, plus dependency logs |
+| Flag | Filter | Shows |
+|---|---|---|
+| *(none)* | `printable=warn` | This crate's warnings, and nothing else |
+| `-v` | `printable=info` | Flow control and progress — connection, thermal holds and resumes, retransmit requests, the server's request log and job summaries |
+| `-vv` | `printable=debug` | Parsed protocol frames, device resolution, image-resolution timings |
+| `-vvv` | `debug,printable=trace` | Raw hex on the wire, plus dependency logs |
+
+The default filter is **crate-scoped on purpose**, and there is a test pinning
+it (`cli::tests::dependency_errors_are_silent_below_the_last_verbosity_rung`).
+chromiumoxide logs the websocket frames it fails to deserialize at ERROR, and
+recent Chrome sends several per screenshot, so a global `warn` floor made a
+perfectly successful `print --url` emit two red lines about a connection error.
+Do not add a bare level directive to the first three rungs. `-vvv` is where
+dependency noise is deliberately allowed back, for when the fault might be in
+btleplug or Chrome rather than here.
 
 `RUST_LOG` overrides `-v` entirely when set, for finer-grained filtering:
 
@@ -260,9 +284,15 @@ Good first contributions, roughly in order of self-containedness:
   ordered/Bayer dithering would all fit the existing shape, and each is a
   contained change with an obvious preview-based test.
 - **Markdown features.** `crates/printa-ble-core/src/raster/markdown.rs` is the
-  biggest single file and the most extensible. Footnotes, definition lists,
-  nested blockquotes, and column alignment in tables are all unimplemented. See
-  [docs/MARKDOWN.md](docs/MARKDOWN.md) for what's supported today.
+  biggest single file and the most extensible. Footnotes, definition lists, and
+  column alignment in tables are all unimplemented, and footnotes in particular
+  currently fail in a confusing way (a URL-shaped definition is silently eaten
+  as a link reference definition). See [docs/MARKDOWN.md](docs/MARKDOWN.md) for
+  what's supported today and its Gotchas section for the sharp edges.
+- **Graphic fences.** `qr`, `barcode` and `wagara` show the shape: a pure
+  renderer in `raster/`, a `Fence` variant, and an error path that prints text
+  rather than panicking. `wagara` is the one to copy if your fence needs
+  options as well as a payload.
 - **Linux and Windows testing.** btleplug supports both, and nothing in the
   codebase is knowingly macOS-specific outside the permission prompt. Nobody has
   tried. Reporting that it works — or exactly how it fails — is genuinely

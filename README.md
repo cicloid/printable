@@ -415,4 +415,8 @@ This project builds on protocol work from three reference implementations:
 
 ## License
 
-MIT — see [LICENSE](LICENSE). The embedded JetBrains Mono font is licensed under the SIL Open Font License; see [crates/printa-ble-core/assets/OFL.txt](crates/printa-ble-core/assets/OFL.txt).
+MIT — see [LICENSE](LICENSE). Two font families are embedded, both under the SIL
+Open Font License: JetBrains Mono
+([OFL.txt](crates/printa-ble-core/assets/OFL.txt)) for Latin text, and Noto Sans
+JP ([OFL-NotoSansJP.txt](crates/printa-ble-core/assets/OFL-NotoSansJP.txt)) for
+Japanese.

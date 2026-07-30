@@ -333,5 +333,8 @@ Security vulnerabilities do **not** go in public issues — see
 ## License
 
 By contributing, you agree that your contributions will be licensed under the
-MIT License. The embedded JetBrains Mono font is under the SIL Open Font
-License; see `crates/printa-ble-core/assets/OFL.txt`.
+MIT License. Two embedded font families are under the SIL Open Font License:
+JetBrains Mono (`crates/printa-ble-core/assets/OFL.txt`) and Noto Sans JP
+(`crates/printa-ble-core/assets/OFL-NotoSansJP.txt`). If you add or replace a
+bundled font, ship its license file alongside it and update both this file and
+the README.

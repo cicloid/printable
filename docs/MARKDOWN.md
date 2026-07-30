@@ -115,14 +115,19 @@ The blockquote marker does not count as interior whitespace: `> ---` is still a 
 
 Tables are laid out as monospace text, not drawn boxes. The font makes the column arithmetic exact.
 
+Every width below is a **display column**, not a character. A full-width East-Asian character — CJK ideographs and their compatibility forms, kana, CJK punctuation, hangul syllables, and the fullwidth halves of Halfwidth and Fullwidth Forms — counts as two; everything else counts as one. Counting raw characters would let a Japanese cell overrun its column and push every column to its right out of line with the ASCII rows.
+
 - Cells flatten to plain text. Bold, italic, strikethrough, inline code, and links inside a cell lose their formatting; an image inside a cell collapses to its `[image: alt]` placeholder text.
 - Column width starts at the widest cell in that column (minimum 1).
 - Columns are joined by a **2-space gutter**, left-justified, and the header is followed by a dashed separator row.
-- The whole line must fit **32 characters** (a 20 px monospace line at 384 px). While it does not, the widest column is shrunk one character at a time, down to a floor of **3 characters**. A cell longer than its final width is truncated to `width − 1` characters plus `…`.
+- The whole line must fit **32 display columns** (a 20 px monospace line at 384 px). While it does not, the widest column is shrunk one column at a time, down to a floor of **3**. A cell wider than its final width is truncated to `width − 1` columns plus `…`.
+- **Truncation never splits a full-width character.** A character is kept only if it fits whole, so a cut that would land mid-glyph drops it and the leftover column becomes padding — a cell can therefore come out one column short of its budget rather than half a glyph over it.
 - Ragged rows are padded with empty cells; cells past the header count are dropped. A table with an empty header row renders nothing.
 - **Alignment markers (`:---:`, `---:`) are ignored.** Everything is left-aligned.
 
-The 3-character floor caps the column count. `cols × 3 + 2 × (cols − 1) ≤ 32` holds up to **six columns** (6 × 3 + 2 × 5 = 28). Seven or more overflow the budget even at the floor, and the rows word-wrap: every cell still prints, but the grid stops lining up. Dropping the extra columns would silently lose data, which is worse. Split or transpose a wider table.
+The 3-column floor caps the column count. `cols × 3 + 2 × (cols − 1) ≤ 32` holds up to **six columns** (6 × 3 + 2 × 5 = 28). Seven or more overflow the budget even at the floor, and the rows word-wrap: every cell still prints, but the grid stops lining up. Dropping the extra columns would silently lose data, which is worse. Split or transpose a wider table.
+
+Column *alignment* is exact; column *pixel* positions are close but not exact when CJK is involved. The mono advance is 0.6 em and a CJK glyph advances 1 em, not 1.2, so each full-width character in a cell pulls the columns after it about 4 px left at 20 px. Two columns of drift per Japanese cell is visible if you look for it and invisible if you do not; counting characters instead, as the layout used to, drifts twice as far in the other direction.
 
 ```
 | Item          | Qty | Price |

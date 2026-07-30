@@ -69,8 +69,8 @@ cargo test --workspace markdown
 
 This is the one place in the repository that quotes a test count, because it is
 the one that goes stale. At the time of writing `cargo test --workspace`
-collects **259 tests** — 140 in `printa-ble-core`, 89 unit plus 8 integration in
-`printa-ble`, 21 in `printa-ble-web` — of which 258 run and one is `#[ignore]`d.
+collects **266 tests** — 148 in `printa-ble-core`, 89 unit plus 8 integration in
+`printa-ble`, 21 in `printa-ble-web` — of which 265 run and one is `#[ignore]`d.
 The whole suite finishes in a couple of seconds with no printer, no Bluetooth
 adapter, and no network. If your change adds tests, the number here is expected
 to move; count them rather than trusting this line:

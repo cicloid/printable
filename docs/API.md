@@ -72,6 +72,20 @@ Options are validated before rendering and before the printer is touched, so an 
 
 Unknown fields are ignored. A value of the wrong JSON type, or an integer outside its numeric type (`"density": 300` for a `u8`), is rejected by the deserializer with `422` and a plain-text body — see [Errors](#errors).
 
+**`dither` is not a shared option.** It exists only on the two multipart image endpoints (`/preview/image`, `/print/image`), where it is a text field. No JSON body has a `dither` field: text, markdown and QR have nothing to dither, and the URL routes are fixed to Floyd–Steinberg (the CLI's `--url` does honour `--dither` — that asymmetry is real).
+
+These bounds are the server's, not the renderer's, and the CLI does not share all of them:
+
+| Field | Server | CLI equivalent |
+|---|---|---|
+| `density` | 1–7 | `--density`, 1–7 |
+| `copies` | 1–20 | `--copies`, 1–20 |
+| `feed` | 0–2000 | `--feed`, ≥ 0 with **no upper bound** |
+| `size` | > 0, ≤ 128 | `--size`, > 0 and finite, **no upper bound** |
+| Request body | 20 MiB | — (the CLI reads a local file of any size) |
+
+The server caps what the CLI leaves open because it takes input from anyone who can reach the port; a local user asking for a 100 000-line feed is only wasting their own paper.
+
 ---
 
 ## Health and status
@@ -178,7 +192,7 @@ curl -X POST http://localhost:8000/preview/markdown \
   -o preview.png
 ```
 
-Supports headings, emphasis, strikethrough, lists, task lists, tables, code blocks, blockquotes, rules, `qr` and `barcode` fences, and images. Image handling is a security boundary — see [Markdown images](#markdown-images).
+Supports headings, emphasis, strikethrough, lists, task lists, tables, code blocks, blockquotes, rules, `qr`, `barcode` and `wagara` fences, and images — the full dialect in [MARKDOWN.md](MARKDOWN.md). Image handling is a security boundary — see [Markdown images](#markdown-images).
 
 ### POST /preview/qr
 
@@ -243,13 +257,28 @@ The page renders in system headless Chrome at a 384 px viewport, settles for 500
 Print endpoints render exactly like their preview counterparts, then take the print lock and drive the printer. They all answer with the same body:
 
 ```json
-{ "printed_lines": 812, "copies": 2 }
+{
+  "printed_lines": 812,
+  "copies": 2,
+  "elapsed_ms": 24310,
+  "packets_sent": 812,
+  "holds": 3,
+  "cooldowns": 41,
+  "retransmits": 0
+}
 ```
 
 | Field | Type | Notes |
 |---|---|---|
 | `printed_lines` | integer | Total rows sent: (content rows + `feed`) × `copies` |
 | `copies` | integer | Echo of the requested copy count |
+| `elapsed_ms` | integer | Wall clock from the start of the connect to the last copy finishing — connect, hello, auth, streaming and all |
+| `packets_sent` | integer | Raster packets written, summed over every copy |
+| `holds` | integer | Times the printer paused the stream (`5A 08`) |
+| `cooldowns` | integer | Times the printer asked for a thermal back-off (`5A 07`) |
+| `retransmits` | integer | Times the printer asked for a resend from a given packet index (`5A 05`) |
+
+The last five are the same counters the server writes to its log, repeated here for clients that never see it. They are what distinguishes a slow print from a stuck one: an `elapsed_ms` far larger than `packets_sent` × 15 ms means the difference was spent paused, and `holds` and `cooldowns` say so. Zero across the board is a clean job. The counters come out of the sans-IO core as plain values (`JobStats`); the server only formats them.
 
 ### POST /print/text
 
@@ -391,7 +420,7 @@ Errors raised by the handlers use a JSON envelope:
 | `422` | Body does not match the schema | Plain text, not JSON |
 | `500` | Print failed, or an internal render failure | Auth rejected, BLE write failed, printer stopped responding |
 | `502` | URL rendering failed | Chrome missing, page unreachable |
-| `503` | No printer found, or no status frame | Nothing matched within the 10 s scan |
+| `503` | No printer found, no printer that answered, or no status frame | Nothing matched within the 10 s scan; or a device was found but never answered the hello probe (`found <name> but it did not respond — is the printer powered on?`) |
 
 ### The plain-text exception
 
@@ -425,6 +454,27 @@ Expected request with `Content-Type: application/json`
 | Body over the 20 MiB limit | `413` | plain text |
 
 Everything a handler rejects — every validation rule documented above — comes back as JSON.
+
+---
+
+## Logging
+
+The server writes to **stderr** under the same `-v` ladder as the rest of the CLI (see [CLI.md](CLI.md#verbosity-and-logging)). With no flag it logs only its own warnings — a failed print job, an unreachable printer, and every `5xx` it returns — so a default-level server still records its own failures and nothing else.
+
+`printable serve -v` adds the operational log:
+
+| Event | Line |
+|---|---|
+| Every request | `POST /print/markdown -> 200 in 24544ms` — method, path, status, elapsed ms |
+| Job start | `print job starting: markdown, 812 lines, density 3, feed 40, 1 copies` |
+| Job finish | `print job done: markdown, 812 lines in 24310ms (812 packets, 3 holds, 41 cooldowns, 0 resends)` |
+| Queueing | `printer is busy with another job; this request is queued`, then `printer free; queued for 18402ms` |
+| Flow control | `printer paused the stream (print head too hot); waiting to resume…`, `printer is cooling down` |
+| URL rendering | `rendering <url> with headless Chrome`, then `rendered <url> to 214 KiB in 2841ms` |
+
+The request line alone cannot say whether `/print/markdown` was two lines or two thousand, which is why the job lines name the content kind and the size. The queue lines exist because a request stuck behind another job is indistinguishable from a hang at the client end. Chrome's timing is separate because it happens before the printer is ever touched and is often the slowest part of a URL print.
+
+`-vv` adds parsed protocol frames and image-resolution timings; `-vvv` adds raw hex and dependency logs. `RUST_LOG` overrides the flag entirely.
 
 ---
 

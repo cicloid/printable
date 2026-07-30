@@ -18,11 +18,13 @@
 //! are padded to their widest cell with two-space gutters, a dashed separator
 //! row follows the header, and over-wide tables shrink their widest columns —
 //! truncating cells with `…` — to fit the 384 px roll. Left-aligned only;
-//! markdown alignment markers are ignored. The shrink has a floor (3 chars per
-//! column), so the roll fits **at most six columns**: seven or more need more
-//! than the 32-char budget even at the floor, and the rows word-wrap instead,
-//! losing column alignment. Nothing panics and no ink leaves the paper — the
-//! table just stops being a table.
+//! markdown alignment markers are ignored. Widths are counted in *display
+//! columns*, so a full-width CJK character claims two and a table mixing
+//! Japanese and ASCII rows still lines up. The shrink has a floor (3 columns
+//! per table column), so the roll fits **at most six columns**: seven or more
+//! need more than the 32-column budget even at the floor, and the rows
+//! word-wrap instead, losing column alignment. Nothing panics and no ink
+//! leaves the paper — the table just stops being a table.
 //!
 //! Three fence names turn a code block into a graphic instead of text, matched
 //! case-insensitively on the info string's first word (so ` ```QR ` and
@@ -361,25 +363,67 @@ fn stack(bitmaps: Vec<Bitmap>) -> Bitmap {
 
 /// Two-space gutter between table columns.
 const TABLE_GUTTER: usize = 2;
-/// Chars that fit one 20 px monospace line (~12 px advance in 384 px).
-const TABLE_MAX_CHARS: usize = 32;
-/// Smallest a column may shrink to when a table overflows the budget.
+/// Display columns that fit one 20 px monospace line (~12 px advance in
+/// 384 px). A budget in *columns*, not chars: a full-width character spends
+/// two of them (see [`char_display_width`]).
+const TABLE_MAX_WIDTH: usize = 32;
+/// Smallest a column may shrink to, in display columns, when a table
+/// overflows the budget.
 const TABLE_MIN_COL: usize = 3;
+
+/// Display columns one character occupies on the monospace grid: 2 for
+/// East-Asian full-width characters, 1 for everything else.
+///
+/// Hand-rolled rather than pulled in as a dependency: the table layout is the
+/// only caller, and it only has to be right about the blocks the bundled Noto
+/// Sans JP fallback actually draws. This is the standard full-width set —
+/// CJK ideographs and their compatibility forms, kana, CJK punctuation,
+/// hangul syllables, and the fullwidth halves of the Halfwidth/Fullwidth
+/// Forms block. Combining marks and zero-width characters are counted as 1,
+/// which overstates them; nothing in this pipeline composes them anyway.
+fn char_display_width(c: char) -> usize {
+    match c as u32 {
+        // CJK Symbols and Punctuation, Hiragana, Katakana (contiguous).
+        0x3000..=0x30FF
+        // Hangul Syllables.
+        | 0xAC00..=0xD7A3
+        // CJK Unified Ideographs.
+        | 0x4E00..=0x9FFF
+        // CJK Compatibility Ideographs.
+        | 0xF900..=0xFAFF
+        // Halfwidth and Fullwidth Forms: the fullwidth ASCII/symbol halves
+        // (the 0xFF61..=0xFFDC gap in between is halfwidth kana and jamo).
+        | 0xFF00..=0xFF60
+        | 0xFFE0..=0xFFE6 => 2,
+        _ => 1,
+    }
+}
+
+/// Display columns a string occupies: the sum of its [`char_display_width`]s.
+fn display_width(s: &str) -> usize {
+    s.chars().map(char_display_width).sum()
+}
 
 /// Lay a markdown table out as monospace text lines: one padded [`String`] per
 /// rendered row (header, a dashed separator, then each body row).
 ///
+/// Every width here is measured in [`display_width`] columns, not characters,
+/// so a Japanese cell claims the two columns per glyph it actually prints and
+/// the columns after it still line up against ASCII rows.
+///
 /// Cells are already flattened to plain text. Ragged rows (fewer cells than the
 /// header) are padded with empty strings; extra cells are dropped. Column
 /// widths start at each column's widest cell, then — while the line would
-/// exceed [`TABLE_MAX_CHARS`] — the widest column is shrunk one char at a time
-/// (down to [`TABLE_MIN_COL`]), and any cell longer than its final width is
-/// truncated to `width - 1` chars plus `…`. Cells are left-justified with a
-/// [`TABLE_GUTTER`]-space gutter; the separator uses `-` runs. An empty header
-/// yields no lines.
+/// exceed [`TABLE_MAX_WIDTH`] — the widest column is shrunk one column at a
+/// time (down to [`TABLE_MIN_COL`]), and any cell wider than its final width is
+/// truncated to fit `width - 1` columns plus `…`. Truncation never splits a
+/// full-width character: a character is kept only if it fits whole, so a cut
+/// landing mid-glyph drops it and the leftover column becomes padding. Cells
+/// are left-justified with a [`TABLE_GUTTER`]-space gutter; the separator uses
+/// `-` runs. An empty header yields no lines.
 ///
 /// The floor caps the column count: `cols * TABLE_MIN_COL + TABLE_GUTTER *
-/// (cols - 1)` stays within [`TABLE_MAX_CHARS`] only up to six columns. Seven
+/// (cols - 1)` stays within [`TABLE_MAX_WIDTH`] only up to six columns. Seven
 /// or more return lines wider than the budget, which the renderer word-wraps —
 /// alignment is lost, but the cells are all still on the paper. Dropping the
 /// extra columns instead would silently lose data, which is worse.
@@ -402,7 +446,7 @@ fn build_table_lines(header: &[String], rows: &[Vec<String>]) -> Vec<String> {
     // always shows a dash).
     let mut widths: Vec<usize> = (0..cols)
         .map(|i| {
-            let cell_len = |cells: &[String]| cells[i].chars().count();
+            let cell_len = |cells: &[String]| display_width(&cells[i]);
             let mut w = cell_len(&header);
             for r in &rows {
                 w = w.max(cell_len(r));
@@ -413,7 +457,7 @@ fn build_table_lines(header: &[String], rows: &[Vec<String>]) -> Vec<String> {
 
     // Shrink the widest column until the line fits (or all hit the floor).
     let line_width = |w: &[usize]| w.iter().sum::<usize>() + TABLE_GUTTER * (cols - 1);
-    while line_width(&widths) > TABLE_MAX_CHARS {
+    while line_width(&widths) > TABLE_MAX_WIDTH {
         let widest = widths.iter().copied().enumerate().max_by_key(|&(_, w)| w);
         match widest {
             Some((idx, w)) if w > TABLE_MIN_COL => widths[idx] = w - 1,
@@ -421,25 +465,47 @@ fn build_table_lines(header: &[String], rows: &[Vec<String>]) -> Vec<String> {
         }
     }
 
-    // Fit a cell to its column: truncate with `…` when it overflows.
+    // Fit a cell to its column: truncate with `…` when it overflows. Budgets
+    // are display columns, and a character is only kept if it fits whole, so a
+    // full-width glyph is never cut in half.
     let fit = |text: &str, w: usize| -> String {
-        if text.chars().count() <= w {
+        if display_width(text) <= w {
             return text.to_string();
         }
         match w {
             0 => String::new(),
             1 => "…".to_string(),
             _ => {
-                let kept: String = text.chars().take(w - 1).collect();
-                format!("{kept}…")
+                // `…` is half-width, so the kept prefix gets `w - 1` columns.
+                let budget = w - 1;
+                let mut kept = String::new();
+                let mut used = 0;
+                for c in text.chars() {
+                    let cw = char_display_width(c);
+                    if used + cw > budget {
+                        break;
+                    }
+                    kept.push(c);
+                    used += cw;
+                }
+                kept.push('…');
+                kept
             }
         }
+    };
+    // Left-justify to `w` display columns. `{:<width$}` counts chars, which
+    // would under-pad any cell holding a full-width character.
+    let pad = |text: String, w: usize| -> String {
+        let used = display_width(&text);
+        let mut out = text;
+        out.push_str(&" ".repeat(w.saturating_sub(used)));
+        out
     };
     let render_row = |cells: &[String]| -> String {
         cells
             .iter()
             .zip(&widths)
-            .map(|(c, &w)| format!("{:<width$}", fit(c, w), width = w))
+            .map(|(c, &w)| pad(fit(c, w), w))
             .collect::<Vec<_>>()
             .join(&" ".repeat(TABLE_GUTTER))
     };
@@ -1189,8 +1255,8 @@ mod tests {
         let lines = build_table_lines(&["col".into(), "b".into()], &[vec![long, "y".into()]]);
         for l in &lines {
             assert!(
-                l.chars().count() <= TABLE_MAX_CHARS,
-                "line {:?} exceeds {TABLE_MAX_CHARS} chars",
+                l.chars().count() <= TABLE_MAX_WIDTH,
+                "line {:?} exceeds {TABLE_MAX_WIDTH} display columns",
                 l
             );
         }
@@ -1205,7 +1271,7 @@ mod tests {
         assert!(has_ink(&render_markdown(&md)), "wide table has no ink");
     }
 
-    /// Seven columns already exceed the budget at the 3-char floor, so wide
+    /// Seven columns already exceed the budget at the 3-column floor, so wide
     /// tables word-wrap instead of staying aligned. This is a documented
     /// ceiling, not a bug — pin it so a change is deliberate.
     #[test]
@@ -1215,15 +1281,15 @@ mod tests {
         let lines = build_table_lines(&six, std::slice::from_ref(&six));
         for l in &lines {
             assert!(
-                l.chars().count() <= TABLE_MAX_CHARS,
-                "six columns should fit, got {:?} ({} chars)",
+                l.chars().count() <= TABLE_MAX_WIDTH,
+                "six columns should fit, got {:?} ({} columns)",
                 l,
                 l.chars().count()
             );
         }
 
         // Eight do not: every column bottoms out at TABLE_MIN_COL and the line
-        // is still 8*3 + 2*7 = 38 chars.
+        // is still 8*3 + 2*7 = 38 columns.
         let eight: Vec<String> = (0..8).map(|i| format!("header{i}")).collect();
         let lines = build_table_lines(&eight, std::slice::from_ref(&eight));
         assert_eq!(
@@ -1233,7 +1299,7 @@ mod tests {
             lines[0]
         );
         assert!(
-            lines[0].chars().count() > TABLE_MAX_CHARS,
+            lines[0].chars().count() > TABLE_MAX_WIDTH,
             "eight columns should overflow the budget"
         );
 
@@ -1284,6 +1350,115 @@ mod tests {
     #[test]
     fn table_empty_header_no_lines() {
         assert!(build_table_lines(&[], &[vec!["x".into()]]).is_empty());
+    }
+
+    #[test]
+    fn display_width_counts_full_width_characters_as_two() {
+        for c in [
+            '漢', '日', '本', 'あ', 'ゐ', 'ア', 'ヺ', '、', '。', '　', 'Ａ', '￥', '한', '﨑',
+        ] {
+            assert_eq!(char_display_width(c), 2, "{c:?} should be full-width");
+        }
+        for c in ['a', 'Z', '9', ' ', '-', '…', 'é', '•', 'ｱ', '\u{ffee}'] {
+            assert_eq!(char_display_width(c), 1, "{c:?} should be half-width");
+        }
+        assert_eq!(display_width("日本語"), 6);
+        assert_eq!(display_width("ab日"), 4);
+        assert_eq!(display_width(""), 0);
+    }
+
+    #[test]
+    fn table_with_cjk_cells_aligns() {
+        let lines = build_table_lines(
+            &["品目".into(), "数".into()],
+            &[
+                vec!["珈琲".into(), "2".into()],
+                vec!["紅茶とお菓子".into(), "10".into()],
+            ],
+        );
+        let want = display_width(&lines[0]);
+        for l in &lines {
+            assert_eq!(
+                display_width(l),
+                want,
+                "every row is the same display width: {l:?}"
+            );
+        }
+        // Column 0 is as wide as its widest cell (6 chars × 2 = 12 columns).
+        assert_eq!(want, 12 + TABLE_GUTTER + 2);
+        assert!(has_ink(&render_markdown(
+            "| 品目 | 数 |\n|---|---|\n| 珈琲 | 2 |\n| 紅茶とお菓子 | 10 |"
+        )));
+    }
+
+    #[test]
+    fn table_mixing_ascii_and_cjk_pads_to_display_width() {
+        let lines = build_table_lines(
+            &["Item".into(), "Qty".into()],
+            &[
+                vec!["珈琲".into(), "2".into()],
+                vec!["Coffee".into(), "10".into()],
+            ],
+        );
+        // Column 0: max(4, 珈琲=4, 6) = 6. Column 1: max(3, 1, 2) = 3.
+        assert_eq!(lines[0], "Item    Qty");
+        assert_eq!(lines[1], "------  ---");
+        // Two spaces of padding, not four: the cell already spends 4 columns.
+        assert_eq!(lines[2], "珈琲    2  ");
+        assert_eq!(lines[3], "Coffee  10 ");
+        for l in &lines {
+            assert_eq!(display_width(l), 11, "row {l:?} is not 11 columns");
+        }
+    }
+
+    #[test]
+    fn table_truncates_cjk_on_a_character_boundary() {
+        // Twenty full-width characters claim 40 columns on their own, so the
+        // column shrinks and the cell has to be cut.
+        let long = "日本語文字列".repeat(3) + "あいう";
+        assert_eq!(display_width(&long), 42);
+        let lines = build_table_lines(&["見出し".into(), "説明".into()], &[vec![long, "α".into()]]);
+        for l in &lines {
+            assert!(
+                display_width(l) <= TABLE_MAX_WIDTH,
+                "line {l:?} is {} columns, over the {TABLE_MAX_WIDTH} budget",
+                display_width(l)
+            );
+        }
+        let body = lines.last().unwrap();
+        assert!(
+            body.contains('…'),
+            "over-wide CJK cell should be truncated with '…', got {body:?}"
+        );
+        // The cut kept whole characters — no lone half of a full-width glyph,
+        // and no replacement/`\u{fffd}` fallout from slicing mid-codepoint.
+        assert!(
+            body.chars()
+                .all(|c| c == ' ' || c == '…' || c == 'α' || "日本語文字列あいう".contains(c)),
+            "truncation mangled the cell: {body:?}"
+        );
+        assert!(has_ink(&render_markdown(
+            "| 見出し | 説明 |\n|---|---|\n| 日本語文字列日本語文字列日本語文字列あいう | α |"
+        )));
+    }
+
+    /// An odd budget cannot be filled exactly by full-width characters, so the
+    /// last column becomes padding rather than half a glyph.
+    #[test]
+    fn table_odd_budget_pads_rather_than_splitting_a_glyph() {
+        // Width 5 → 4 columns for the kept prefix → two characters, then `…`.
+        let lines = build_table_lines(&["あいうえお".into()], &[vec!["か".into()]]);
+        assert_eq!(display_width(&lines[0]), 10);
+        // Shrink to an odd width and re-check the prefix lands on a boundary.
+        let fitted = build_table_lines(
+            &["12345".into(), "あいうえお".into(), "c".into()],
+            &[vec!["x".into(), "かきくけこさしすせそ".into(), "y".into()]],
+        );
+        let want = display_width(&fitted[0]);
+        for l in &fitted {
+            assert_eq!(display_width(l), want, "row {l:?} is not {want} columns");
+            assert!(display_width(l) <= TABLE_MAX_WIDTH);
+        }
     }
 
     #[test]

@@ -9,11 +9,14 @@ name = "printable"
 path = "src/main.rs"
 
 [features]
-default = ["url"]
+default = ["url", "cjk"]
 url = ["dep:chromiumoxide"]
+# Passed through from `printa-ble-core` so a binary build can actually drop the
+# 4.5 MB CJK face: `--no-default-features --features url`.
+cjk = ["printa-ble-core/cjk"]
 
 [dependencies]
-printa-ble-core = { path = "../printa-ble-core" }
+printa-ble-core = { path = "../printa-ble-core", default-features = false }
 chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"], optional = true }
 anyhow = "1"
 axum = { version = "0.8", features = ["multipart"] }

@@ -10,6 +10,22 @@ All four phases of the [original design](docs/plans/2026-07-27-lxd2-design.md) a
 
 A [follow-up phase](docs/plans/2026-07-29-lxd2-phase5-implementation.md) extended the markdown renderer with tables, task-list checkboxes, strikethrough, embedded QR codes and barcodes, images, and a tear marker — see [Markdown](#markdown).
 
+## Documentation
+
+This README is the tour. The reference documents go deeper:
+
+| Document | What it covers |
+|---|---|
+| [docs/CLI.md](docs/CLI.md) | Every command, flag, exit code, failure message, and a recipe section |
+| [docs/API.md](docs/API.md) | The HTTP server: endpoints, request and response shapes, limits, errors, concurrency |
+| [docs/MARKDOWN.md](docs/MARKDOWN.md) | The markdown dialect — what renders, what doesn't, and the gotchas |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the three crates fit together, and why the core is sans-IO |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) | The reverse-engineered LX-D02 wire protocol, byte by byte |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, the test workflow, and the architectural rules |
+| [SECURITY.md](SECURITY.md) | Trust model and how to report a vulnerability |
+
+`docs/plans/` holds the original design and phase plans. They are historical records written before the project was renamed — read them for context, not as current behaviour.
+
 ## Install
 
 ```
@@ -32,7 +48,8 @@ printable print "hello world"
 printable print -f photo.png --dither floyd
 printable print -f notes.txt --size 28
 printable print "test" --preview out.png   # render without printing
-printable print -f notes.md                # markdown: headings, tables, task lists, QR/barcode fences, images
+printable print -f notes.md                # markdown: headings, tables, task lists, QR/barcode/wagara fences, images
+cat notes.md | printable print -m          # -m renders piped input as markdown
 printable qr "https://example.com" --caption "scan me"
 printable print "hello" --copies 3
 printable print --url https://example.com    # render a web page via headless Chrome
@@ -40,24 +57,52 @@ printable print --url https://example.com    # render a web page via headless Ch
 
 ### Options
 
+Five options are shared by `print` and `qr`; the rest belong to `print` alone. `printable <COMMAND> --help` is authoritative, and [docs/CLI.md](docs/CLI.md) has the full reference.
+
+Shared by `print` and `qr`:
+
 | Option | Description |
 |---|---|
 | `--device <NAME>` | Device name or identifier substring (default: first device named `LX*`) |
 | `--density <1-7>` | Print density (default: 3) |
 | `--feed <LINES>` | Blank feed lines after printing (default: 40) |
-| `--dither <floyd\|atkinson\|threshold>` | Dithering for images (default: floyd; `none` is an alias for `threshold`) |
-| `--size <PX>` | Font size for text in pixels (default: 24) |
 | `--preview <PATH>` | Render to a PNG file instead of printing |
 | `--copies <1-20>` | Number of copies to print (default: 1) |
-| `--url <URL>` | Web page to render (via headless Chrome) and print; conflicts with a text argument and `--file` |
+
+`print` only:
+
+| Option | Description |
+|---|---|
+| `-f, --file <PATH>` | File to print (`.png`/`.jpg`/`.jpeg`/`.txt`/`.md`/`.markdown`), or `-` to read stdin |
+| `-m, --markdown` | Render the input as markdown rather than plain text (see [Markdown](#markdown)) |
+| `--dither <floyd\|atkinson\|threshold>` | Dithering for images (default: floyd; `none` is an alias for `threshold`) |
+| `--size <PX>` | Font size for text in pixels (default: 24) |
+| `--url <URL>` | Web page to render (via headless Chrome) and print; conflicts with a text argument, `--file`, and `--markdown` |
+
+`--dither` applies to a directly printed image (`-f photo.png`) **and** to `--url` renders. It does not apply to images embedded in a markdown document — those are always Floyd–Steinberg. `--size` applies to plain text only.
+
+`-v`/`-vv`/`-vvv` is global and works on every command; see [Logging](#logging).
 
 ### QR codes
 
-`printable qr <DATA>` prints a QR code encoding a URL or arbitrary text, centered at the printer's full width. `--caption <TEXT>` prints a caption below the code. The `--device`, `--density`, `--feed`, `--preview`, and `--copies` options work the same as for `print`.
+`printable qr <DATA>` prints a QR code encoding a URL or arbitrary text, centered at the printer's full width. `--caption <TEXT>` prints a caption below the code. `qr` takes only the five shared options above — there is no `--size`, no `--dither`, and no `--url`, because the version, error correction, and scale are all chosen automatically.
 
 ### Markdown
 
 `printable print -f notes.md` (or `.markdown`) renders the file as formatted output rather than plain text. The same renderer backs the server's `/print/markdown` and the web app's Markdown tab.
+
+Markdown is chosen by extension, so every other input is **plain text by default** — piping a document without saying so prints its literal source. `-m` / `--markdown` forces the markdown renderer for input that has no `.md` extension to give it away:
+
+```sh
+cat notes.md | printable print -m           # stdin
+printable print -m "# Heading"              # a text argument
+printable print -m -f - < notes.md          # `--file -` also means stdin
+printable print -m -f notes.txt             # a .txt file
+```
+
+`-m` is redundant (and silently accepted) with `-f notes.md`, rejected for image files, and a usage error alongside `--url`.
+
+Relative image references need a directory to resolve against, and which one depends on how the document arrived: a `--file` document anchors them to **its own directory**, while piped or argument markdown anchors them to the **current working directory** — what `![](logo.png)` means to someone running the command from their shell. The server never resolves local paths at all.
 
 ````markdown
 # Receipt
@@ -94,19 +139,24 @@ Thanks! Tear here:
 | Feature | Notes |
 |---|---|
 | Headings | H1-H3 at decreasing sizes; deeper levels render like H3 |
-| Emphasis | `**bold**`, `*italic*`, `~~strikethrough~~` (a 2 px line through the text); they compose |
+| Emphasis | `**bold**`, `*italic*`, `~~strikethrough~~` (a 2 px line through the text) — see the note below |
 | Lists | Bulleted and ordered, nested; `• ` / `N. ` prefixes |
 | Task lists | `- [x]` / `- [ ]` render as ASCII `[x]` / `[ ]` markers (the font has no ballot-box glyphs) |
 | Tables | Monospace text blocks; see below |
-| Code | Inline code and fenced/indented blocks, exact line breaks preserved |
+| Code | Inline code (a passthrough — the font is monospace already) and fenced/indented blocks, exact line breaks preserved |
 | Blockquotes | Indented and italic |
 | Rules | `---` renders a solid full-width bar |
 | Tear marker | A thematic break written with interior spaces — `- - -` or `* * *` — renders a **dashed** line instead, marking where to tear the paper |
 | `qr` fence | A fenced code block tagged `qr` — the body is encoded as a QR code |
 | `barcode` fence | A fenced code block tagged `barcode` — the body is encoded as a Code128 barcode |
+| `wagara` fence | A fenced code block tagged `wagara` — draws a traditional Japanese pattern band, see below |
 | Images | `![alt](dest)` — resolved per surface, see below |
 
 Links render as their text; raw HTML is skipped.
+
+**Bold and italic do not compose.** A span gets exactly one font face, resolved in the order heading → bold → italic → regular. So `***x***` renders byte-identical to `**x**`, and `**bold**` inside a blockquote (which is italic) comes out plain bold, not bold-italic. Strikethrough is a separate flag and does compose with any face. Inline code takes the surrounding style, so `` `x` `` renders byte-identical to `x`.
+
+[docs/MARKDOWN.md](docs/MARKDOWN.md) is the full dialect reference, including the gotchas — footnotes, front matter, and rules inside list items all have surprising results.
 
 #### Tables
 
@@ -122,6 +172,36 @@ Barcodes are **Code128**, character set B: the payload must be printable ASCII (
 
 A payload the encoder rejects — too long for any QR version, non-ASCII in a barcode — prints its error message as code text instead. A bad code never panics and never costs you the rest of the document.
 
+#### `wagara` fences
+
+A fence tagged `wagara` draws a traditional Japanese pattern (和柄) as a full-width decorative band — a separator with more character than a rule. The pattern is named in the info string, or failing that on the body's first line:
+
+````markdown
+```wagara seigaiha
+height: 72
+scale: 2
+```
+````
+
+| Pattern | Kanji | Motif | Aliases |
+|---|---|---|---|
+| `seigaiha` | 青海波 | Overlapping fans, "blue sea waves" | |
+| `asanoha` | 麻の葉 | Hemp-leaf star lattice | |
+| `shippou` | 七宝 | Interlocking circles, "seven treasures" | `shippo` |
+| `kikkou` | 亀甲 | Tortoise-shell hexagons | `kikko` |
+| `ichimatsu` | 市松 | Checkerboard | |
+
+Names are matched case-insensitively. Every pattern tiles exactly across the 384 px roll, so a band runs edge to edge with no half-eaten motif.
+
+| Option | Range | Default | Effect |
+|---|---|---|---|
+| `height` | 16–400 | 56 | Band height in pixels |
+| `scale` | 1–4 | 1 | Motif size multiplier |
+
+An unknown pattern name or a malformed option line prints its error message as code text, exactly like a bad QR or barcode payload — the rest of the document still prints.
+
+**Known wart:** `scale` is quantised to the divisors of 384 that keep the band tiling, so for coarse patterns `scale: 3` and `scale: 4` can land on the same motif count and render identically. A large `scale` at the default `height` also shows only a horizontal slice of one motif. Raise `height` alongside `scale`, and check with `--preview`.
+
 #### Images
 
 Image references are resolved by whichever surface is rendering, then handed to the renderer; the rendering core itself never performs I/O. What each surface will fetch differs on purpose:
@@ -132,7 +212,7 @@ Image references are resolved by whichever surface is rendering, then handed to 
 | Server (`/print/markdown`, `/preview/markdown`) | **Never** | Yes, unless `--no-remote-images` |
 | Web app (Markdown tab) | No — a browser cannot read them | Yes, subject to CORS |
 
-The server refusing local paths is a security boundary, not an omission: without it, anyone on the LAN could read files off the machine running the server by asking for `![x](/etc/hosts)`. Images are PNG or JPEG, scaled to the 384 px roll and dithered with Floyd-Steinberg (`--dither` applies to `-f photo.png`, not to images inside a document); remote fetches are capped at 5 MB and 15 s each (CLI and server; the web app hands fetching to the browser and inherits its limits).
+The server refusing local paths is a security boundary, not an omission: without it, anyone on the LAN could read files off the machine running the server by asking for `![x](/etc/hosts)`. Images are PNG or JPEG, scaled to the 384 px roll and dithered with Floyd–Steinberg (`--dither` applies to `-f photo.png` and `--url`, never to images inside a document); remote fetches are capped at 5 MB and 15 s each (CLI and server; the web app hands fetching to the browser and inherits its limits).
 
 Resolution is bounded per document: at most **32 images**, and — on the CLI and server — **30 seconds** for the whole pass. (The web app applies the same 32-image cap but no overall deadline; each fetch is bounded only by the browser.) References past those limits, and any that fail to fetch or decode, are simply left unresolved.
 
@@ -146,12 +226,29 @@ The first run triggers a Bluetooth permission prompt for your terminal app. If y
 
 | Code | Meaning |
 |---|---|
-| 1 | General error |
-| 2 | No printer found |
+| 1 | General error (bad input, unreadable file, oversized job) |
+| 2 | No usable printer — none found, or one found that never answered |
 | 3 | Out of paper |
 | 4 | Print failed |
 
 Invalid command-line usage also exits 2 (clap's convention).
+
+### Logging
+
+Every command takes a global `-v`, and `RUST_LOG` overrides it entirely.
+
+| Level | What it is for |
+|---|---|
+| *(none)* | This crate's warnings only. The default filter is `printable=warn` — crate-scoped, so no dependency can log on your behalf |
+| `-v` | Flow control and progress: connection, thermal pauses and resumes, retransmit requests, the server's request log and job summaries |
+| `-vv` | Parsed protocol frames, device resolution, image resolution timings |
+| `-vvv` | Raw hex on the wire, **plus dependency logs** — btleplug, chromiumoxide, the lot |
+
+The crate-scoped default is deliberate: chromiumoxide reports websocket frames it fails to deserialize at ERROR, and recent Chrome sends several per screenshot, so a global floor made a perfectly successful `print --url` print two red lines about a connection error. Those messages are harmless; `-vvv` is the rung where you ask for them back.
+
+Logs go to stderr, never stdout — scripts read the preview path and the scan table off stdout.
+
+`printable serve` logs one line per request (method, path, status, elapsed ms) at `-v`, plus a line when a job starts, one when it finishes with its counters, one when a request has to queue behind another job and how long it waited, and Chrome's render timing for URL routes. Server errors (5xx) log at warn, so even a default-level server records its own failures.
 
 ## Server mode
 
@@ -165,6 +262,7 @@ starts an HTTP print server (REST API + web UI) on `0.0.0.0:8000`. `--port` and 
 
 | Method | Path | Body | Result |
 |---|---|---|---|
+| GET | `/` | — | The web UI (a single self-contained HTML page) |
 | GET | `/health` | — | `{"status":"ok","version":…,"url_printing":…}` |
 | GET | `/status` | — | Battery, paper, density, charging, voltage as JSON |
 | POST | `/preview/text` | JSON `{"content", "size"?}` | PNG |
@@ -172,13 +270,41 @@ starts an HTTP print server (REST API + web UI) on `0.0.0.0:8000`. `--port` and 
 | POST | `/preview/qr` | JSON `{"data", "caption"?}` | PNG |
 | POST | `/preview/image` | multipart: `file`, `dither`? | PNG |
 | POST | `/preview/url` | JSON `{"url"}` | PNG |
-| POST | `/print/text` | JSON `{"content", "size"?, …}` | `{"printed_lines", "copies"}` |
-| POST | `/print/markdown` | JSON `{"content", …}` | `{"printed_lines", "copies"}` |
-| POST | `/print/qr` | JSON `{"data", "caption"?, …}` | `{"printed_lines", "copies"}` |
-| POST | `/print/image` | multipart: `file`, `dither`?, `density`?, `feed`?, `copies`? | `{"printed_lines", "copies"}` |
-| POST | `/print/url` | JSON `{"url", …}` | `{"printed_lines", "copies"}` |
+| POST | `/print/text` | JSON `{"content", "size"?, …}` | Print report (below) |
+| POST | `/print/markdown` | JSON `{"content", …}` | Print report |
+| POST | `/print/qr` | JSON `{"data", "caption"?, …}` | Print report |
+| POST | `/print/image` | multipart: `file`, `dither`?, `density`?, `feed`?, `copies`? | Print report |
+| POST | `/print/url` | JSON `{"url", …}` | Print report |
 
-Every `/print/*` JSON body also accepts the optional print options `density` (1-7, default 3), `feed` (blank lines after printing, default 40), and `copies` (1-20, default 1). `dither` takes `floyd`, `atkinson`, `threshold`, or `none`, like the CLI.
+Every `/print/*` endpoint also accepts the optional print options `density` (1-7, default 3), `feed` (blank lines after printing, 0-2000, default 40), and `copies` (1-20, default 1) — flattened into the JSON body, or as text fields in the multipart body. `dither` is **not** one of them: it exists only on the two multipart image endpoints, where it takes `floyd`, `atkinson`, `threshold`, or `none`, like the CLI.
+
+A successful print answers with the same counters the server logs, so a client that never sees the log can still explain a slow job:
+
+```json
+{
+  "printed_lines": 812,
+  "copies": 2,
+  "elapsed_ms": 24310,
+  "packets_sent": 812,
+  "holds": 3,
+  "cooldowns": 41,
+  "retransmits": 0
+}
+```
+
+#### Limits the CLI does not have
+
+The server validates what the CLI leaves open, because it accepts input from anyone on the LAN:
+
+| Limit | Server | CLI |
+|---|---|---|
+| Request body | 20 MiB, then `413` | — |
+| `feed` | 0–2000 | ≥ 0, no upper bound |
+| `size` | > 0 and ≤ 128 px | > 0, finite, no upper bound |
+| `density` | 1–7 | 1–7 |
+| `copies` | 1–20 | 1–20 |
+
+The two surfaces genuinely differ here: `printable print --feed 100000` is accepted and prints a very long blank tail, while `{"feed": 100000}` is a `400`.
 
 ### Examples
 
@@ -200,7 +326,26 @@ curl -X POST http://localhost:8000/preview/image \
 
 ### Errors
 
-Errors come back as `{"error": "message"}` JSON: 400 for invalid input, 409 when the printer is out of paper, 502 when a URL failed to render, and 503 when no printer is found. While a print job is running, `/status` returns `{"printing": true}` immediately instead of waiting for the printer; concurrent print requests queue.
+Errors raised by the handlers come back as `{"error": "message"}` JSON:
+
+| Status | Meaning |
+|---|---|
+| 400 | Invalid input: out-of-range option, empty `content`, unknown `dither`, undecodable image, non-`http(s)` URL, QR data too long, job over 65 535 raster packets |
+| 404 | No such route (including the `url` routes in a build without the feature) |
+| 405 | Wrong method for the route |
+| 409 | Printer is out of paper |
+| 413 | Request body over 20 MiB |
+| 415 | Missing or wrong `Content-Type` |
+| 422 | Body does not match the schema (missing or mistyped field) |
+| 500 | Print failed, or an internal render failure |
+| 502 | A URL failed to render |
+| 503 | No printer found, or the printer never answered |
+
+**Not every non-2xx response is JSON.** Rejections produced by axum's own body extraction — malformed JSON, a missing field, the wrong `Content-Type`, an oversized body — happen before any handler runs and come back as **plain text**, not the `{"error": …}` envelope. That covers 413, 415, 422, and a malformed-JSON 400. Clients must not assume every error parses as JSON. [docs/API.md](docs/API.md#errors) has the exact bodies.
+
+An oversized job is one place the two surfaces disagree on purpose: `JobError::TooLarge` is a `400` on the server (the caller sent something invalid) but exit code **1** on the CLI (a general error), not exit 2.
+
+While a print job is running, `/status` returns `{"printing": true}` immediately instead of waiting for the printer; concurrent print requests queue.
 
 ### Trust model
 
@@ -214,6 +359,8 @@ If you'd rather keep the API to yourself, bind it to the Mac only with `--bind 1
 ### URL printing
 
 `/preview/url` and `/print/url` (like the CLI's `--url`) render pages through headless Google Chrome, which must be installed. Only `http://` and `https://` URLs are accepted. Build with `--no-default-features` to disable URL printing entirely; the routes then return 404 and `/health` reports `"url_printing": false`.
+
+One asymmetry with the CLI: `printable print --url … --dither atkinson` honours the dither mode, but the server's URL routes always use Floyd–Steinberg and take no `dither` field.
 
 ## Web app (Web Bluetooth)
 

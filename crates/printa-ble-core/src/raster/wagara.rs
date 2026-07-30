@@ -719,8 +719,9 @@ fn tatewaku(canvas: &mut Canvas, scale: f64) {
 /// `+v`. Both tables already carry the cell's own `(6, 6)` glide, so shifting
 /// a lattice point by six in each axis lands on the same bits.
 ///
-/// The figures are transcribed from the public-domain seamless tile on
-/// Wikimedia Commons rather than derived: sayagata is a specific historical
+/// The figures are transcribed from `Sayagata (line).svg` on Wikimedia
+/// Commons — a public-domain (CC0) seamless tile — rather than derived:
+/// <https://commons.wikimedia.org/wiki/File:Sayagata_(line).svg>. Sayagata is a specific historical
 /// linkage of 卍 forms, not a lattice with a closed-form rule, and inventing a
 /// plausible one produces a maze that is not this maze.
 const SAYAGATA_U: [u16; 12] = [
@@ -843,9 +844,10 @@ mod tests {
     }
 
     /// A thermal head lays down what it is told, so a band's coverage is also
-    /// its cost in heat, paper darkening and battery. The five line patterns
-    /// sit near a tenth; the solid ones (checkerboard, scales, fletching) are
-    /// half by construction, because that is what the motif is. Anything
+    /// its cost in heat, paper darkening and battery. The seven line patterns
+    /// run from 14% (kikkou) to 37% (asanoha); the solid ones — checkerboard
+    /// and scales at 50%, fletching at 44% once the shaft hairline is cut —
+    /// are half by construction, because that is what the motif is. Anything
     /// outside that window is a geometry bug, not a style choice.
     #[test]
     fn ink_density_stays_in_the_thermal_range() {

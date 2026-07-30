@@ -18,7 +18,7 @@ The boundary is enforced by the dependency list, not by convention. `printa-ble-
 
 Two payoffs, both load-bearing:
 
-1. **Native tests for everything, including the protocol.** The print flow is a pure state machine: you feed it notification bytes and assert on the packets it wants to send. The core's hundred-plus tests run in under a second with no printer, no Bluetooth adapter, and no `#[ignore]`. A print bug is reproducible on CI.
+1. **Native tests for everything, including the protocol.** The print flow is a pure state machine: you feed it notification bytes and assert on the packets it wants to send. Core's tests — the largest group in the workspace — run in about a second with no printer, no Bluetooth adapter, and no `#[ignore]`. A print bug is reproducible on CI.
 2. **A WASM build with zero changes.** `printa-ble-core` compiles to `wasm32-unknown-unknown` as-is — no feature flags, no `cfg`, no shims. `printa-ble-web` is a thin `wasm-bindgen` wrapper. The browser gets byte-identical rendering and byte-identical protocol behaviour to the CLI because it is literally the same code.
 
 The cost is real and visible in the API: the core cannot fetch a markdown image, cannot generate an auth nonce, and cannot sleep. Each of those becomes a parameter. See [Randomness injection](#randomness-injection) and the two-pass image flow in [MARKDOWN.md](MARKDOWN.md#images).
@@ -67,7 +67,21 @@ Everything else (periodic `5A 02` status frames) is ignored by the FSM. Paper an
 
 Bounds live in the constructor: more than `u16::MAX` raster packets (131,070 rows) is `JobError::TooLarge`, rejected before a single byte goes out.
 
-`PrintJob::stats()` exposes counters for the same reason the challenge is a parameter: a stalled thermal printer and a hung one look identical from outside, so the FSM counts raster writes, retransmits, holds and cooldowns — and stops there. It has no clock and no logger; the transport decides how to report them.
+### Observability leaves core as values
+
+`PrintJob::stats()` returns a `JobStats` — `packets_sent`, `retransmits`, `holds`, `cooldowns` — and that is the whole of the core's contribution to diagnostics. It has no clock and no logger, and there is no `tracing` dependency in `printa-ble-core`.
+
+This is the same move as [randomness injection](#randomness-injection), applied to output instead of input, and it is what keeps the sans-IO rule from making the system opaque. A stalled thermal printer and a hung one look identical from outside; the counters are what tell them apart. So the FSM counts, and stops there — every consumer then decides what the numbers are for:
+
+| Consumer | What it does with `JobStats` |
+|---|---|
+| `ble.rs` | Feeds `packets_sent` / `retransmits` to the stall guard: a job whose counters have not moved in 60 s is not making progress, whatever the radio is doing |
+| `ble.rs` | Logs a one-line job summary, omitting flow-control terms entirely when the printer never invoked any |
+| `print_service.rs` | Sums them across copies into `PrintOutcome` |
+| `server.rs` | Logs them, *and* returns them in the `/print/*` JSON body for clients that never see the log |
+| The web app | Ignores them entirely |
+
+None of that is core's business, and none of it required changing core. **The rule to preserve: observability data leaves core as values, never as log calls.** If a diagnostic seems to need a `tracing` call inside core, it needs a counter or a return value instead.
 
 Full byte-level detail lives in [PROTOCOL.md](PROTOCOL.md).
 
@@ -79,7 +93,8 @@ This is the architectural centerpiece. The same `PrintJob` is pumped by native R
 
 ```
 loop {
-    while let Ok(n) = notify_rx.try_recv() { check_paper(&n)?; job.on_notification(n); }
+    while let Ok(n) = notify_rx.try_recv() { observe(&n, log)?; job.on_notification(n); }
+    if stall.observe(now, Progress::of(job)) >= STALL_TIMEOUT { bail!(…) }
     match job.next_action() {
         Send(bytes)      => peripheral.write(&write_char, &bytes, WithoutResponse).await?,
         WaitMs(ms)       => tokio::time::sleep(ms).await,
@@ -90,6 +105,8 @@ loop {
 ```
 
 A background task parses raw 0xFFE2 frames into `Notification`s and pushes them into an unbounded channel. The loop drains that channel *before* every action, so mid-stream `Hold` / `LostPacket` / `Cooldown` reach the FSM even while it is on the fast Send/WaitMs path — and a no-paper status frame aborts the job there rather than later, as a misleading timeout.
+
+The loop carries **two** deadlines, and both are needed. `NOTIFICATION_TIMEOUT` (10 s) bounds the `WaitNotification` arm and catches a printer that has gone off the air. It is re-armed by any frame at all, including the periodic unsolicited `5A 02` heartbeats — so a printer that holds the stream and never resumes keeps it satisfied forever, and the job (plus any HTTP client behind it) would wait indefinitely. `STALL_TIMEOUT` (60 s) measures what the printer cannot fake: whether `JobStats` is actually moving. Every arm above is itself bounded, so the guard is polled at least once per notification timeout even when the printer says nothing at all.
 
 **Browser — `web/app.js`, `pump()`:**
 
@@ -107,7 +124,17 @@ JS has no blocking receive, so the shape inverts: `pump()` *returns* on `waitNot
 
 `WasmJob` (`crates/printa-ble-web/src/job.rs`) is the bridge: it serializes `Action` to a tagged JS object and takes raw notification bytes, parsing them with the same `notifications::parse` the CLI uses. One subtlety is pinned in a comment there: `Send.bytes` uses `serde_bytes` so serde-wasm-bindgen emits a `Uint8Array`; a plain `Vec<u8>` would arrive as a JS `Array`, which GATT `writeValue` rejects.
 
-The result: a protocol fix — a flow-control quirk, a retry rule, an auth detail — is made once, in core, and both transports get it. The BLE module holds no protocol knowledge beyond the two characteristic UUIDs (0xFFE1 write, 0xFFE2 notify); the web page holds those plus the service UUID 0xFFE6 and one two-byte peek at `5A 02` frames to show battery percentage in the status chip.
+The result: a protocol fix — a flow-control quirk, a retry rule, an auth detail — is made once, in core, and both transports get it.
+
+The transports do hold a little protocol knowledge, and it is worth knowing exactly how much. The BLE module knows the two characteristic UUIDs (0xFFE1 write, 0xFFE2 notify), the hello frame and its `5A 01` reply, and — for trace logging only — how to put a human-readable label on an outgoing frame. The hello is not a leak but a deliberate exception: the transport has to greet the printer *before* a `PrintJob` exists, because a connection that has not been answered is not a connection at all (see [The liveness handshake](#the-liveness-handshake)). The web page holds the same two UUIDs plus the service UUID 0xFFE6 and one two-byte peek at `5A 02` frames to show battery percentage in the status chip.
+
+### The liveness handshake
+
+`connect_resolved` does not return until the printer has answered a hello of its own accord. That is not defensive coding, it is a macOS fact: CoreBluetooth caches the GATT database of any peripheral it has paired with before, so `connect` and service discovery both **succeed against a printer that is switched off**. Everything up to and including subscribing to notifications can be answered from that cache. The `5A 01` reply is the first thing in the flow that only the hardware itself can produce.
+
+The cost is one round trip and one new error type. `PrinterNotResponding` — `found <name> but it did not respond — is the printer powered on?` — is kept distinct from `NoPrinterFound` because the difference matters to whoever is standing next to the printer: the radio found the device, so it is in range and paired, it just is not listening. Both map to exit code 2 and HTTP 503, since from a caller's point of view there is still no printer to print on.
+
+This means **the hello is sent twice per connection**: once by the transport as a liveness probe, once by the FSM as the first step of the print flow. That is fine, and it is why the probe is safe to add: the exchange is idempotent, every copy in a multi-copy run already sends its own hello over the same connection, and the printer answers each one. Frames the probe has to read past on the way to the reply — status heartbeats, mostly — are collected and pushed back into the channel rather than discarded, so the pre-print paper check still finds the frame it is waiting for.
 
 ## The rendering pipeline
 
@@ -131,6 +158,7 @@ The layers, bottom up:
 | `raster/markdown.rs` | Lowers CommonMark events onto `rich`, plus its own block graphics |
 | `raster/dither.rs` | `prepare` (grayscale + Lanczos3 scale to 384 px, height clamped to 4096 rows) and `image_to_bitmap` (Floyd–Steinberg, Atkinson, or threshold) |
 | `raster/qr.rs`, `raster/barcode.rs` | Self-contained graphics with their own quiet zones and margins |
+| `raster/wagara.rs` | Procedural Japanese pattern bands: supersampled drawing collapsed by majority vote, periods chosen to divide 384 exactly so a band tiles |
 | `raster/preview.rs` | `Bitmap` → grayscale PNG, the paperless test path |
 
 ### Block stacking
@@ -138,7 +166,11 @@ The layers, bottom up:
 Markdown does not render top-to-bottom in one pass. Lowering produces a `Vec<MdBlock>`:
 
 ```rust
-enum MdBlock { Lines(Vec<RichLine>), Rule, Tear, Qr(String), Barcode(String), Image(Bitmap) }
+enum MdBlock {
+    Lines(Vec<RichLine>), Rule, Tear,
+    Qr(String), Barcode(String), Wagara(String, String),
+    Image(Bitmap),
+}
 ```
 
 Each block renders to its own `Bitmap` independently — text through `render_rich`, graphics through their own renderers — and `stack()` concatenates them vertically. `padded()` adds uniform white margins, which is how a QR (16 px of built-in quiet space) and a barcode (none) end up equally spaced: each fence declares what it already draws and is padded *to* a common 24 px, not *by* it.
@@ -187,7 +219,7 @@ A fresh challenge is drawn per copy, not per connection: `print_bitmap` builds a
 
 ## Testing strategy
 
-`cargo test --workspace` runs everything natively in about a second. One test is `#[ignore]`d; nothing else needs hardware or network.
+`cargo test --workspace` runs everything natively in a couple of seconds. Exactly one test is `#[ignore]`d — the Chrome render — and nothing else needs hardware or network. [CONTRIBUTING.md](../CONTRIBUTING.md#testing) has the current count.
 
 | Crate | Notable coverage |
 |---|---|
@@ -223,6 +255,7 @@ crates/printa-ble-core/          sans-IO: no tokio, no BLE, no rand, no network
     markdown.rs                  CommonMark → MdBlocks → Bitmap
     dither.rs                    scale + Floyd–Steinberg / Atkinson / threshold
     qr.rs, barcode.rs            graphics with their own quiet zones
+    wagara.rs                    procedural Japanese pattern bands
     preview.rs                   Bitmap → PNG
 
 crates/printa-ble/               the `printable` binary: CLI + HTTP server
@@ -274,7 +307,7 @@ Note for archaeologists: the plan documents in `docs/plans/` predate a rename an
 
 1. `crates/printa-ble-core/src/raster/<thing>.rs` — the renderer: `fn render_thing(...) -> Result<Bitmap, ThingError>`. Pure, no I/O. Include a quiet zone/margin decision and document it.
 2. `crates/printa-ble-core/src/raster/mod.rs` — `pub mod` + re-export.
-3. `crates/printa-ble-core/src/raster/markdown.rs` — if it should have a fence: add an `MdBlock` variant, a `Fence` variant, a `fence_kind` arm, and a `render_markdown_with` arm calling `fence_bitmap(render_thing(..), built_in_margin)`. Error paths must render text, never panic.
+3. `crates/printa-ble-core/src/raster/markdown.rs` — if it should have a fence: add an `MdBlock` variant, a `Fence` variant, a `fence_kind` arm, and a `render_markdown_with` arm calling `fence_bitmap(render_thing(..), built_in_margin)`. Error paths must render text, never panic. `wagara` is the most recent worked example, and the one to copy if the fence needs options as well as a payload — it also shows how to take an argument from the info string's second token.
 4. `crates/printa-ble/src/cli.rs` + `main.rs` — a subcommand or file extension, if it deserves one; route it through `dispatch` so `--preview`, `--copies`, and feed keep working.
 5. `crates/printa-ble/src/server.rs` — `/preview/<thing>` and `/print/<thing>` (validate → render → `print_and_respond`), plus a tab in `src/server/ui.html`.
 6. `crates/printa-ble-web/src/lib.rs` — a `#[wasm_bindgen]` wrapper returning `WasmBitmap` (fallible ones return `Result<_, String>`), then a tab in `web/index.html` and a `renderCurrent()` arm in `web/app.js`.

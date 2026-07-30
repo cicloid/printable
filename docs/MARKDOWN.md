@@ -197,15 +197,20 @@ height: 40
 ```
 ````
 
-Names are matched case-insensitively, and the two romanisations that differ only in a long vowel are the same motif.
+Ten patterns are drawn. Names are matched case-insensitively. Two of the aliases are romanisations that differ only in a long vowel (`shippo`, `kikko`); the other two are a second Japanese name for the same motif — the fletching band is `yagasuri` (矢絣) after the weave or `yabane` (矢羽根) after the feather, and 立涌 is read `tatewaku` in modern usage but `tachiwaki` in the court vocabulary it comes from.
 
-| Name | Kanji | Motif | Also accepts |
-|---|---|---|---|
-| `seigaiha` | 青海波 | Overlapping fans, "blue sea waves" | |
-| `asanoha` | 麻の葉 | Hemp-leaf star lattice | |
-| `shippou` | 七宝 | Interlocking circles, "seven treasures" | `shippo` |
-| `kikkou` | 亀甲 | Tortoise-shell hexagons | `kikko` |
-| `ichimatsu` | 市松 | Checkerboard | |
+| Name | Kanji | Motif | Also accepts | Ink |
+|---|---|---|---|---|
+| `asanoha` | 麻の葉 | Hemp-leaf star lattice | | 37% |
+| `ichimatsu` | 市松 | Checkerboard | | **50%** |
+| `kanoko` | 鹿の子 | Fawn spots — the ring-and-speck dapple a shibori tie-dye leaves behind | | 22% |
+| `kikkou` | 亀甲 | Tortoise-shell hexagons | `kikko` | 14% |
+| `sayagata` | 紗綾形 | Key fret — a linked lattice of 卍 forms | | 31% |
+| `seigaiha` | 青海波 | Overlapping fans, "blue sea waves" | | 32% |
+| `shippou` | 七宝 | Interlocking circles, "seven treasures" | `shippo` | 25% |
+| `tatewaku` | 立涌 | Rising steam — paired curves swelling and narrowing | `tachiwaki` | 19% |
+| `uroko` | 鱗 | Fish scales — solid triangles, alternate rows offset and inverted | | **50%** |
+| `yagasuri` | 矢絣 | Arrow fletching | `yabane` | **44%** |
 
 The remaining body lines are `key: value` options. Blank lines are ignored, keys are case-insensitive, and spacing is free.
 
@@ -215,6 +220,27 @@ The remaining body lines are `key: value` options. Blank lines are ignored, keys
 | `scale` | 1–4 | 1 | Motif size multiplier |
 
 Anything else is an error rather than a silent default — a band that quietly ignored `heigth: 80` would just look wrong with no way to tell why.
+
+**Three patterns are half solid ink.** The `Ink` column is the share of the band a pattern blacks in at the default height and scale (a test pins every pattern into a 10–52% window). `ichimatsu` and `uroko` are 50% *by construction* — a checkerboard and a field of solid scales are half-and-half, that is the motif — and `yagasuri` is 44%, its chevrons broken only by the hairline left for each arrow's shaft. The line patterns sit between 14% and 37%. A thermal head lays down exactly what it is told, so coverage is also the band's cost in heat, paper darkening and battery life. Print those three a step or two below your usual `--density`; a 50% band at `--density 6` is a lot of black for a separator.
+
+**`height` changes some patterns more than others.** `ichimatsu`, `tatewaku`, `uroko` and `yagasuri` have a free vertical rhythm, so the band's height is divided by the whole number of repeats nearest the traditional proportion and the repeat *count* follows `height` directly:
+
+| Pattern | Repeats at `height: 56` | at `100` | at `120` |
+|---|---|---|---|
+| `ichimatsu` | 2 | 4 | 5 |
+| `tatewaku` | 2 | 3 | 4 |
+| `uroko` | 3 | 5 | 6 |
+| `yagasuri` | 2 | 3 | 4 |
+
+At the 56 px default `uroko`, `yagasuri` and `tatewaku` get two or three repeats, which reads as a crop of a pattern rather than as the pattern. Give them 100–120 px:
+
+````markdown
+```wagara uroko
+height: 120
+```
+````
+
+The lattice patterns — `asanoha`, `kikkou`, `shippou`, `sayagata`, `kanoko` — cannot be divided that way without shearing, so they centre a row on the band and a taller band simply shows more of the same lattice.
 
 **How the tiling works.** A band is a separator, so it must run edge to edge with no margin and no half-eaten motif at the paper's edge. Every pattern picks a horizontal period that divides 384 exactly and draws one motif past each edge, so the rendered band is genuinely periodic: column *x* equals column *x + period*. Arcs and diagonals are drawn into a 3× oversampled buffer and collapsed by majority vote, so a stroke lands within a third of a pixel of where the maths puts it; strokes are 2 px on paper — thin enough to read as a pattern, heavy enough to survive a thermal head. `seigaiha` is the only pattern whose motifs overlap, and each row erases its own half-discs before stroking its arcs, painter's-algorithm style; without that the arcs cross and the pattern reads as noise.
 
@@ -230,7 +256,7 @@ A payload the encoder rejects prints its error message as code text (Regular 20 
 | Barcode empty | `barcode data is empty (after trimming whitespace)` |
 | Barcode non-ASCII | `barcode data must be printable ASCII` |
 | Barcode too long | `barcode data too long to fit the paper` |
-| Wagara unknown pattern | `unknown wagara pattern "…" (valid: asanoha, ichimatsu, kikkou, seigaiha, shippou)` |
+| Wagara unknown pattern | `unknown wagara pattern "…" (valid: asanoha, ichimatsu, kanoko, kikkou, sayagata, seigaiha, shippou, tatewaku, uroko, yagasuri)` |
 | Wagara malformed option | `wagara option "…" is not a \`key: value\` line (valid keys: height, scale)` |
 | Wagara unknown option | `unknown wagara option "…" (valid: height, scale)` |
 | Wagara non-numeric value | `wagara height must be a whole number, got "…"` |

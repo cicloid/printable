@@ -8,7 +8,7 @@ The name **printa-ble** derives from *printa* (the ancestor project) plus *BLE* 
 
 All four phases of the [original design](docs/plans/2026-07-27-lxd2-design.md) are delivered: `scan`, `status`, and `print` (text, images, markdown, and web pages via `--url`) with PNG preview, QR codes via `qr`, multiple copies with `--copies`, a config file that remembers the last-connected printer, an HTTP print server with a phone-friendly web UI via `serve`, and a serverless Web Bluetooth page that prints straight from the browser.
 
-A [follow-up phase](docs/plans/2026-07-29-lxd2-phase5-implementation.md) extended the markdown renderer with tables, task-list checkboxes, strikethrough, embedded QR codes and barcodes, images, and a tear marker. Since then it has gained `wagara` pattern bands, and `print` has gained `-m` for rendering markdown that did not arrive as a `.md` file — see [Markdown](#markdown).
+A [follow-up phase](docs/plans/2026-07-29-lxd2-phase5-implementation.md) extended the markdown renderer with tables, task-list checkboxes, strikethrough, embedded QR codes and barcodes, images, and a tear marker. Since then it has gained ten `wagara` pattern bands, Japanese text rendering via an embedded CJK fallback face, and `-m` on `print` for rendering markdown that did not arrive as a `.md` file — see [Markdown](#markdown).
 
 ## Documentation
 
@@ -187,13 +187,20 @@ scale: 2
 ```
 ````
 
+Ten patterns are drawn:
+
 | Pattern | Kanji | Motif | Aliases |
 |---|---|---|---|
-| `seigaiha` | 青海波 | Overlapping fans, "blue sea waves" | |
 | `asanoha` | 麻の葉 | Hemp-leaf star lattice | |
-| `shippou` | 七宝 | Interlocking circles, "seven treasures" | `shippo` |
-| `kikkou` | 亀甲 | Tortoise-shell hexagons | `kikko` |
 | `ichimatsu` | 市松 | Checkerboard | |
+| `kanoko` | 鹿の子 | Fawn spots — the ring-and-speck dapple a shibori tie-dye leaves | |
+| `kikkou` | 亀甲 | Tortoise-shell hexagons | `kikko` |
+| `sayagata` | 紗綾形 | Key fret — a linked lattice of 卍 forms | |
+| `seigaiha` | 青海波 | Overlapping fans, "blue sea waves" | |
+| `shippou` | 七宝 | Interlocking circles, "seven treasures" | `shippo` |
+| `tatewaku` | 立涌 | Rising steam — paired curves swelling and narrowing | `tachiwaki` |
+| `uroko` | 鱗 | Fish scales — solid triangles, alternating rows | |
+| `yagasuri` | 矢絣 | Arrow fletching | `yabane` |
 
 Names are matched case-insensitively. Every pattern tiles exactly across the 384 px roll, so a band runs edge to edge with no half-eaten motif.
 
@@ -201,6 +208,16 @@ Names are matched case-insensitively. Every pattern tiles exactly across the 384
 |---|---|---|---|
 | `height` | 16–400 | 56 | Band height in pixels |
 | `scale` | 1–4 | 1 | Motif size multiplier |
+
+**Three of them are heavy.** `ichimatsu` and `uroko` are 50% solid ink by construction and `yagasuri` is close behind at 44%, against 14–37% for the line patterns — that is what the motifs are, not a bug. A thermal head lays down what it is told, so those three cost noticeably more heat, paper darkening and battery than the rest. Drop `--density` a step or two when you print them.
+
+**`height` does more for some patterns than others.** `ichimatsu`, `tatewaku`, `uroko` and `yagasuri` divide the band into a whole number of vertical repeats, so the repeat *count* follows `height`: at the 56 px default `uroko` gets three rows of scales and `tatewaku` and `yagasuri` get two, which reads more like a crop than a pattern. At 100–120 px they get four to six and look markedly better. The lattice patterns (`asanoha`, `kikkou`, `shippou`, `sayagata`, `kanoko`) centre a row on the band instead and change much less.
+
+````markdown
+```wagara uroko
+height: 120
+```
+````
 
 An unknown pattern name or a malformed option line prints its error message as code text, exactly like a bad QR or barcode payload — the rest of the document still prints.
 

@@ -14,11 +14,32 @@ printable <COMMAND> [OPTIONS]
 | [`qr`](#qr) | Print a QR code |
 | [`serve`](#serve) | Run the HTTP print server |
 
-Global flags: `-h, --help` (per command too) and `-V, --version`.
+Global flags: `-h, --help` (per command too), `-V, --version`, and `-v` for [verbosity](#verbosity-and-logging).
 
 ---
 
 ## Global behavior
+
+### Verbosity and logging
+
+`-v` is global: it parses before or after the subcommand, repeats for more detail, and writes to **stderr** only. `RUST_LOG` overrides it entirely when set.
+
+| Flag | Filter | What it is for |
+|---|---|---|
+| *(none)* | `printable=warn` | This crate's warnings and nothing else |
+| `-v` | `printable=info` | Flow control and progress — connection, thermal holds and resumes, retransmit requests, per-copy progress, the server's request log and job summaries |
+| `-vv` | `printable=debug` | Parsed protocol frames, device resolution, notification decoding, image-resolution timings |
+| `-vvv` | `debug,printable=trace` | Raw hex on the wire, **plus dependency logs** (btleplug, chromiumoxide, reqwest) |
+
+The default filter names this crate and nothing else, which is load-bearing rather than tidy: chromiumoxide logs the websocket frames it fails to deserialize at ERROR, and recent Chrome sends several per screenshot, so a bare `warn` floor made a perfectly successful `print --url` emit two red lines about a connection error. `-vvv` is the rung where you deliberately ask for that noise back — it is the one to reach for when the fault might be in btleplug or Chrome rather than here.
+
+```sh
+printable -vv print "test" --preview /tmp/out.png
+printable print -v -f long.md                       # watch thermal pauses live
+RUST_LOG=printable=trace,btleplug=debug printable status
+```
+
+Nothing is logged from `printa-ble-core`: it is sans-IO and has no logger. What it observes leaves as values (`JobStats`) and the transport decides how to report it.
 
 ### Device resolution
 
@@ -35,6 +56,39 @@ Every command that talks to the printer resolves a device the same way. `scan` i
 The scan runs up to **10 seconds**, polling every 300 ms. An exact match short-circuits it; the ranked fallbacks are used only if no exact match appears before the deadline. If nothing matches at all, the command fails with `no LX printer found. Is the printer on and in range?` and exit code 2.
 
 After every successful connection the device's id and name are written to the config file, so the next run reconnects to the same printer without a flag. `--device` overrides the saved printer *and* replaces it.
+
+### Connecting means the printer answered
+
+Finding a device is not the same as finding a *live* printer. On macOS, CoreBluetooth caches the GATT database of any peripheral it has paired with before, so connecting and discovering the characteristics both succeed against a printer that is switched off. A connection is therefore only reported once the printer has answered a `5A 01` hello frame of its own accord — the first thing in the flow that only the hardware itself can produce.
+
+A device that is present but silent fails with its own message and its own error type:
+
+```
+error: found LX-D02 but it did not respond — is the printer powered on?
+```
+
+That is exit code **2** (and `503` on the server): from a caller's point of view there is still no printer to print on, but the wording tells whoever is standing next to it which fault it is. The hello costs one extra round trip and is idempotent — every print job opens with its own hello anyway.
+
+### Timeouts
+
+None of these come from the protocol; they are this implementation's choices.
+
+| Constant | Value | Guards against |
+|---|---|---|
+| Scan | 10 s | No matching device ever advertises |
+| `CONNECT_TIMEOUT` | 15 s | CoreBluetooth's own connect has no deadline and will wait forever for a peripheral that is not there |
+| `HELLO_TIMEOUT` | 4 s | A device that connects but never answers (the liveness probe above) |
+| `NOTIFICATION_TIMEOUT` | 10 s | Total BLE silence mid-job — the link dropped |
+| `STALL_TIMEOUT` | 60 s | A printer that keeps talking without taking data |
+| `DISCONNECT_TIMEOUT` | 3 s | A teardown that never gets its confirmation callback |
+| Status wait | 5 s (`status`), 3 s (pre-print) | No unsolicited status frame arrives |
+
+`NOTIFICATION_TIMEOUT` and `STALL_TIMEOUT` are complementary, and both are needed. The notification deadline measures radio silence and is re-armed by *any* frame, including the periodic unsolicited status heartbeats — so a printer that pauses the stream for thermal reasons and never resumes keeps the deadline alive indefinitely, and the job (and any HTTP client behind it) would wait forever. The stall deadline measures something the printer cannot fake: whether raster data is actually moving. A minute is deliberately generous, since a genuine thermal cooldown resumes in seconds. When it fires after real flow control, the error suggests lowering `--density`:
+
+```
+print failed: printer stalled for 60.0s without resuming, 47.3s of this job spent
+paused for thermal flow control; the print head may be overheating — try a lower --density
+```
 
 ### Config file
 
@@ -69,7 +123,7 @@ Re-enable it under System Settings → Privacy & Security → Bluetooth. Running
 |---|---|
 | 0 | Success |
 | 1 | General error (bad input, unreadable file, oversized job, render failure) |
-| 2 | No printer found — also `scan` finding nothing, and any command-line usage error (clap's convention) |
+| 2 | No **usable** printer: none found, or one found that never answered — also `scan` finding nothing, and any command-line usage error (clap's convention) |
 | 3 | Printer is out of paper |
 | 4 | Print failed (authentication rejected, BLE write failed, printer stopped responding) |
 
@@ -80,7 +134,7 @@ Diagnostics go to stderr, results to stdout. Scripts can read stdout safely.
 | Stream | Text |
 |---|---|
 | stdout | Scan table, status fields, `Printed <N> lines.`, `Printed copy <i>/<N>.`, the preview file path |
-| stderr | `Connected to <name>.`, warnings, errors |
+| stderr | `Connected to <name>.`, warnings, errors, and everything `-v` turns on |
 
 ---
 
@@ -161,12 +215,36 @@ Exactly one source is used. Combining them is an error.
 
 | Source | Rendered as | Notes |
 |---|---|---|
-| `--url <URL>` | Web page screenshot | Conflicts with `TEXT` and `--file` (usage error, exit 2). Requires the `url` build feature. |
+| `--url <URL>` | Web page screenshot | Conflicts with `TEXT`, `--file`, and `--markdown` (usage error, exit 2). Requires the `url` build feature. |
 | `--file <PATH>` | By extension, see below | Passing `TEXT` too fails: `cannot combine a text argument with --file` |
-| `TEXT` positional | Plain text | |
-| stdin | Plain text | Used only when there is no `TEXT` and no `--file` |
+| `--file -` | Whatever arrives on stdin | A bare `-` is the Unix spelling of "read stdin". `./-` and `-.md` are ordinary filenames. |
+| `TEXT` positional | Plain text, or markdown with `-m` | |
+| stdin | Plain text, or markdown with `-m` | Used only when there is no `TEXT` and no `--file` |
 
-Note that stdin and the positional argument are always **plain text**, never markdown — piping a `.md` file renders its literal source. Use `--file` for markdown.
+Markdown is otherwise chosen by file extension, so anything without one is **plain text by default** — piping a document renders its literal source. `-m` / `--markdown` is the only way to say so when there is no filename to give it away.
+
+### `-m, --markdown`
+
+Forces the markdown renderer for input that would otherwise be plain text.
+
+| Input | Effect of `-m` |
+|---|---|
+| stdin | Renders as markdown |
+| `TEXT` positional | Renders as markdown |
+| `--file -` | Renders as markdown |
+| `--file x.txt` | Renders as markdown |
+| `--file x.md` / `.markdown` | Redundant — already markdown, and accepted without comment |
+| `--file x.png` / `.jpg` / `.jpeg` | Error: `--markdown does not apply to an image file (…)`, exit 1 |
+| `--url` | Usage error at parse time (clap conflict), exit 2 |
+
+```sh
+cat notes.md | printable print -m
+printable print -m "# Heading\n\n- one\n- two"
+printable print -m -f - < notes.md
+printable print -m -f notes.txt
+```
+
+**Where relative image references anchor depends on how the document arrived.** A `--file` document anchors them to its own directory; markdown that arrived on stdin or as an argument has no file behind it, so they anchor to the **current working directory** — what `![](logo.png)` means to someone piping a document from their shell. (The server anchors nothing and never reads local paths at all; see [API.md](API.md#markdown-images).)
 
 ### File extensions
 
@@ -175,17 +253,18 @@ Extension matching is case-insensitive. Anything else fails with `unsupported fi
 | Extension | Rendering |
 |---|---|
 | `.txt` | Plain text at `--size`, greedy word-wrap at 384 px |
-| `.md`, `.markdown` | Full markdown: headings, emphasis, lists, task lists, tables, code, blockquotes, rules, `qr` and `barcode` fences, images |
+| `.md`, `.markdown` | Full markdown: headings, emphasis, lists, task lists, tables, code, blockquotes, rules, `qr`, `barcode` and `wagara` fences, images |
 | `.png`, `.jpg`, `.jpeg` | Scaled to 384 px wide, dithered with `--dither` |
 
-Markdown image references resolve against the document's own directory; both local paths and `http(s)` URLs are fetched. At most 32 references resolve per document, the whole pass gets 30 seconds, each fetch gets 15 seconds and 5 MB. Anything unresolved renders as an italic `[image: alt]` placeholder — a broken image never fails a print.
+A `--file` document's image references resolve against **that document's own directory**; both local paths and `http(s)` URLs are fetched. At most 32 references resolve per document, the whole pass gets 30 seconds, each fetch gets 15 seconds and 5 MB. Anything unresolved renders as an italic `[image: alt]` placeholder — a broken image never fails a print.
 
 ### Options
 
 | Flag | Type | Default | Range | Applies to |
 |---|---|---|---|---|
 | `--device <STR>` | string | saved, else first `LX*` | — | All |
-| `-f, --file <PATH>` | path | — | — | — |
+| `-f, --file <PATH>` | path | — | `-` means stdin | — |
+| `-m, --markdown` | flag | off | — | Text input and `.txt`; rejected for images and `--url` |
 | `--url <URL>` | string | — | `http://` or `https://` only | — |
 | `--density <N>` | integer | `3` | 1–7, enforced by the parser | All |
 | `--feed <N>` | integer | `40` | ≥ 0, no upper bound | All |
@@ -230,6 +309,8 @@ printable print "Hello" --size 32 --density 5
 echo "from a pipe" | printable print
 printable print -f notes.txt --size 28
 printable print -f receipt.md
+cat receipt.md | printable print -m
+printable print -m -f - < receipt.md
 printable print -f photo.jpg --dither atkinson
 printable print -f screenshot.png --dither none
 printable print --url https://example.com
@@ -245,13 +326,15 @@ printable print "invoice" --device c0076683      # id substring
 |---|---|---|
 | `nothing to print` | 1 | Input is empty or whitespace only |
 | `cannot combine a text argument with --file` | 1 | Both given |
+| `--markdown does not apply to an image file (…)` | 1 | `-m` with `-f photo.png` |
 | `unsupported file type: …` | 1 | Extension is not one of the six |
 | `failed to open …` / `failed to read …` | 1 | Unreadable file |
 | `failed to decode image: …` | 1 | Not a valid PNG or JPEG |
-| `cannot print this job: print too large: …` | 1 | Over 65 535 raster packets (more than 131 070 rows) |
+| `cannot print this job: print too large: …` | 1 | Over 65 535 raster packets (more than 131 070 rows). Note the server answers `400` for the same condition |
 | `no LX printer found. Is the printer on and in range?` | 2 | Nothing matched within the 10 s scan |
+| `found <name> but it did not respond — is the printer powered on?` | 2 | The device was there and connected, but never answered hello |
 | `printer is out of paper` | 3 | Pre-print check or a mid-job status frame |
-| `print failed: …` | 4 | Auth rejected, BLE write failed, or the printer stopped responding |
+| `print failed: …` | 4 | Auth rejected, BLE write failed, the printer went silent, or the job stalled |
 
 ---
 
@@ -319,6 +402,21 @@ On your LAN: http://192.168.1.42:8000
 
 The LAN hint appears only when `--bind` is exactly `0.0.0.0`.
 
+At the default level the server logs only its own warnings — a failed job, an unreachable printer, and any `5xx` it returns. `-v` turns on the operational log:
+
+```console
+$ printable serve -v
+Listening on http://0.0.0.0:8000
+ INFO POST /preview/markdown -> 200 in 34ms
+ INFO print job starting: markdown, 812 lines, density 3, feed 40, 1 copies
+ INFO connected to LX-D02, subscribed to notifications
+ INFO printer is cooling down
+ INFO print job done: markdown, 812 lines in 24310ms (812 packets, 3 holds, 41 cooldowns, 0 resends)
+ INFO POST /print/markdown -> 200 in 24544ms
+```
+
+Every request gets one line with its method, path, status and elapsed milliseconds. A request that has to queue behind a running job says so going in and reports the wait on the way out — that wait is otherwise indistinguishable from a hang at the client end. URL routes log Chrome's launch-and-render time separately, since it happens before the printer is ever touched and is often the slowest part.
+
 There is **no authentication** — anyone who can reach the port can print, and the markdown and URL endpoints make outbound requests on a caller's behalf. See [SECURITY.md](../SECURITY.md) for the trust model, and [API.md](API.md) for the full endpoint reference.
 
 ```sh
@@ -372,6 +470,16 @@ uptime | printable print
 
 Small sizes fit more columns: 384 px holds roughly 32 monospace characters at 24 px, 42 at 18 px.
 
+### Pipe a markdown document
+
+```sh
+cat CHANGELOG.md | printable print -m
+glow -s notes.md 2>/dev/null || printable print -m -f notes.md
+printf '# Standup\n\n- [ ] deploy\n- [ ] review\n' | printable print -m
+```
+
+Without `-m` these print their literal source, `#` and all. Relative image references in a piped document resolve against the **working directory**, so run the command from wherever the images live.
+
 ### Print a web page
 
 ```sh
@@ -412,10 +520,11 @@ curl -X POST http://192.168.1.42:8000/print/text \
 ### No printer found (exit 2)
 
 1. Power the printer on and check it is not already connected to a phone — BLE links are exclusive.
-2. Run `printable scan --timeout 15`. If the printer appears there but commands still fail, pass its id: `printable print "x" --device <ID>`.
-3. If `scan` finds nothing, confirm Bluetooth is on. `no Bluetooth adapter found — is Bluetooth turned on?` means the adapter itself is missing or disabled.
-4. Connect attempts scan for 10 seconds. A printer that advertises slowly may need a power cycle rather than a longer wait.
-5. A stale saved device slows things down: the resolver waits the full 10 seconds for the saved id before falling back. Delete the config file, or pass `--device`, to skip that.
+2. `found <name> but it did not respond` is a *different* fault from nothing being found, even though both exit 2: the device is right there and connected, but nothing answered. On macOS that is almost always a printer that is switched off, because CoreBluetooth answers connect and discovery out of its cache. Turn it on.
+3. Run `printable scan --timeout 15`. If the printer appears there but commands still fail, pass its id: `printable print "x" --device <ID>`.
+4. If `scan` finds nothing, confirm Bluetooth is on. `no Bluetooth adapter found — is Bluetooth turned on?` means the adapter itself is missing or disabled.
+5. Connect attempts scan for 10 seconds. A printer that advertises slowly may need a power cycle rather than a longer wait.
+6. **A stale saved device costs a full 10 seconds on every command.** The resolver takes an exact id match immediately, but a saved id that no longer exists never matches — so it collects ranked fallbacks (a device with the saved *name*, then any `LX*`) and only uses one when the scan deadline expires. Every command pays the whole 10 seconds even with the printer sitting right there under a new identifier. Delete the config file, or pass `--device`, to skip it. Run with `-vv` to see which candidate won.
 
 ### Bluetooth permission denied
 
@@ -451,8 +560,9 @@ If Chrome is installed but the render fails, try the page in a normal browser fi
 
 | Symptom | Cause |
 |---|---|
-| `printer stopped responding` (exit 4) | No notification for 10 seconds. Usually the link dropped — move closer, then retry. |
-| Job pauses, then resumes | Normal flow control. The printer asks for a hold when its buffer fills or the head is hot. |
+| `printer went silent (no BLE notification at all for 10s)` (exit 4) | Nothing arrived on the link for 10 seconds. Usually the link dropped — move closer, then retry. |
+| `printer stalled for … without resuming` (exit 4) | The printer is still sending frames but has taken no data for 60 seconds. When the job spent time paused for flow control, the message says so and suggests a lower `--density`; when it never paused at all, the head is not the problem and the message does not blame it. |
+| Job pauses, then resumes | Normal flow control. The printer asks for a hold when its buffer fills or the head is hot. Run with `-v` to watch the pauses and resumes as they happen. |
 | `printer is out of paper` (exit 3) | Checked before the job starts and again on every status frame during it. |
 | `warning: printer battery is low` | Printing continues, but density drops on a flat battery. Charge it before a long job. |
 | Faint or streaky output | Raise `--density` (up to 7). Long dark jobs trigger thermal cooldown pauses. |

@@ -153,7 +153,7 @@ The layers, bottom up:
 | Module | Responsibility |
 |---|---|
 | `raster/bitmap.rs` | The 1-bit canvas and raster chunking |
-| `raster/rich.rs` | The typesetter: styled spans → glyphs. Greedy word wrap, mixed sizes on a shared baseline, strikethrough, indent. Owns the three embedded JetBrains Mono faces |
+| `raster/rich.rs` | The typesetter: styled spans → glyphs. Greedy word wrap, mixed sizes on a shared baseline, strikethrough, indent. Owns the embedded font faces and decides which one a glyph is drawn from |
 | `raster/text.rs` | Plain text — a thin wrapper: split on `\n`, one `RichLine` each |
 | `raster/markdown.rs` | Lowers CommonMark events onto `rich`, plus its own block graphics |
 | `raster/dither.rs` | `prepare` (grayscale + Lanczos3 scale to 384 px, height clamped to 4096 rows) and `image_to_bitmap` (Floyd–Steinberg, Atkinson, or threshold) |
@@ -241,7 +241,7 @@ Genuinely requires hardware: BLE scan/connect/subscribe, an end-to-end print, We
 
 ```
 crates/printa-ble-core/          sans-IO: no tokio, no BLE, no rand, no network
-  assets/                        JetBrains Mono Regular/Bold/Italic + OFL licence
+  assets/                        embedded font faces + their OFL licences
   src/protocol/
     packets.rs                   command builders (5A 01/04/0A/0B/0C, 55 raster)
     notifications.rs             0xFFE2 frame parser → Notification

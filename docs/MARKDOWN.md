@@ -24,7 +24,7 @@ Piping a document without `-m` prints its `#` and `**` verbatim. See [CLI.md](CL
 |---|---|
 | Width | 384 px, fixed |
 | Colour | 1 bit; a glyph pixel is black at ≥ 128/255 coverage |
-| Font | JetBrains Mono (Regular / Bold / Italic), embedded in the binary |
+| Font | JetBrains Mono (Regular / Bold / Italic), embedded in the binary. Glyph coverage and any fallback are described in the crate's `raster/rich.rs` |
 | Line height | 1.3 × the largest font size on the rendered line |
 | Wrapping | Greedy word wrap at `384 − indent`; an overlong word breaks mid-word |
 | Alignment | Left, always. Nothing centres except QR codes and barcodes |

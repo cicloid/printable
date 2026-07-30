@@ -1497,6 +1497,31 @@ mod tests {
         assert_eq!(first_ink, FENCE_MARGIN, "wagara top margin");
     }
 
+    /// Every name the wagara module draws must be reachable from a fence. The
+    /// fence passes names through untouched, so this only breaks when a pattern
+    /// is added to [`crate::raster::wagara`] and the fence's error path starts
+    /// swallowing it — but that is exactly the failure a reader would see.
+    #[test]
+    fn wagara_fence_draws_every_pattern() {
+        for name in crate::raster::wagara::PATTERNS {
+            let b = render_markdown(&format!("```wagara {name}\n```"));
+            let expected =
+                render_wagara(name, WagaraOptions::default()).expect("PATTERNS entry renders");
+            assert_eq!(
+                b.height(),
+                expected.height() + 2 * FENCE_MARGIN,
+                "{name} fence should be a band, not an error message"
+            );
+            // "Edge to edge" in the wagara sense: within a stroke or two of
+            // the paper's edge. A column pattern cut through the middle of a
+            // column leaves a few blank pixels there and is still full width.
+            assert!(
+                (WIDTH - 8..WIDTH).any(|x| (0..b.height()).any(|y| b.get(x, y))),
+                "{name} fence should reach the right paper edge"
+            );
+        }
+    }
+
     /// The pattern name may come from the info string or from the body's first
     /// line; both spellings must render the same band.
     #[test]

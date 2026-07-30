@@ -1,10 +1,15 @@
 //! Traditional Japanese pattern (和柄, *wagara*) separator bands.
 //!
-//! Five centuries-old motifs, drawn procedurally as a full-width decorative
+//! Ten centuries-old motifs, drawn procedurally as a full-width decorative
 //! band: `seigaiha` (青海波, blue sea waves), `asanoha` (麻の葉, hemp leaf),
-//! `shippou` (七宝, seven treasures), `kikkou` (亀甲, tortoise shell) and
-//! `ichimatsu` (市松, checkerboard). All are traditional and long out of
-//! copyright; nothing here traces an existing drawing.
+//! `shippou` (七宝, seven treasures), `kikkou` (亀甲, tortoise shell),
+//! `ichimatsu` (市松, checkerboard), `yagasuri` (矢絣, arrow fletching),
+//! `uroko` (鱗, fish scales), `sayagata` (紗綾形, the 卍 key fret), `kanoko`
+//! (鹿の子, fawn spots) and `tatewaku` (立涌, rising steam). All are
+//! traditional and long out of copyright; nothing here traces an existing
+//! drawing, with the one exception noted at [`SAYAGATA_U`] — a linkage of
+//! historical figures, transcribed from a public-domain seamless tile because
+//! it has no closed form to derive.
 //!
 //! # Why the geometry is built the way it is
 //!
@@ -22,6 +27,16 @@
 //! survive a thermal head. [`ichimatsu`] needs none of this but goes through
 //! the same buffer, so one code path produces every band.
 //!
+//! **Band height.** Most of these motifs were designed to cover a bolt of
+//! cloth, not a 56 px strip, and a motif that needs more height than the band
+//! has reads as a random crop rather than as a pattern. Where the vertical
+//! rhythm is free — [`ichimatsu`]'s rows, [`uroko`]'s scales, [`yagasuri`]'s
+//! feathers, [`tatewaku`]'s swells — the band's height is divided by the whole
+//! number of repeats nearest the traditional proportion, so the band always
+//! ends on a motif boundary and always shows at least one whole repeat. The
+//! lattices ([`asanoha`], [`kikkou`], [`shippou`], [`sayagata`], [`kanoko`])
+//! cannot do that without shearing, so they centre a row on the band instead.
+//!
 //! **Occlusion.** [`seigaiha`] is the only pattern whose motifs overlap. Real
 //! seigaiha is layered like fish scales — a lower fan hides the bottom of the
 //! one above — so each row erases its own half-discs before stroking its arcs,
@@ -31,7 +46,18 @@
 use super::bitmap::{Bitmap, WIDTH};
 
 /// Canonical pattern names, in the order the error message lists them.
-pub const PATTERNS: [&str; 5] = ["asanoha", "ichimatsu", "kikkou", "seigaiha", "shippou"];
+pub const PATTERNS: [&str; 10] = [
+    "asanoha",
+    "ichimatsu",
+    "kanoko",
+    "kikkou",
+    "sayagata",
+    "seigaiha",
+    "shippou",
+    "tatewaku",
+    "uroko",
+    "yagasuri",
+];
 
 /// Smallest band height, in pixels.
 pub const MIN_HEIGHT: u32 = 16;
@@ -48,7 +74,10 @@ pub const DEFAULT_HEIGHT: u32 = 56;
 #[derive(Debug, thiserror::Error)]
 pub enum WagaraError {
     /// The fence named a pattern this module does not draw.
-    #[error("unknown wagara pattern {0:?} (valid: asanoha, ichimatsu, kikkou, seigaiha, shippou)")]
+    #[error(
+        "unknown wagara pattern {0:?} (valid: asanoha, ichimatsu, kanoko, kikkou, sayagata, \
+         seigaiha, shippou, tatewaku, uroko, yagasuri)"
+    )]
     UnknownPattern(String),
     /// A `key: value` line in the fence body was malformed or out of range.
     #[error("{0}")]
@@ -83,16 +112,25 @@ const STROKE: f64 = 3.0;
 
 /// Resolve a spelling to its canonical pattern name.
 ///
-/// Matching is case-insensitive and tolerates the two romanisations that differ
+/// Matching is case-insensitive and tolerates the romanisations that differ
 /// only in a long vowel: `shippo`/`shippou` and `kikko`/`kikkou` are the same
-/// motif, and a reader who typed either meant the same band.
+/// motif, and a reader who typed either meant the same band. Three motifs also
+/// go by a second Japanese name rather than a second spelling — the fletching
+/// band is `yagasuri` (矢絣) after the weave or `yabane` (矢羽根) after the
+/// feather itself, and 立涌 is read `tatewaku` in modern usage but `tachiwaki`
+/// in the court vocabulary the motif comes from. Both are what a reader means.
 fn canonical(name: &str) -> Option<&'static str> {
     match name.trim().to_ascii_lowercase().as_str() {
         "asanoha" => Some("asanoha"),
         "ichimatsu" => Some("ichimatsu"),
+        "kanoko" => Some("kanoko"),
         "kikkou" | "kikko" => Some("kikkou"),
+        "sayagata" => Some("sayagata"),
         "seigaiha" => Some("seigaiha"),
         "shippou" | "shippo" => Some("shippou"),
+        "tatewaku" | "tachiwaki" => Some("tatewaku"),
+        "uroko" => Some("uroko"),
+        "yagasuri" | "yabane" => Some("yagasuri"),
         _ => None,
     }
 }
@@ -113,9 +151,14 @@ pub fn render_wagara(pattern: &str, opts: WagaraOptions) -> Result<Bitmap, Wagar
     match name {
         "asanoha" => asanoha(&mut canvas, scale),
         "ichimatsu" => ichimatsu(&mut canvas, scale),
+        "kanoko" => kanoko(&mut canvas, scale),
         "kikkou" => kikkou(&mut canvas, scale),
+        "sayagata" => sayagata(&mut canvas, scale),
         "seigaiha" => seigaiha(&mut canvas, scale),
         "shippou" => shippou(&mut canvas, scale),
+        "tatewaku" => tatewaku(&mut canvas, scale),
+        "uroko" => uroko(&mut canvas, scale),
+        "yagasuri" => yagasuri(&mut canvas, scale),
         other => unreachable!("canonical() returned an undrawn pattern {other:?}"),
     }
     Ok(canvas.into_bitmap())
@@ -282,6 +325,23 @@ impl Canvas {
         self.paint((x0, y0, x1, y1), true, |x, y| {
             x >= x0 && x < x1 && y >= y0 && y < y1
         });
+    }
+
+    /// Fill every sample of `shape` inside the bounding box `(x0, y0, x1, y1)`.
+    ///
+    /// The general case of [`Canvas::fill_rect`], for the motifs that are a
+    /// solid area rather than a stroke: scales, fletching, dapple. The box must
+    /// contain the shape, because [`Canvas::paint`] never looks outside it.
+    fn fill(&mut self, bbox: (f64, f64, f64, f64), shape: impl Fn(f64, f64) -> bool) {
+        self.paint(bbox, true, shape);
+    }
+
+    /// Stroke a polyline through `points` — a curve, sampled finely enough that
+    /// consecutive points are within a stroke width of each other.
+    fn stroke_path(&mut self, points: &[(f64, f64)]) {
+        for pair in points.windows(2) {
+            self.stroke_segment(pair[0], pair[1]);
+        }
     }
 
     /// Collapse the oversampled buffer to 1 bit: a printed pixel is black when
@@ -481,6 +541,234 @@ fn ichimatsu(canvas: &mut Canvas, scale: f64) {
     }
 }
 
+/// 鱗 — fish scales: rows of solid equilateral triangles, every other row
+/// offset by half a triangle.
+///
+/// The triangles in a row sit base to base, so the untouched ground between
+/// them is itself a row of triangles pointing the other way, and the half-row
+/// offset puts each blank triangle directly under an inked one. That is the
+/// whole trick: the pattern alternates orientation and fill at once, which is
+/// what makes it read as overlapping scales rather than as a row of bunting.
+/// Solid, not outlined — uroko is a filled motif on every textile it appears
+/// on, and outlines at this size would just be a triangular grid.
+///
+/// Coverage is therefore exactly half the band, as it is for [`ichimatsu`].
+///
+/// Row height is the band's, divided by the whole number of rows nearest to
+/// equilateral — [`ichimatsu`]'s bargain, for [`ichimatsu`]'s reason. A scale
+/// sliced off by the paper's edge looks like a fault; one a few pixels short
+/// of equilateral does not.
+fn uroko(canvas: &mut Canvas, scale: f64) {
+    let n = motifs_across(24.0 * scale);
+    let base = (SS_WIDTH / n) as f64;
+    let count = (canvas.height as f64 / (base * 3f64.sqrt() / 2.0))
+        .round()
+        .max(1.0);
+    let tall = canvas.height as f64 / count;
+    for j in 0..count as i64 {
+        let y = j as f64 * tall;
+        let offset = if j.rem_euclid(2) == 1 {
+            base / 2.0
+        } else {
+            0.0
+        };
+        for i in -1..=n as i64 + 1 {
+            let apex = i as f64 * base + offset;
+            canvas.fill(
+                (apex - base / 2.0, y, apex + base / 2.0, y + tall),
+                |x, py| {
+                    // Half-width grows linearly from nothing at the apex to
+                    // half a base at the foot.
+                    let t = (py - y) / tall;
+                    (0.0..1.0).contains(&t) && (x - apex).abs() <= t * base / 2.0
+                },
+            );
+        }
+    }
+}
+
+/// 矢絣 — arrow fletching, as the warp-kasuri weave lays it out.
+///
+/// Columns one feather wide, each filled with a stack of chevrons: the
+/// boundary between one feather and the next runs at 45° from the column edge
+/// to a point on the column's centre line, so a feather is a chevron of
+/// constant depth rather than a triangle. Neighbouring columns are half a
+/// feather out of step, and every second *pair* of columns flips the chevron
+/// over — the repeat is four columns wide, which is what the cloth does and
+/// what stops the band reading as a plain herringbone.
+///
+/// A hairline is left unprinted down each column's centre for the arrow's
+/// shaft. Without it the motif is a 50% solid, which is both heavier than a
+/// separator wants to be and a chevron short of an arrow.
+fn yagasuri(canvas: &mut Canvas, scale: f64) {
+    // Four columns make one repeat, so fit whole groups of four: the printed
+    // period is a group, and a group has to divide the roll.
+    let groups = motifs_across(64.0 * scale);
+    let column = (SS_WIDTH / groups) as f64 / 4.0;
+    let rise = column / 2.0;
+    // On cloth a feather runs about four columns long. A separator is 56 px
+    // tall, and at four columns only one feather fits, which reads as a random
+    // mosaic rather than as fletching: the stack is the motif. Two columns is
+    // the shortest feather that still looks drawn rather than cropped. Round to
+    // a whole number of them so the band ends on a feather edge, as
+    // [`ichimatsu`] does with its rows.
+    let count = (canvas.height as f64 / (2.0 * column)).round().max(1.0);
+    let pitch = canvas.height as f64 / count;
+    for i in 0..4 * groups as i64 {
+        let x0 = i as f64 * column;
+        let centre = x0 + column / 2.0;
+        // Chevrons point up in the second pair of every four columns...
+        let sign = if (i / 2).rem_euclid(2) == 1 {
+            -1.0
+        } else {
+            1.0
+        };
+        // ...and neighbours within a pair are half a feather out of step.
+        let phase = if i.rem_euclid(2) == 1 {
+            pitch / 2.0
+        } else {
+            0.0
+        };
+        canvas.fill((x0, 0.0, x0 + column, canvas.height as f64), |x, y| {
+            let reach = (x - centre).abs();
+            let edge = sign * (rise - reach);
+            reach >= STROKE && (y - edge - phase).rem_euclid(pitch) < pitch / 2.0
+        });
+    }
+}
+
+/// 鹿の子 — fawn spots: the dapple a shibori tie-dye leaves behind.
+///
+/// Each tied point comes out of the dye pot as a small ring with an undyed
+/// speck at its centre, and the ties are set out row by row with every other
+/// row half a pitch across. Drawn as open squares with a centre dot rather
+/// than as solid diamonds: at 2 px a solid diamond of this size is a blob, and
+/// the ring-and-speck is what distinguishes 鹿の子 from every other dot grid.
+/// The rows are a triangle's height apart rather than a full pitch, so the
+/// half-row offset lands the spots on a triangular lattice and the dapple
+/// reads as even in every direction.
+fn kanoko(canvas: &mut Canvas, scale: f64) {
+    let n = motifs_across(24.0 * scale);
+    let pitch = (SS_WIDTH / n) as f64;
+    let half = pitch * 0.26;
+    for (k, y) in rows(canvas, pitch * 3f64.sqrt() / 2.0, pitch).collect::<Vec<_>>() {
+        let offset = if k.rem_euclid(2) == 1 {
+            pitch / 2.0
+        } else {
+            0.0
+        };
+        for i in -1..=n as i64 + 1 {
+            let cx = i as f64 * pitch + offset;
+            let corner = [
+                (cx - half, y - half),
+                (cx + half, y - half),
+                (cx + half, y + half),
+                (cx - half, y + half),
+            ];
+            for e in 0..4 {
+                canvas.stroke_segment(corner[e], corner[(e + 1) % 4]);
+            }
+            // A zero-length segment is a round cap and nothing else: the speck.
+            canvas.stroke_segment((cx, y), (cx, y));
+        }
+    }
+}
+
+/// 立涌 — rising steam: columns of paired wavy lines that swell and pinch.
+///
+/// Each column is one curve and its mirror image about the column's centre,
+/// the pair's half-width running `mean ± swell` as a cosine of height. Every
+/// column is in step, so where the columns bulge the gaps between them pinch
+/// and vice versa — the ground is as much a column of vapour as the figure is,
+/// which is the point of the motif.
+///
+/// The swell stops short of touching: at its widest a column is 0.8 of the
+/// pitch, leaving a fifth of a pitch of paper between neighbours. Curves that
+/// met would turn the band into a chain of closed cells, which is 七宝
+/// ([`shippou`]), not 立涌.
+fn tatewaku(canvas: &mut Canvas, scale: f64) {
+    let n = motifs_across(24.0 * scale);
+    let pitch = (SS_WIDTH / n) as f64;
+    let (mean, swell) = (0.27 * pitch, 0.12 * pitch);
+    // A swell is about one and a third pitches tall; round to a whole number so
+    // the band is not cut off mid-breath.
+    let count = (canvas.height as f64 / (1.3 * pitch)).round().max(1.0);
+    let period = canvas.height as f64 / count;
+    let middle = canvas.height as f64 / 2.0;
+    let span = canvas.height as f64 + 2.0 * period;
+    let steps = (span / STROKE).ceil().max(8.0) as i64;
+    let ys: Vec<f64> = (0..=steps)
+        .map(|s| -period + span * s as f64 / steps as f64)
+        .collect();
+    let width = |y: f64| {
+        // Anchored on the band's centre, so the swell is centred at any height.
+        mean + swell * (std::f64::consts::TAU * (y - middle) / period).cos()
+    };
+    for i in -1..=n as i64 + 1 {
+        let cx = i as f64 * pitch;
+        for side in [-1.0, 1.0] {
+            let curve: Vec<(f64, f64)> = ys.iter().map(|&y| (cx + side * width(y), y)).collect();
+            canvas.stroke_path(&curve);
+        }
+    }
+}
+
+/// One 12×12 cell of the 紗綾形 lattice, in the frame where the fret's strokes
+/// are axis-aligned unit steps. Bit `u` of row `v` marks an edge leaving the
+/// lattice point `(u, v)`: [`SAYAGATA_U`] along `+u`, [`SAYAGATA_V`] along
+/// `+v`. Both tables already carry the cell's own `(6, 6)` glide, so shifting
+/// a lattice point by six in each axis lands on the same bits.
+///
+/// The figures are transcribed from the public-domain seamless tile on
+/// Wikimedia Commons rather than derived: sayagata is a specific historical
+/// linkage of 卍 forms, not a lattice with a closed-form rule, and inventing a
+/// plausible one produces a maze that is not this maze.
+const SAYAGATA_U: [u16; 12] = [
+    0x1fc, 0x9fc, 0x575, 0x38a, 0x386, 0xd45, 0xf07, 0xf27, 0xd55, 0x28e, 0x18e, 0x175,
+];
+/// Edges leaving `(u, v)` along `+v` — see [`SAYAGATA_U`].
+const SAYAGATA_V: [u16; 12] = [
+    0xc03, 0xe07, 0xdfb, 0xb6d, 0xef7, 0x1f8, 0x0f0, 0x1f8, 0xef7, 0xb6d, 0xdfb, 0xe07,
+];
+
+/// 紗綾形 — the key fret woven from interlocking 卍.
+///
+/// Drawn on a lattice turned 45°: a unit step in `u` moves down-right and a
+/// unit step in `v` moves up-right, so every stroke lands on a diagonal and
+/// the fret reads as the continuous maze it is on temple cloth rather than as
+/// a row of separate symbols. Twelve units make the cell, and the cell's glide
+/// puts the printed repeat at twelve units across — the value fitted to the
+/// roll.
+fn sayagata(canvas: &mut Canvas, scale: f64) {
+    /// Lattice points along one side of the repeating cell.
+    const CELL: i64 = 12;
+    let n = motifs_across(64.0 * scale);
+    let period = (SS_WIDTH / n) as f64;
+    let unit = period / CELL as f64;
+    let middle = canvas.height as f64 / 2.0;
+    let at = |u: i64, v: i64| {
+        let (u, v) = (u as f64, v as f64);
+        ((u + v) * unit, (u - v) * unit + middle)
+    };
+    // Both axes cover the same span, because both run at 45° across a band
+    // whose corners are (0, ±middle) and (SS_WIDTH, ±middle).
+    let reach = (SS_WIDTH as f64 + middle) / (2.0 * unit);
+    let lo = (-middle / (2.0 * unit)).floor() as i64 - CELL;
+    let hi = reach.ceil() as i64 + CELL;
+    for u in lo..=hi {
+        let bit = u.rem_euclid(CELL);
+        for v in lo..=hi {
+            let row = v.rem_euclid(CELL) as usize;
+            if SAYAGATA_U[row] >> bit & 1 == 1 {
+                canvas.stroke_segment(at(u, v), at(u + 1, v));
+            }
+            if SAYAGATA_V[row] >> bit & 1 == 1 {
+                canvas.stroke_segment(at(u, v), at(u, v + 1));
+            }
+        }
+    }
+}
+
 /// The six vertices of a regular hexagon of circumradius `a`, the first at
 /// `first_deg` measured clockwise from the +x axis (screen y grows downward).
 fn hexagon((cx, cy): (f64, f64), a: f64, first_deg: f64) -> [(f64, f64); 6] {
@@ -551,6 +839,46 @@ mod tests {
                 ink * 10 < total * 8,
                 "{name} covers {ink}/{total} px — nearly solid black"
             );
+        }
+    }
+
+    /// A thermal head lays down what it is told, so a band's coverage is also
+    /// its cost in heat, paper darkening and battery. The five line patterns
+    /// sit near a tenth; the solid ones (checkerboard, scales, fletching) are
+    /// half by construction, because that is what the motif is. Anything
+    /// outside that window is a geometry bug, not a style choice.
+    #[test]
+    fn ink_density_stays_in_the_thermal_range() {
+        for name in PATTERNS {
+            let b = render(name);
+            let covered = ink(&b) as f64 / (WIDTH * b.height()) as f64;
+            assert!(
+                (0.10..=0.52).contains(&covered),
+                "{name} covers {:.1}% of the band — outside the 10-52% a separator should print at",
+                covered * 100.0
+            );
+        }
+    }
+
+    /// Ten names must mean ten pictures: a mis-wired `match` arm that drew an
+    /// existing pattern under a new name would pass every other test here.
+    #[test]
+    fn every_pattern_draws_a_distinct_band() {
+        let bands: Vec<Vec<u8>> = PATTERNS
+            .iter()
+            .map(|name| {
+                let b = render(name);
+                (0..b.height()).flat_map(|y| b.row(y).to_vec()).collect()
+            })
+            .collect();
+        for (i, a) in bands.iter().enumerate() {
+            for (j, c) in bands.iter().enumerate().skip(i + 1) {
+                assert_ne!(
+                    a, c,
+                    "{} and {} draw the same band",
+                    PATTERNS[i], PATTERNS[j]
+                );
+            }
         }
     }
 
@@ -650,6 +978,12 @@ mod tests {
             ("shippo", "shippou"),
             ("Kikko", "kikkou"),
             ("ICHIMATSU", "ichimatsu"),
+            ("Yabane", "yagasuri"),
+            ("YAGASURI", "yagasuri"),
+            (" uroko\t", "uroko"),
+            ("SayaGata", "sayagata"),
+            ("KANOKO", "kanoko"),
+            ("tachiwaki", "tatewaku"),
         ] {
             let a = render(alias);
             let c = render(canonical);

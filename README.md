@@ -430,6 +430,8 @@ This project builds on protocol work from three reference implementations:
 - [ValdikSS/printer-driver-funnyprint](https://github.com/ValdikSS/printer-driver-funnyprint) — Python/CUPS; the de-facto protocol documentation
 - [paradon/lxprint](https://github.com/paradon/lxprint) — TypeScript/Web Bluetooth; correct auth implementation (and the [joaquimorg/lxprint](https://github.com/joaquimorg/lxprint) Vue fork)
 
+The `wagara` bands are drawn from the geometry of motifs that are centuries old and long out of copyright, with one exception: **`sayagata`** is a specific historical linkage of 卍 forms rather than a lattice with a closed-form rule, so its cell is transcribed from [`Sayagata (line).svg`](https://commons.wikimedia.org/wiki/File:Sayagata_(line).svg) on Wikimedia Commons — a public-domain (CC0) tile by Fred the Oyster. The transcription lives in the `SAYAGATA_U` / `SAYAGATA_V` tables in `crates/printa-ble-core/src/raster/wagara.rs`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Two font families are embedded, both under the SIL

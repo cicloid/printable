@@ -179,7 +179,7 @@ Rejected payloads: empty or whitespace-only, anything outside printable ASCII (a
 
 ### ` ```wagara `
 
-Draws a traditional Japanese pattern (和柄, *wagara*) as a full-width decorative band — a separator with more character than a rule. All the motifs are centuries old and long out of copyright; nothing here traces an existing drawing.
+Draws a traditional Japanese pattern (和柄, *wagara*) as a full-width decorative band — a separator with more character than a rule. All the motifs are centuries old and long out of copyright, and nothing here traces an existing drawing except `sayagata`, whose cell is transcribed from a public-domain tile — see [Credits](../README.md#credits).
 
 ````markdown
 ```wagara seigaiha

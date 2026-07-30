@@ -192,6 +192,32 @@ always sends 12, matching the length of the other handshake packets. Send 12.
 
 The printer answers with a `5A 01` frame carrying its MAC (§5).
 
+**Hello is idempotent, and this project sends it twice per connection.** The
+transport sends one as a liveness probe immediately after subscribing (see
+"Proof of life" below), and the print FSM opens with its own — as does every
+copy in a multi-copy run, all over the same connection. The printer answers each
+one with a fresh `5A 01`. Nothing in the protocol treats a second hello as an
+error or resets any state that matters; an implementation may greet as often as
+it finds useful.
+
+#### Proof of life
+
+On macOS, CoreBluetooth caches the GATT database of any peripheral it has paired
+with before. Connecting to a **switched-off** printer therefore succeeds, as does
+service and characteristic discovery, and even subscribing to `0xFFE2` — all
+answered from the cache. Nothing in that sequence proves the hardware is there.
+
+The `5A 01` reply is the first thing in the flow that only the printer itself can
+produce, so this project reports a connection only once the reply arrives (4 s
+budget). A device that connects and stays silent gets its own error —
+`found <name> but it did not respond — is the printer powered on?` — separate
+from "no device found", because the two faults need different actions from
+whoever is standing next to the printer.
+
+Any implementation on a platform that caches GATT (macOS, and Web Bluetooth in
+Chrome) needs this check or an equivalent, or it will report success against
+hardware that is off.
+
 ### Auth challenge — `5A 0A`
 
 ```
@@ -822,10 +848,28 @@ notification *fails* to arrive.
 rests entirely on BLE's own link-layer CRC plus the printer's index-based
 retransmission requests.
 
-**Timeouts.** This project uses a 10-second notification timeout during a job
-(`NOTIFICATION_TIMEOUT` in `ble.rs`) and the browser page uses a 10-second watchdog
-(`WATCHDOG_MS` in `web/app.js`). Neither value comes from the protocol; both are
-pragmatic.
+**Timeouts.** None of this project's deadlines come from the protocol; all are
+pragmatic. The native transport (`ble.rs`) uses:
+
+| Constant | Value | Bounds |
+|---|---|---|
+| `CONNECT_TIMEOUT` | 15 s | Link establishment — CoreBluetooth's own connect never gives up |
+| `HELLO_TIMEOUT` | 4 s | The `5A 01` liveness reply (§4) |
+| `NOTIFICATION_TIMEOUT` | 10 s | Any frame at all, mid-job |
+| `STALL_TIMEOUT` | 60 s | Forward progress, mid-job |
+| `DISCONNECT_TIMEOUT` | 3 s | Best-effort teardown |
+
+The browser page uses a single 10-second watchdog (`WATCHDOG_MS` in `web/app.js`),
+the equivalent of `NOTIFICATION_TIMEOUT`.
+
+The last two native deadlines are worth reimplementing together, because one does
+not cover the other. **A notification deadline alone is not enough.** The printer
+emits unsolicited `5A 02` status frames throughout a job, so a printer that holds
+the stream (`5A 08`) and never resumes keeps re-arming a notification timer
+indefinitely — the link looks healthy, frames keep arriving, and the job never
+finishes. `STALL_TIMEOUT` measures the one thing the printer cannot fake: whether
+raster packets are actually being consumed. A minute is deliberately generous,
+since a genuine thermal cooldown resumes in seconds.
 
 **Disconnection.** Nothing resumes a job across a disconnect. Reconnecting means
 starting over from hello.
@@ -896,3 +940,9 @@ PRINTER → HOST (0xFFE2, notify)
    back-off; `5A 06` → send print end and finish.
 9. Append blank rows for feed — there is no feed command.
 10. Abort if a `5A 02` frame reports no paper.
+11. Bound the wait for a notification *and* the wait for forward progress — the
+    first alone cannot catch a printer that holds the stream and keeps sending
+    status frames (§9).
+12. On a platform that caches the GATT database (macOS, Chrome), treat the hello
+    reply as the proof a printer is switched on; connect and discovery succeed
+    without it (§4).

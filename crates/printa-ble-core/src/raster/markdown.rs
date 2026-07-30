@@ -24,13 +24,17 @@
 //! losing column alignment. Nothing panics and no ink leaves the paper — the
 //! table just stops being a table.
 //!
-//! Two fence names turn a code block into a graphic instead of text, matched
+//! Three fence names turn a code block into a graphic instead of text, matched
 //! case-insensitively on the info string's first word (so ` ```QR ` and
 //! ` ```barcode utf8 ` both count): ` ```qr ` encodes its trimmed body as a QR
 //! code, ` ```barcode ` as a Code128 barcode (printable ASCII only, 28
-//! characters max — see [`barcode`](super::barcode)). Every other info string,
-//! including none at all, still renders as plain code text. A payload the
-//! encoder rejects prints its error message as code text: a bad code never
+//! characters max — see [`barcode`](super::barcode)), and ` ```wagara ` draws a
+//! traditional Japanese pattern band (see [`wagara`](super::wagara)). A wagara
+//! fence names its pattern in the info string's second token
+//! (` ```wagara seigaiha `) or, failing that, on the body's first non-empty
+//! line; the remaining body lines are `key: value` options. Every other info
+//! string, including none at all, still renders as plain code text. Input the
+//! renderer rejects prints its error message as code text: a bad fence never
 //! panics or costs the reader the rest of the document.
 //!
 //! Images are rendered in two passes, because this crate is sans-IO and never
@@ -63,6 +67,7 @@ use super::barcode::render_barcode;
 use super::bitmap::{Bitmap, WIDTH};
 use super::qr::{self, render_qr};
 use super::rich::{render_rich, FontStyle, RichLine, Span, Style};
+use super::wagara::{parse_wagara_options, render_wagara, WagaraError};
 
 /// Body text size in pixels.
 const BODY_SIZE: f32 = 24.0;
@@ -94,6 +99,8 @@ enum MdBlock {
     Qr(String),
     /// A ` ```barcode ` fence: the payload to encode.
     Barcode(String),
+    /// A ` ```wagara ` fence: the pattern name and the raw option lines.
+    Wagara(String, String),
     /// A caller-supplied image, already decoded to a full-width bitmap.
     Image(Bitmap),
 }
@@ -106,6 +113,7 @@ enum Fence {
     Code,
     Qr,
     Barcode,
+    Wagara,
 }
 
 /// Classify a fence info string: its first whitespace-separated token, compared
@@ -121,8 +129,51 @@ fn fence_kind(info: &str) -> Fence {
     {
         "qr" => Fence::Qr,
         "barcode" => Fence::Barcode,
+        "wagara" => Fence::Wagara,
         _ => Fence::Code,
     }
+}
+
+/// The info string's second token — ` ```wagara seigaiha ` names its pattern
+/// there. Empty when the fence carries only its language.
+fn fence_arg(info: &str) -> String {
+    info.split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Split a wagara fence into its pattern name and its option lines.
+///
+/// The name comes from the info string when it has one. Otherwise the body's
+/// first non-empty line names the pattern — but only if it is not itself a
+/// `key: value` line, so a fence that forgot its name reports the missing name
+/// rather than blaming the first option. The remaining lines are the options.
+fn split_wagara(info_name: &str, body: &str) -> (String, String) {
+    if !info_name.is_empty() {
+        return (info_name.to_string(), body.to_string());
+    }
+    let mut lines = body.lines();
+    let mut name = String::new();
+    for line in lines.by_ref() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if !line.contains(':') {
+            name = line.to_string();
+        } else {
+            // Not a name: hand the whole body back to the option parser.
+            return (String::new(), body.to_string());
+        }
+        break;
+    }
+    (name, lines.collect::<Vec<_>>().join("\n"))
+}
+
+/// Render a wagara fence: parse the options, then draw the pattern.
+fn wagara_bitmap(name: &str, options: &str) -> Result<Bitmap, WagaraError> {
+    render_wagara(name, parse_wagara_options(options)?)
 }
 
 /// Render markdown to a 1-bit bitmap, with no images available.
@@ -194,6 +245,7 @@ pub fn render_markdown_with(md: &str, images: &HashMap<String, Bitmap>) -> Bitma
             // both end up spaced identically on the page.
             MdBlock::Qr(data) => fence_bitmap(render_qr(data, None), qr::MARGIN),
             MdBlock::Barcode(data) => fence_bitmap(render_barcode(data), 0),
+            MdBlock::Wagara(name, options) => fence_bitmap(wagara_bitmap(name, options), 0),
             MdBlock::Image(image) => padded(image, IMAGE_MARGIN),
         })
         .collect();
@@ -429,8 +481,10 @@ struct Lowering<'a> {
     in_code: bool,
     /// Which renderer the open code block's info string selected.
     fence: Fence,
-    /// Raw content of an open `qr`/`barcode` fence.
+    /// Raw content of an open `qr`/`barcode`/`wagara` fence.
     fence_buf: String,
+    /// The open fence's info-string argument (` ```wagara seigaiha `).
+    fence_name: String,
     /// Partial code line, pending its `\n` (or the block's end).
     code_buf: String,
     /// Image nesting depth; while > 0 inner events feed `image_alt` instead of
@@ -467,6 +521,7 @@ fn lower(md: &str, images: &HashMap<String, Bitmap>) -> Vec<MdBlock> {
         in_code: false,
         fence: Fence::Code,
         fence_buf: String::new(),
+        fence_name: String::new(),
         code_buf: String::new(),
         image_depth: 0,
         image_dest: String::new(),
@@ -641,8 +696,10 @@ impl Lowering<'_> {
                 } else if self.in_code {
                     match self.fence {
                         Fence::Code => self.push_code_text(&text),
-                        // A qr/barcode fence's body is data, not text to set.
-                        Fence::Qr | Fence::Barcode => self.fence_buf.push_str(&text),
+                        // A graphic fence's body is data, not text to set.
+                        Fence::Qr | Fence::Barcode | Fence::Wagara => {
+                            self.fence_buf.push_str(&text)
+                        }
                     }
                 } else {
                     self.push_span(&text);
@@ -732,13 +789,17 @@ impl Lowering<'_> {
             Tag::CodeBlock(kind) => {
                 self.flush_line();
                 self.in_code = true;
-                self.fence = match &kind {
-                    CodeBlockKind::Fenced(info) => fence_kind(info),
-                    CodeBlockKind::Indented => Fence::Code,
+                let info = match &kind {
+                    CodeBlockKind::Fenced(info) => info.as_ref(),
+                    CodeBlockKind::Indented => "",
                 };
+                self.fence = fence_kind(info);
                 match self.fence {
                     Fence::Code => self.current.indent = self.quote_indent() + CODE_INDENT,
-                    Fence::Qr | Fence::Barcode => self.fence_buf.clear(),
+                    Fence::Qr | Fence::Barcode | Fence::Wagara => {
+                        self.fence_buf.clear();
+                        self.fence_name = fence_arg(info);
+                    }
                 }
             }
             Tag::Strong => self.bold += 1,
@@ -810,15 +871,21 @@ impl Lowering<'_> {
                         self.current.indent = 0;
                         self.push_blank();
                     }
-                    // A qr/barcode fence is its own stacked block, like a rule.
+                    // A graphic fence is its own stacked block, like a rule.
                     kind => {
-                        let data = std::mem::take(&mut self.fence_buf).trim().to_string();
+                        let body = std::mem::take(&mut self.fence_buf);
+                        let name = std::mem::take(&mut self.fence_name);
+                        let block = match kind {
+                            Fence::Wagara => {
+                                let (name, options) = split_wagara(&name, &body);
+                                MdBlock::Wagara(name, options)
+                            }
+                            Fence::Barcode => MdBlock::Barcode(body.trim().to_string()),
+                            // `Fence::Code` is handled by the arm above.
+                            _ => MdBlock::Qr(body.trim().to_string()),
+                        };
                         self.flush_block();
-                        self.blocks.push(if kind == Fence::Qr {
-                            MdBlock::Qr(data)
-                        } else {
-                            MdBlock::Barcode(data)
-                        });
+                        self.blocks.push(block);
                         self.current.indent = 0;
                     }
                 }
@@ -865,6 +932,7 @@ impl Lowering<'_> {
 mod tests {
     use super::*;
     use crate::raster::bitmap::WIDTH;
+    use crate::raster::wagara::WagaraOptions;
 
     fn has_ink(b: &Bitmap) -> bool {
         (0..b.height()).any(|y| (0..WIDTH).any(|x| b.get(x, y)))
@@ -1406,6 +1474,80 @@ mod tests {
     }
 
     #[test]
+    fn wagara_fence_renders_a_band() {
+        let b = render_markdown("```wagara seigaiha\n```");
+        let expected = render_wagara("seigaiha", WagaraOptions::default()).expect("valid pattern");
+        assert_eq!(
+            b.height(),
+            expected.height() + 2 * FENCE_MARGIN,
+            "band plus the shared fence margin"
+        );
+        // The band is a graphic, not text: it runs edge to edge.
+        assert!(
+            (0..b.height()).any(|y| b.get(0, y)),
+            "wagara band should reach the left paper edge"
+        );
+        assert!(
+            (0..b.height()).any(|y| b.get(WIDTH - 1, y)),
+            "wagara band should reach the right paper edge"
+        );
+        let first_ink = (0..b.height())
+            .find(|&y| (0..WIDTH).any(|x| b.get(x, y)))
+            .expect("wagara fence has no ink");
+        assert_eq!(first_ink, FENCE_MARGIN, "wagara top margin");
+    }
+
+    /// The pattern name may come from the info string or from the body's first
+    /// line; both spellings must render the same band.
+    #[test]
+    fn wagara_fence_takes_its_name_from_the_info_string_or_the_body() {
+        let info = render_markdown("```wagara asanoha\n```");
+        let body = render_markdown("```wagara\nasanoha\n```");
+        assert_eq!(rows(&info), rows(&body), "both name forms should agree");
+        // ...and the options still apply in either form.
+        let info = render_markdown("```wagara kikkou\nheight: 80\n```");
+        let body = render_markdown("```wagara\nkikkou\nheight: 80\n```");
+        assert_eq!(rows(&info), rows(&body), "both option forms should agree");
+        assert_eq!(info.height(), 80 + 2 * FENCE_MARGIN);
+    }
+
+    #[test]
+    fn wagara_fence_case_insensitive() {
+        let upper = render_markdown("```WAGARA Ichimatsu\n```");
+        let lower = render_markdown("```wagara ichimatsu\n```");
+        assert!(has_ink(&upper), "uppercase WAGARA fence has no ink");
+        assert_eq!(
+            rows(&upper),
+            rows(&lower),
+            "```WAGARA should match ```wagara"
+        );
+    }
+
+    #[test]
+    fn wagara_fence_bad_input_renders_error_not_panic() {
+        for md in [
+            "```wagara nonsense\n```",
+            "```wagara\n```",
+            "```wagara seigaiha\nheight: enormous\n```",
+            "```wagara seigaiha\nheight: 4000\n```",
+            "```wagara seigaiha\ncolour: red\n```",
+        ] {
+            let b = render_markdown(md);
+            assert!(has_ink(&b), "{md:?} rendered nothing");
+            // Error text, not a band: left-aligned at the code indent and far
+            // shorter than the shortest band a fence could produce.
+            assert!(
+                ink_before(&b, 40),
+                "{md:?}: no error text at the code indent"
+            );
+            assert!(
+                !(0..b.height()).any(|y| b.get(WIDTH - 1, y)),
+                "{md:?} drew a full-width band instead of an error"
+            );
+        }
+    }
+
+    #[test]
     fn image_refs_extracts_in_order_deduped() {
         let md = "![a](a.png)\n\n![b](b.png)\n\n![again](a.png)";
         assert_eq!(markdown_image_refs(md), vec!["a.png", "b.png"]);
@@ -1625,8 +1767,11 @@ mod tests {
             indent: CODE_INDENT,
         }]);
         // The classifier matches whole fence names, never prefixes: only
-        // exactly `qr` and `barcode` turn into graphics.
-        for lang in ["", "rust", "qrcode", "qrs", "barcodes", "barcodex", "bar"] {
+        // exactly `qr`, `barcode` and `wagara` turn into graphics.
+        for lang in [
+            "", "rust", "qrcode", "qrs", "barcodes", "barcodex", "bar", "wagaras", "wagarax",
+            "waga",
+        ] {
             let md = format!("```{lang}\ncode\n```");
             assert_eq!(
                 rows(&render_markdown(&md)),

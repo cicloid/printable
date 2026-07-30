@@ -8,6 +8,7 @@ pub mod preview;
 pub mod qr;
 pub mod rich;
 pub mod text;
+pub mod wagara;
 
 pub use barcode::{render_barcode, BarcodeError};
 pub use bitmap::Bitmap;
@@ -17,3 +18,4 @@ pub use preview::bitmap_to_png;
 pub use qr::{render_qr, QrError};
 pub use rich::{render_rich, FontStyle, RichLine, Span, Style};
 pub use text::render_text;
+pub use wagara::{parse_wagara_options, render_wagara, WagaraError, WagaraOptions};

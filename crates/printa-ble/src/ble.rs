@@ -27,7 +27,24 @@ use printa_ble_core::protocol::notifications::{self, Notification, Status};
 use tokio::sync::mpsc;
 
 /// How long `run_job` waits for an expected notification before giving up.
+///
+/// This catches a printer that has gone off the air entirely. It does *not*
+/// catch a printer that keeps talking without doing anything — see
+/// [`STALL_TIMEOUT`].
 const NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long the job may go without moving before it is abandoned.
+///
+/// [`NOTIFICATION_TIMEOUT`] measures radio silence and is re-armed by any
+/// frame at all, including the periodic unsolicited `5A 02` Status
+/// heartbeats. A printer that holds the stream and then never resumes keeps
+/// sending those, so the notification deadline is never reached and the job
+/// waits forever — as does any HTTP client behind it. This deadline measures
+/// something the printer cannot fake: whether raster data is actually moving.
+///
+/// A minute is deliberately generous. A genuine thermal cooldown resumes in
+/// seconds, so anything past this is a printer that is not coming back.
+const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Polling interval while waiting for a matching device to appear.
 const DISCOVERY_POLL: Duration = Duration::from_millis(300);
@@ -206,6 +223,86 @@ impl JobLog {
         }
         self.last_cooldown_report = Some(now);
         Some(std::mem::take(&mut self.cooldowns_pending))
+    }
+}
+
+/// A cheap fingerprint of how far a job has actually got.
+///
+/// Deliberately narrow. Raster packets written and resends requested are the
+/// only counters that move when the printer is taking data; the flow-control
+/// counters (`holds`, `cooldowns`) and the pending action are excluded on
+/// purpose, because a printer that emits `Cooldown` every 100 ms while
+/// refusing another packet churns both of those, and that churn is precisely
+/// the stall this exists to catch.
+///
+/// Nothing else in the job runs long: the handshake is a few round trips, so
+/// a minute with the packet count frozen means the print is not moving,
+/// whatever state the FSM is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Progress {
+    packets_sent: u32,
+    retransmits: u32,
+}
+
+impl Progress {
+    fn of(job: &PrintJob) -> Self {
+        let stats = job.stats();
+        Self {
+            packets_sent: stats.packets_sent,
+            retransmits: stats.retransmits,
+        }
+    }
+}
+
+/// What to tell the user about an abandoned job.
+///
+/// A job that stalled after real thermal flow control gets the density hint.
+/// One that stalled having never been asked to pause did not overheat, and
+/// blaming the print head would send the user after the wrong thing — so that
+/// message says what it does know: the link is up, the job is not moving.
+///
+/// Neither wording overlaps [`NOTIFICATION_TIMEOUT`]'s "printer went silent":
+/// a stall is the printer talking and doing nothing, silence is neither.
+fn stall_message(idle: Duration, paused: Duration) -> String {
+    if paused.is_zero() {
+        format!(
+            "printer stalled for {} without making progress; it is still sending frames, \
+             so the connection is up but the print is not moving",
+            secs(idle)
+        )
+    } else {
+        format!(
+            "printer stalled for {} without resuming, {} of this job spent paused for \
+             thermal flow control; the print head may be overheating — try a lower --density",
+            secs(idle),
+            secs(paused)
+        )
+    }
+}
+
+/// Tracks when a job last moved, so a printer that keeps the radio busy
+/// without taking data cannot hold the caller forever.
+struct StallGuard {
+    last: Progress,
+    since: Instant,
+}
+
+impl StallGuard {
+    fn new(now: Instant, progress: Progress) -> Self {
+        Self {
+            last: progress,
+            since: now,
+        }
+    }
+
+    /// Record where the job is now, and report how long it has gone without
+    /// moving. Zero means it just moved.
+    fn observe(&mut self, now: Instant, progress: Progress) -> Duration {
+        if progress != self.last {
+            self.last = progress;
+            self.since = now;
+        }
+        now.saturating_duration_since(self.since)
     }
 }
 
@@ -547,6 +644,7 @@ impl Printer {
     /// The action pump itself. Split out of [`Printer::run_job`] so the job
     /// summary is logged on the failure paths too.
     async fn pump(&mut self, job: &mut PrintJob, log: &mut JobLog) -> Result<()> {
+        let mut stall = StallGuard::new(Instant::now(), Progress::of(job));
         loop {
             // Drain pending notifications first so mid-stream flow control
             // (Hold / LostPacket / Cooldown) reaches the FSM even while we
@@ -556,6 +654,16 @@ impl Printer {
                 observe(&n, log)?;
                 job.on_notification(n);
             }
+
+            // Every path below is bounded, so this runs at least once per
+            // NOTIFICATION_TIMEOUT even when the printer says nothing at all.
+            let now = Instant::now();
+            let idle = stall.observe(now, Progress::of(job));
+            if idle >= STALL_TIMEOUT {
+                warn!("printer stalled for {}; abandoning the job", secs(idle));
+                return Err(anyhow!(stall_message(idle, log.paused_total(now))));
+            }
+
             match job.next_action() {
                 Action::Send(bytes) => {
                     // A raster write is the printer letting us move again.
@@ -580,7 +688,7 @@ impl Printer {
                         .await
                         .map_err(|_| {
                             anyhow!(
-                                "printer stopped responding (no notification for {}s)",
+                                "printer went silent (no BLE notification at all for {}s)",
                                 NOTIFICATION_TIMEOUT.as_secs()
                             )
                         })?
@@ -770,6 +878,167 @@ mod tests {
         let t0 = Instant::now();
         assert!(log.resume(t0).is_none());
         assert_eq!(log.paused_total(t0), Duration::ZERO);
+    }
+
+    // -----------------------------------------------------------------
+    // Stall detection.
+    // -----------------------------------------------------------------
+
+    /// The printer's periodic unsolicited heartbeat: `5A 02`, battery 80%,
+    /// paper present. Enough of these keep [`NOTIFICATION_TIMEOUT`] happy
+    /// forever without the job moving an inch.
+    fn heartbeat() -> Notification {
+        notifications::parse(&[0x5A, 0x02, 80, 0, 0]).expect("valid status frame")
+    }
+
+    /// A four-packet job that has authenticated and streamed its first
+    /// raster packet.
+    fn streaming_job() -> PrintJob {
+        let bitmap = printa_ble_core::raster::Bitmap::new(8);
+        let mut job = PrintJob::new(&bitmap, 3, [7u8; 10], 0).unwrap();
+        let _ = job.next_action(); // hello
+        job.on_notification(Notification::Hello {
+            mac: [1, 2, 3, 4, 5, 6],
+        });
+        let _ = job.next_action(); // auth challenge
+        job.on_notification(Notification::AuthChallengeReply);
+        let _ = job.next_action(); // auth response
+        job.on_notification(Notification::AuthResult { ok: true });
+        let _ = job.next_action(); // density
+        let _ = job.next_action(); // print start
+        let _ = job.next_action(); // raster 0
+        job
+    }
+
+    #[test]
+    fn a_job_that_just_started_is_not_stalled() {
+        let job = streaming_job();
+        let t0 = Instant::now();
+        let mut stall = StallGuard::new(t0, Progress::of(&job));
+        assert_eq!(stall.observe(t0, Progress::of(&job)), Duration::ZERO);
+    }
+
+    /// Every raster packet written restarts the clock, so a slow but moving
+    /// print never trips the guard however long it runs.
+    #[test]
+    fn a_printer_taking_packets_never_stalls() {
+        let mut job = streaming_job();
+        let t0 = Instant::now();
+        let mut stall = StallGuard::new(t0, Progress::of(&job));
+
+        // One packet every 59s — glacial, but never a stall.
+        for i in 1..=3 {
+            let _ = job.next_action(); // raster i
+            let idle = stall.observe(
+                t0 + Duration::from_secs(i * (STALL_TIMEOUT.as_secs() - 1)),
+                Progress::of(&job),
+            );
+            assert!(idle < STALL_TIMEOUT, "iteration {i} idle for {idle:?}");
+        }
+    }
+
+    /// The bug, in one test: the printer holds, then keeps the radio busy
+    /// with heartbeats and cooldowns while never accepting another packet.
+    /// `NOTIFICATION_TIMEOUT` is satisfied by every one of those frames, so
+    /// only a progress deadline can end this.
+    #[test]
+    fn a_held_printer_that_keeps_talking_is_still_stalled() {
+        let mut job = streaming_job();
+        job.on_notification(Notification::Hold);
+        assert!(matches!(job.next_action(), Action::WaitNotification));
+
+        let t0 = Instant::now();
+        let mut stall = StallGuard::new(t0, Progress::of(&job));
+        let mut idle = Duration::ZERO;
+        for i in 1..=STALL_TIMEOUT.as_secs() {
+            job.on_notification(heartbeat());
+            job.on_notification(Notification::Cooldown);
+            let _ = job.next_action();
+            idle = stall.observe(t0 + Duration::from_secs(i), Progress::of(&job));
+        }
+        assert!(idle >= STALL_TIMEOUT, "idle only {idle:?}");
+    }
+
+    /// Same trap one state later: every packet is out and the printer never
+    /// says `Finished`, but the heartbeats keep coming.
+    #[test]
+    fn a_printer_that_never_finishes_is_stalled() {
+        let mut job = streaming_job();
+        while let Action::Send(_) | Action::WaitMs(_) = job.next_action() {}
+
+        let t0 = Instant::now();
+        let mut stall = StallGuard::new(t0, Progress::of(&job));
+        let mut idle = Duration::ZERO;
+        for i in 1..=STALL_TIMEOUT.as_secs() {
+            job.on_notification(heartbeat());
+            let _ = job.next_action();
+            idle = stall.observe(t0 + Duration::from_secs(i), Progress::of(&job));
+        }
+        assert!(idle >= STALL_TIMEOUT, "idle only {idle:?}");
+    }
+
+    /// A hold the printer actually comes back from must clear the clock, or
+    /// a long healthy print would abort on its accumulated pauses.
+    #[test]
+    fn resuming_from_a_hold_clears_the_stall_clock() {
+        let mut job = streaming_job();
+        job.on_notification(Notification::Hold);
+
+        let t0 = Instant::now();
+        let mut stall = StallGuard::new(t0, Progress::of(&job));
+        let almost = STALL_TIMEOUT - Duration::from_secs(1);
+        assert!(stall.observe(t0 + almost, Progress::of(&job)) < STALL_TIMEOUT);
+
+        // The printer asks for a resend, which is how a hold ends.
+        job.on_notification(Notification::LostPacket { index: 1 });
+        let _ = job.next_action(); // raster 0 again
+        assert_eq!(
+            stall.observe(t0 + almost, Progress::of(&job)),
+            Duration::ZERO
+        );
+    }
+
+    /// Flow-control counters are deliberately not progress: a printer can
+    /// emit `Cooldown` forever without taking a single byte of raster.
+    #[test]
+    fn flow_control_counters_are_not_treated_as_progress() {
+        let mut job = streaming_job();
+        job.on_notification(Notification::Hold);
+        let before = Progress::of(&job);
+        for _ in 0..50 {
+            job.on_notification(Notification::Cooldown);
+        }
+        job.on_notification(Notification::Hold);
+        assert!(job.stats().cooldowns > 0 || job.stats().holds > 0);
+        assert_eq!(Progress::of(&job), before);
+    }
+
+    /// The actionable case: the printer paused for heat and never came back.
+    #[test]
+    fn stall_after_thermal_flow_control_suggests_a_lower_density() {
+        let msg = stall_message(Duration::from_secs(61), Duration::from_secs(58));
+        assert!(msg.contains("61.0s"), "{msg}");
+        assert!(msg.contains("58.0s"), "{msg}");
+        assert!(msg.contains("--density"), "{msg}");
+    }
+
+    /// A stall with no pause behind it is not overheating, and must not say
+    /// it is — the user would go chasing the wrong setting.
+    #[test]
+    fn stall_without_flow_control_does_not_blame_the_print_head() {
+        let msg = stall_message(Duration::from_secs(60), Duration::ZERO);
+        assert!(msg.contains("60.0s"), "{msg}");
+        assert!(!msg.contains("overheating"), "{msg}");
+        assert!(!msg.contains("--density"), "{msg}");
+    }
+
+    /// Total radio silence and a talkative stall are different faults, and
+    /// the two messages must not be mistaken for one another.
+    #[test]
+    fn stall_and_silence_read_differently() {
+        let stall = stall_message(Duration::from_secs(60), Duration::from_secs(60));
+        assert!(stall.contains("stalled"), "{stall}");
+        assert!(!stall.contains("silent"), "{stall}");
     }
 
     /// A printer running hot cooldowns on every packet; the log must report

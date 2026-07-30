@@ -246,6 +246,12 @@ impl PrintJob {
                 self.state = State::Holding;
                 self.stats.holds = self.stats.holds.saturating_add(1);
             }
+            // Not `Holding`, on purpose. A cooldown asks us to back off from
+            // sending, and while holding we are already not sending — there is
+            // nothing to back off from. Honouring it there would only replace
+            // a blocking wait with a 100 ms spin and inflate the counter,
+            // which in turn would make a printer that cooldowns forever
+            // without resuming look like it is still working.
             (State::Streaming | State::AwaitFinish, Notification::Cooldown) => {
                 self.pending_wait_ms = Some(COOLDOWN_MS);
                 self.stats.cooldowns = self.stats.cooldowns.saturating_add(1);
@@ -380,6 +386,29 @@ mod tests {
         job.on_notification(Notification::Hold);
         assert!(matches!(job.next_action(), Action::WaitNotification));
 
+        job.on_notification(Notification::LostPacket { index: 1 });
+        match job.next_action() {
+            Action::Send(p) => assert_eq!(&p[..3], &[0x55, 0x00, 0x00]),
+            other => panic!("expected resume send, got {other:?}"),
+        }
+    }
+
+    /// A cooldown that arrives while holding is ignored deliberately: the
+    /// stream is already stopped, so the job keeps waiting for the printer to
+    /// resume instead of scheduling a back-off it has no use for.
+    #[test]
+    fn cooldown_while_holding_is_ignored() {
+        let mut job = authed_job();
+        let _ = job.next_action(); // density
+        let _ = job.next_action(); // start
+        let _ = job.next_action(); // raster 0
+        job.on_notification(Notification::Hold);
+
+        job.on_notification(Notification::Cooldown);
+
+        assert!(matches!(job.next_action(), Action::WaitNotification));
+        assert_eq!(job.stats().cooldowns, 0);
+        // And the hold still ends the way it always did.
         job.on_notification(Notification::LostPacket { index: 1 });
         match job.next_action() {
             Action::Send(p) => assert_eq!(&p[..3], &[0x55, 0x00, 0x00]),

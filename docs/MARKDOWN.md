@@ -4,6 +4,20 @@ Reference for the markdown renderer in `crates/printa-ble-core/src/raster/markdo
 
 Parsing is [pulldown-cmark](https://docs.rs/pulldown-cmark) 0.12 (CommonMark) with exactly three extensions enabled: strikethrough, task lists, and tables. Everything else in CommonMark parses; the lowering then maps each event to a bitmap block or drops it.
 
+## Reaching the markdown renderer
+
+The renderer is not the default for text — plain text is. Which path input takes depends on the surface:
+
+| Input | Renders as |
+|---|---|
+| `printable print -f notes.md` / `.markdown` | Markdown, by extension |
+| `printable print -m …` | Markdown, forced — for stdin, a text argument, `--file -`, or a `.txt` file |
+| `printable print` with anything else | **Plain text**, literal source and all |
+| `POST /print/markdown`, `/preview/markdown` | Markdown |
+| The web app's Markdown tab | Markdown |
+
+Piping a document without `-m` prints its `#` and `**` verbatim. See [CLI.md](CLI.md#-m---markdown) for what `-m` accepts and rejects, and where relative image references anchor in each case.
+
 ## The canvas
 
 | Property | Value |
@@ -80,7 +94,7 @@ Fenced and indented blocks both render as Regular **20 px** at indent **16 px** 
 
 ### Blockquotes
 
-Indent +24 px per level, and the body renders italic. Nesting compounds: `> > x` sits at 48 px. Headings inside a quote keep their bold face and size and pick up the indent.
+Indent +24 px per level, and the body renders italic. No vertical bar is drawn — the indent and the italic face are the whole treatment. Nesting compounds: `> > x` sits at 48 px. Headings inside a quote keep their bold face and size and pick up the indent, and so does `**bold**` (see [Emphasis](#emphasis)).
 
 ### Rules and tear markers
 
@@ -94,6 +108,8 @@ Both are 2 px tall with 12 px of white above and below (a 26 px block), full wid
 The distinction is the *source text* of the thematic break: **any interior whitespace makes it a tear marker.** The intent is physical. A solid rule is a typographic divider inside the document; a dashed line is a cut guide — print several receipts in one job and tear them apart on the dashes. Nothing else in the dialect can express "the paper ends here", and thermal rolls have no page breaks.
 
 The blockquote marker does not count as interior whitespace: `> ---` is still a solid rule.
+
+**`- ---` is a tear marker, not a list item.** It looks like a rule nested in a bullet, but CommonMark reads the whole line as four `-` characters separated by a space — a thematic break — and the space makes it dashed. It renders byte-identical to `- - -`. A break that genuinely *is* inside a list item (`- ***`, where the characters differ so the outer `-` really is a bullet) comes out **solid** instead, because the nested path never sees the source text and cannot detect interior whitespace. Two lines that read the same way to a person produce opposite results; write `- - -` when you mean a tear.
 
 ### Tables
 
@@ -126,9 +142,9 @@ Oat flat white  1    4.20
 
 ## Graphic fences
 
-A fenced code block whose info string's **first whitespace-separated token** is `qr` or `barcode` — compared case-insensitively, so ` ```QR ` and ` ```Barcode utf8 ` both match — renders as a graphic instead of code text. Every other info string, including none at all, stays plain code: `rust`, `qrcode`, `barcodes`, and `bar` are all just code.
+A fenced code block whose info string's **first whitespace-separated token** is `qr`, `barcode`, or `wagara` — compared case-insensitively, so ` ```QR ` and ` ```Barcode utf8 ` both match — renders as a graphic instead of code text. Every other info string, including none at all, stays plain code: `rust`, `qrcode`, `barcodes`, and `bar` are all just code.
 
-Both fence kinds are stacked as their own block, padded to a uniform 24 px of white above and below.
+Each fence kind is stacked as its own block. `qr` and `barcode` are padded to a uniform 24 px of white above and below; a `wagara` band is a separator and takes the same padding.
 
 ### ` ```qr `
 
@@ -156,6 +172,49 @@ The limit is **28 characters**. A Code128-B payload of *n* characters encodes to
 
 Rejected payloads: empty or whitespace-only, anything outside printable ASCII (accents, emoji, tabs, newlines), and anything over the width budget.
 
+### ` ```wagara `
+
+Draws a traditional Japanese pattern (和柄, *wagara*) as a full-width decorative band — a separator with more character than a rule. All the motifs are centuries old and long out of copyright; nothing here traces an existing drawing.
+
+````markdown
+```wagara seigaiha
+height: 72
+scale: 2
+```
+````
+
+The pattern name comes from the info string's **second token**. Failing that, it comes from the body's **first non-empty line** — but only if that line contains no `:`, so a fence that forgot its name reports the missing name rather than blaming the first option:
+
+````markdown
+```wagara
+asanoha
+height: 40
+```
+````
+
+Names are matched case-insensitively, and the two romanisations that differ only in a long vowel are the same motif.
+
+| Name | Kanji | Motif | Also accepts |
+|---|---|---|---|
+| `seigaiha` | 青海波 | Overlapping fans, "blue sea waves" | |
+| `asanoha` | 麻の葉 | Hemp-leaf star lattice | |
+| `shippou` | 七宝 | Interlocking circles, "seven treasures" | `shippo` |
+| `kikkou` | 亀甲 | Tortoise-shell hexagons | `kikko` |
+| `ichimatsu` | 市松 | Checkerboard | |
+
+The remaining body lines are `key: value` options. Blank lines are ignored, keys are case-insensitive, and spacing is free.
+
+| Option | Range | Default | Effect |
+|---|---|---|---|
+| `height` | 16–400 | 56 | Band height in pixels |
+| `scale` | 1–4 | 1 | Motif size multiplier |
+
+Anything else is an error rather than a silent default — a band that quietly ignored `heigth: 80` would just look wrong with no way to tell why.
+
+**How the tiling works.** A band is a separator, so it must run edge to edge with no margin and no half-eaten motif at the paper's edge. Every pattern picks a horizontal period that divides 384 exactly and draws one motif past each edge, so the rendered band is genuinely periodic: column *x* equals column *x + period*. Arcs and diagonals are drawn into a 3× oversampled buffer and collapsed by majority vote, so a stroke lands within a third of a pixel of where the maths puts it; strokes are 2 px on paper — thin enough to read as a pattern, heavy enough to survive a thermal head. `seigaiha` is the only pattern whose motifs overlap, and each row erases its own half-discs before stroking its arcs, painter's-algorithm style; without that the arcs cross and the pattern reads as noise.
+
+**Known wart: `scale` is quantised.** Because the period must divide 384, `scale` only nudges a target motif width and the nearest usable count wins. For coarse patterns that means `scale: 3` and `scale: 4` can land on the same count and render **identically**. A large `scale` at the default 56 px `height` also crops the motif — you see one horizontal slice of a shape that wants far more room. Raise `height` alongside `scale`, and check the result with `--preview`.
+
 ### When a fence fails
 
 A payload the encoder rejects prints its error message as code text (Regular 20 px at the 16 px indent), padded with the same 24 px margins a successful fence would have had:
@@ -166,6 +225,11 @@ A payload the encoder rejects prints its error message as code text (Regular 20 
 | Barcode empty | `barcode data is empty (after trimming whitespace)` |
 | Barcode non-ASCII | `barcode data must be printable ASCII` |
 | Barcode too long | `barcode data too long to fit the paper` |
+| Wagara unknown pattern | `unknown wagara pattern "…" (valid: asanoha, ichimatsu, kikkou, seigaiha, shippou)` |
+| Wagara malformed option | `wagara option "…" is not a \`key: value\` line (valid keys: height, scale)` |
+| Wagara unknown option | `unknown wagara option "…" (valid: height, scale)` |
+| Wagara non-numeric value | `wagara height must be a whole number, got "…"` |
+| Wagara value out of range | `wagara scale must be between 1 and 4, got 9` |
 
 A bad code never panics and never costs the reader the rest of the document. The margins match on both branches deliberately: a fence is its own block, so the surrounding blank lines are trimmed, and unpadded error text would collide with the neighbouring paragraph.
 
@@ -220,8 +284,8 @@ Verified against the enabled parser options (`ENABLE_STRIKETHROUGH | ENABLE_TASK
 
 | Feature | What happens instead |
 |---|---|
-| Footnotes (`[^1]`) | Not an extension here. `[^1]: note` is parsed as a CommonMark *link reference definition* and vanishes; the reference renders as the bare text `^1` |
-| YAML / `+++` front matter | Not recognized. A leading `---` is a thematic break, and the block that follows usually becomes a setext H2 — strip front matter before printing |
+| Footnotes (`[^1]`) | Not an extension here, and what happens depends on the definition — see [Gotchas](#gotchas) |
+| YAML / `+++` front matter | Not recognized, and a trap — see [Gotchas](#gotchas) |
 | Definition lists | `term` / `  : def` renders as one wrapped paragraph |
 | Math (`$…$`) | Renders literally |
 | GFM alerts (`> [!NOTE]`) | Renders as a normal blockquote with the literal `[!NOTE]` text |
@@ -232,6 +296,48 @@ Verified against the enabled parser options (`ENABLE_STRIKETHROUGH | ENABLE_TASK
 | Link destinations | Link text renders; the URL is discarded. Autolinks (`<http://x>`) render as their text. Use a ` ```qr ` fence to make a URL actionable |
 | Table alignment, colspans, cell markup | Ignored / flattened (see Tables) |
 | Colour, background, centred text | The canvas is 1-bit and left-aligned |
+
+## Gotchas
+
+Places where valid markdown prints something a reader would not predict. All of these were confirmed by rendering, not by reading the code.
+
+### Footnotes can silently disappear
+
+Footnotes are not an enabled extension, so `[^1]` is just a link label. What that produces depends entirely on whether the "definition" happens to parse as a CommonMark **link reference definition**:
+
+| Source | What prints |
+|---|---|
+| `See note[^1]` + `[^1]: https://example.com/note` | `See note^1` — the definition **vanishes** and the marker loses its brackets. Byte-identical to typing `See note^1`. |
+| `See note[^1]` + `[^1]: The note body.` | `See note[^1]` then `[^1]: The note body.` as an ordinary paragraph — prose after the colon is not a valid link destination, so nothing is consumed |
+| `See note[^1]` alone | `See note[^1]`, marker and all |
+
+The first row is the dangerous one: a URL-shaped footnote is eaten whole, with no warning and no visible gap. There is no superscripting, no renumbering, and no collected footnote section in any case. Move the content inline before printing.
+
+### Front matter is a trap
+
+YAML front matter is not recognized, and it does not render as text either — it renders as *layout*:
+
+```
+---
+title: Hi
+---
+
+Body text.
+```
+
+The opening `---` becomes a solid horizontal rule, and `title: Hi` followed by the closing `---` is a **setext H2**, so the document opens with a rule and a large bold heading reading `title: Hi`. That output is byte-identical to writing `---`, then `## title: Hi`, then the body. Strip front matter before printing.
+
+### `- ---` is a tear marker, not a nested rule
+
+Covered under [Rules and tear markers](#rules-and-tear-markers): CommonMark reads it as a thematic break with interior whitespace, so it comes out dashed. A break that really is inside a list item comes out solid.
+
+### Code blocks escape their list item
+
+A fenced or indented code block inside a list item does **not** inherit the list indent — only blockquote depth adds to it. The block sits at the flat 16 px code indent, which is *further left* than the bullet's text at 24 px, so the code visibly dedents out from under its own bullet. Nesting inside a blockquote works as expected: 24 px per level, on top of the code indent.
+
+### Blockquotes are italic, and bold overrides that
+
+A blockquote body is set in the italic face rather than marked with a bar, so `*emphasis*` inside a quote is invisible — it renders byte-identical to the unmarked text. `**bold**` inside a quote comes out upright bold, not bold-italic, because a span gets exactly one face. See [Emphasis](#emphasis).
 
 ## Layout limitations worth knowing
 

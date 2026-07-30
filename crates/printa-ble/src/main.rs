@@ -8,7 +8,7 @@ mod print_service;
 mod server;
 
 use std::io::Read as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context as _};
@@ -213,6 +213,11 @@ async fn build_bitmap(args: &PrintArgs) -> anyhow::Result<Bitmap> {
         if args.text.is_some() {
             bail!("cannot combine a text argument with --file");
         }
+        // `-f -` is the Unix spelling of "read stdin"; there is no extension to
+        // dispatch on, so it takes the same route as a bare pipe.
+        if is_stdin_path(path) {
+            return inline_bitmap(&read_stdin()?, args.markdown, size).await;
+        }
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -220,6 +225,12 @@ async fn build_bitmap(args: &PrintArgs) -> anyhow::Result<Bitmap> {
             .unwrap_or_default();
         return match ext.as_str() {
             "png" | "jpg" | "jpeg" => {
+                if args.markdown {
+                    bail!(
+                        "--markdown does not apply to an image file ({})",
+                        path.display()
+                    );
+                }
                 let bytes = std::fs::read(path)
                     .with_context(|| format!("failed to open {}", path.display()))?;
                 print_service::bitmap_from_image_bytes(&bytes, dither)
@@ -227,24 +238,18 @@ async fn build_bitmap(args: &PrintArgs) -> anyhow::Result<Bitmap> {
             "txt" => {
                 let text = std::fs::read_to_string(path)
                     .with_context(|| format!("failed to read {}", path.display()))?;
-                text_bitmap(&text, size)
+                if args.markdown {
+                    markdown_bitmap(&text, path.parent()).await
+                } else {
+                    text_bitmap(&text, size)
+                }
             }
+            // `--markdown` is redundant here — this is already the markdown
+            // path — so it is accepted without comment.
             "md" | "markdown" => {
                 let text = std::fs::read_to_string(path)
                     .with_context(|| format!("failed to read {}", path.display()))?;
-                if text.trim().is_empty() {
-                    bail!("nothing to print");
-                }
-                // Local refs resolve relative to the document. Local reads are
-                // allowed here: this is the user's own shell and filesystem.
-                let images = md_images::resolve(
-                    &text,
-                    path.parent(),
-                    /* local */ true,
-                    /* remote */ true,
-                )
-                .await;
-                Ok(render_markdown_with(&text, &images))
+                markdown_bitmap(&text, path.parent()).await
             }
             _ => bail!(
                 "unsupported file type: {} (expected .png, .jpg, .jpeg, .txt, .md or .markdown)",
@@ -253,16 +258,55 @@ async fn build_bitmap(args: &PrintArgs) -> anyhow::Result<Bitmap> {
         };
     }
 
-    match &args.text {
-        Some(t) => text_bitmap(t, size),
-        None => {
-            let mut buf = String::new();
-            std::io::stdin()
-                .read_to_string(&mut buf)
-                .context("failed to read stdin")?;
-            text_bitmap(&buf, size)
-        }
+    let text = match &args.text {
+        Some(t) => t.clone(),
+        None => read_stdin()?,
+    };
+    inline_bitmap(&text, args.markdown, size).await
+}
+
+/// Does this `--file` value mean stdin? Only a bare `-`; `./-` is a real file.
+fn is_stdin_path(path: &Path) -> bool {
+    path.as_os_str() == "-"
+}
+
+fn read_stdin() -> anyhow::Result<String> {
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .context("failed to read stdin")?;
+    Ok(buf)
+}
+
+/// Render text that arrived without a file behind it — stdin, `-f -`, or a
+/// positional argument.
+///
+/// `--markdown` is the only way to reach the markdown renderer here: there is
+/// no filename, so nothing else could tell a document from literal text.
+async fn inline_bitmap(text: &str, markdown: bool, size: f32) -> anyhow::Result<Bitmap> {
+    if markdown {
+        // No source file means no directory to anchor relative image
+        // references to, so they resolve against the working directory — what
+        // `![](logo.png)` means to someone piping a document from their shell.
+        let cwd = std::env::current_dir().ok();
+        markdown_bitmap(text, cwd.as_deref()).await
+    } else {
+        text_bitmap(text, size)
     }
+}
+
+/// Render a markdown document, resolving its image references first.
+async fn markdown_bitmap(text: &str, base_dir: Option<&Path>) -> anyhow::Result<Bitmap> {
+    if text.trim().is_empty() {
+        bail!("nothing to print");
+    }
+    // Relative refs resolve against `base_dir`. Local reads are allowed here:
+    // this is the user's own shell and filesystem.
+    let images = md_images::resolve(
+        text, base_dir, /* local */ true, /* remote */ true,
+    )
+    .await;
+    Ok(render_markdown_with(text, &images))
 }
 
 fn text_bitmap(text: &str, size: f32) -> anyhow::Result<Bitmap> {
@@ -270,4 +314,79 @@ fn text_bitmap(text: &str, size: f32) -> anyhow::Result<Bitmap> {
         bail!("nothing to print");
     }
     Ok(render_text(text, size))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DOC: &str = "# Heading\n\nA paragraph with **bold** in it.\n";
+
+    fn pixels(bitmap: &Bitmap) -> Vec<u8> {
+        (0..bitmap.height())
+            .flat_map(|y| bitmap.row(y).iter().copied())
+            .collect()
+    }
+
+    /// The user's actual request: the same piped bytes must render as a
+    /// document with `-m` and as literal source without it.
+    #[tokio::test]
+    async fn markdown_flag_changes_how_piped_text_renders() {
+        let md = inline_bitmap(DOC, true, 24.0).await.unwrap();
+        let plain = inline_bitmap(DOC, false, 24.0).await.unwrap();
+        assert_ne!(pixels(&md), pixels(&plain));
+    }
+
+    /// A heading is set in a larger face than body text, so it occupies more
+    /// rows as markdown than the same characters typed out literally.
+    #[tokio::test]
+    async fn markdown_heading_renders_taller_than_the_same_text_plain() {
+        let md = inline_bitmap("# Heading", true, 24.0).await.unwrap();
+        let plain = inline_bitmap("# Heading", false, 24.0).await.unwrap();
+        assert!(
+            md.height() > plain.height(),
+            "markdown {} rows, plain {} rows",
+            md.height(),
+            plain.height()
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_input_refuses_to_print_in_either_mode() {
+        for markdown in [true, false] {
+            assert!(inline_bitmap("   \n\t\n", markdown, 24.0).await.is_err());
+        }
+    }
+
+    /// A document's own directory still anchors its relative image refs; only
+    /// input with no file behind it falls back to the working directory
+    /// (pinned end to end in `tests/stdin_markdown.rs`).
+    #[tokio::test]
+    async fn markdown_resolves_images_against_the_given_base_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut logo = Bitmap::new(40);
+        for x in 0..384 {
+            logo.set(x, 20, true);
+        }
+        std::fs::write(dir.path().join("logo.png"), bitmap_to_png(&logo)).unwrap();
+
+        let resolved = markdown_bitmap("![logo](logo.png)", Some(dir.path()))
+            .await
+            .unwrap();
+        let placeholder = markdown_bitmap("![logo](logo.png)", None).await.unwrap();
+        assert!(
+            resolved.height() > placeholder.height(),
+            "resolved {} rows, placeholder {} rows",
+            resolved.height(),
+            placeholder.height()
+        );
+    }
+
+    #[test]
+    fn only_a_bare_dash_means_stdin() {
+        assert!(is_stdin_path(Path::new("-")));
+        assert!(!is_stdin_path(Path::new("./-")));
+        assert!(!is_stdin_path(Path::new("-.md")));
+        assert!(!is_stdin_path(Path::new("notes.md")));
+    }
 }

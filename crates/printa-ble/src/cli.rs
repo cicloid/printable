@@ -55,9 +55,16 @@ pub struct PrintArgs {
     pub device: DeviceArgs,
     /// Text to print; reads stdin if omitted and no --file
     pub text: Option<String>,
-    /// File to print (.png/.jpg/.jpeg/.txt/.md/.markdown)
+    /// File to print (.png/.jpg/.jpeg/.txt/.md/.markdown), or `-` for stdin
     #[arg(short, long)]
     pub file: Option<std::path::PathBuf>,
+    /// Render the input as markdown rather than plain text.
+    ///
+    /// Applies to stdin, a text argument and a `.txt` file; redundant (and
+    /// silently ignored) for a `.md` file, and rejected for images and URLs.
+    #[arg(short, long)]
+    #[cfg_attr(feature = "url", arg(conflicts_with = "url"))]
+    pub markdown: bool,
     /// Web page to render (via headless Chrome) and print
     #[cfg(feature = "url")]
     #[arg(long, conflicts_with_all = ["text", "file"])]
@@ -203,5 +210,50 @@ mod tests {
     fn verbose_defaults_to_zero() {
         let cli = Cli::try_parse_from(["printable", "print", "hi"]).unwrap();
         assert_eq!(cli.verbose, 0);
+    }
+
+    fn print_args(argv: &[&str]) -> PrintArgs {
+        match Cli::try_parse_from(argv).unwrap().command {
+            Command::Print(args) => args,
+            _ => panic!("expected a print command"),
+        }
+    }
+
+    #[test]
+    fn markdown_flag_defaults_off() {
+        assert!(!print_args(&["printable", "print", "hi"]).markdown);
+    }
+
+    #[test]
+    fn markdown_flag_has_a_short_and_a_long_form() {
+        assert!(print_args(&["printable", "print", "-m", "# hi"]).markdown);
+        assert!(print_args(&["printable", "print", "--markdown", "# hi"]).markdown);
+    }
+
+    /// Piping a document is the whole point: `-m` must parse with no
+    /// positional text at all.
+    #[test]
+    fn markdown_flag_works_without_a_text_argument() {
+        assert!(print_args(&["printable", "print", "-m"]).markdown);
+    }
+
+    /// A rendered web page is not a markdown document; clap rejects the
+    /// combination before anything touches the network.
+    #[cfg(feature = "url")]
+    #[test]
+    fn markdown_flag_conflicts_with_url() {
+        let Err(err) = Cli::try_parse_from(["printable", "print", "-m", "--url", "http://x/"])
+        else {
+            panic!("--markdown --url must not parse");
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    /// `-m` alongside `--file doc.md` is redundant, not wrong: it parses.
+    #[test]
+    fn markdown_flag_is_accepted_with_a_file() {
+        let args = print_args(&["printable", "print", "-m", "--file", "doc.md"]);
+        assert!(args.markdown);
+        assert_eq!(args.file.as_deref(), Some(std::path::Path::new("doc.md")));
     }
 }

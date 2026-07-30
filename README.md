@@ -160,13 +160,15 @@ Links render as their text; raw HTML is skipped.
 
 **Bold and italic do not compose.** A span gets exactly one font face, resolved in the order heading → bold → italic → regular. So `***x***` renders byte-identical to `**x**`, and `**bold**` inside a blockquote (which is italic) comes out plain bold, not bold-italic. Strikethrough is a separate flag and does compose with any face. Inline code takes the surrounding style, so `` `x` `` renders byte-identical to `x`.
 
+**Japanese text prints.** There is no syntax and no flag: a Noto Sans JP face is embedded alongside JetBrains Mono and used per glyph for anything the Latin face lacks, so 日本語 in a heading, a list or a table cell renders instead of coming out as tofu boxes. It is not free — the face is ~4.5 MB, most of the binary and most of the web bundle — and it has real limits. [docs/MARKDOWN.md](docs/MARKDOWN.md#cjk-text) has the details and the `cjk` opt-out.
+
 [docs/MARKDOWN.md](docs/MARKDOWN.md) is the full dialect reference, including the gotchas — footnotes, front matter, and rules inside list items all have surprising results.
 
 #### Tables
 
-Tables lay out as monospace text (the embedded font is monospace, so column math is exact): cell contents flatten to plain text (bold/italic inside a cell is dropped), columns are padded to their widest cell with two-space gutters, and a dashed separator row follows the header. Everything is left-aligned — markdown alignment markers (`:---:`) are ignored. A row of cells fits 32 characters across the 384 px roll; a wider table shrinks its widest columns and truncates those cells with `…` rather than overflowing.
+Tables lay out as monospace text (the embedded font is monospace, so column math is exact): cell contents flatten to plain text (bold/italic inside a cell is dropped), columns are padded to their widest cell with two-space gutters, and a dashed separator row follows the header. Everything is left-aligned — markdown alignment markers (`:---:`) are ignored. A row of cells fits 32 display columns across the 384 px roll; a wider table shrinks its widest columns and truncates those cells with `…` rather than overflowing.
 
-Columns will not shrink below 3 characters, so **six columns is the practical ceiling**: seven or more need more than 32 characters even at that floor, and the rows word-wrap instead of staying aligned. Nothing is lost or clipped — every cell still prints — but the table reads as wrapped text rather than a grid. Split a wider table, or transpose it, if alignment matters.
+Widths count **display columns**, not characters: a full-width CJK character claims two, so a table mixing Japanese and ASCII rows still lines up, and truncation cuts between characters rather than through one. Columns will not shrink below 3 display columns, so **six columns is the practical ceiling**: seven or more need more than 32 even at that floor, and the rows word-wrap instead of staying aligned. Nothing is lost or clipped — every cell still prints — but the table reads as wrapped text rather than a grid. Split a wider table, or transpose it, if alignment matters.
 
 #### QR and barcode fences
 

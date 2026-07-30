@@ -19,7 +19,7 @@ The boundary is enforced by the dependency list, not by convention. `printa-ble-
 Two payoffs, both load-bearing:
 
 1. **Native tests for everything, including the protocol.** The print flow is a pure state machine: you feed it notification bytes and assert on the packets it wants to send. Core's tests — the largest group in the workspace — run in about a second with no printer, no Bluetooth adapter, and no `#[ignore]`. A print bug is reproducible on CI.
-2. **A WASM build with zero changes.** `printa-ble-core` compiles to `wasm32-unknown-unknown` as-is — no feature flags, no `cfg`, no shims. `printa-ble-web` is a thin `wasm-bindgen` wrapper. The browser gets byte-identical rendering and byte-identical protocol behaviour to the CLI because it is literally the same code.
+2. **A WASM build with zero changes.** `printa-ble-core` compiles to `wasm32-unknown-unknown` as-is — no `cfg`, no shims, and nothing the target has to switch off. `printa-ble-web` is a thin `wasm-bindgen` wrapper. The browser gets byte-identical rendering and byte-identical protocol behaviour to the CLI because it is literally the same code. There is one cargo feature, `cjk`, and it is on by default on every target precisely so that stays true — see [Fonts and the CJK fallback](#fonts-and-the-cjk-fallback).
 
 The cost is real and visible in the API: the core cannot fetch a markdown image, cannot generate an auth nonce, and cannot sleep. Each of those becomes a parameter. See [Randomness injection](#randomness-injection) and the two-pass image flow in [MARKDOWN.md](MARKDOWN.md#images).
 
@@ -153,7 +153,7 @@ The layers, bottom up:
 | Module | Responsibility |
 |---|---|
 | `raster/bitmap.rs` | The 1-bit canvas and raster chunking |
-| `raster/rich.rs` | The typesetter: styled spans → glyphs. Greedy word wrap, mixed sizes on a shared baseline, strikethrough, indent. Owns the embedded font faces and decides which one a glyph is drawn from |
+| `raster/rich.rs` | The typesetter: styled spans → glyphs. Greedy word wrap, mixed sizes on a shared baseline, strikethrough, indent. Owns the four embedded faces (JetBrains Mono Regular/Bold/Italic plus the Noto Sans JP fallback) and resolves per glyph which one draws a character — and supplies its metrics |
 | `raster/text.rs` | Plain text — a thin wrapper: split on `\n`, one `RichLine` each |
 | `raster/markdown.rs` | Lowers CommonMark events onto `rich`, plus its own block graphics |
 | `raster/dither.rs` | `prepare` (grayscale + Lanczos3 scale to 384 px, height clamped to 4096 rows) and `image_to_bitmap` (Floyd–Steinberg, Atkinson, or threshold) |
@@ -176,6 +176,17 @@ enum MdBlock {
 Each block renders to its own `Bitmap` independently — text through `render_rich`, graphics through their own renderers — and `stack()` concatenates them vertically. `padded()` adds uniform white margins, which is how a QR (16 px of built-in quiet space) and a barcode (none) end up equally spaced: each fence declares what it already draws and is padded *to* a common 24 px, not *by* it.
 
 This is why graphics are full-width and never inherit list or quote indentation (see [MARKDOWN.md](MARKDOWN.md#layout-limitations-worth-knowing)): they are siblings of the text block, not spans inside it. It is also why a failed fence prints its error text with the same margins a successful one would have had — otherwise it would collide with the neighbouring paragraph.
+
+### Fonts and the CJK fallback
+
+`rich.rs` owns four embedded faces: JetBrains Mono Regular, Bold and Italic, and Noto Sans JP Regular. The first three are chosen by span style; the fourth is a **per-glyph fallback**, not a style. `face_for(ch, style)` asks the style's Latin face for a glyph index, and only when that comes back 0 does it try the CJK face; if neither has the character, the Latin face draws its `.notdef` box.
+
+Two consequences are load-bearing enough to be written down in the source:
+
+- **Metrics follow the face that draws.** A CJK glyph advances a full 1 em against JetBrains Mono's 0.6 em, so taking the advance from the style's face rather than the drawing face would wreck spacing and wrapping on any mixed-script line. The layout, the strikethrough bar, and the markdown table's column arithmetic all read the advance from `face_for`.
+- **The baseline does not.** Line height and ascent come from the *Latin* face even for fallback glyphs, which keeps a mixed-script run on one baseline and leaves line heights unchanged from before the fallback existed. Noto Sans JP declares a taller ascent than its ink needs — CJK ink tops out near 0.88 em, inside JetBrains Mono's 1.02 em ascent — so nothing clips.
+
+The face is ~4.5 MB, larger than everything else in the binary combined, so it sits behind the `cjk` cargo feature on `printa-ble-core`. Both `printa-ble` and `printa-ble-web` pass the feature through and enable it by default: a document must print the same from the browser as from the CLI, and that is worth more than the 1.8 MB → 6.3 MB the `.wasm` bundle grows by. Building either wrapper with `--no-default-features` drops the face and CJK returns to tofu; a `#[cfg(not(feature = "cjk"))]` test in `rich.rs` pins that path so it cannot rot. User-facing limitations are in [MARKDOWN.md](MARKDOWN.md#cjk-text).
 
 ## The four surfaces
 
@@ -241,7 +252,7 @@ Genuinely requires hardware: BLE scan/connect/subscribe, an end-to-end print, We
 
 ```
 crates/printa-ble-core/          sans-IO: no tokio, no BLE, no rand, no network
-  assets/                        embedded font faces + their OFL licences
+  assets/                        JetBrains Mono ×3 + Noto Sans JP (CJK fallback), OFL licences
   src/protocol/
     packets.rs                   command builders (5A 01/04/0A/0B/0C, 55 raster)
     notifications.rs             0xFFE2 frame parser → Notification

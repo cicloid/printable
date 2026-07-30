@@ -24,13 +24,13 @@ Piping a document without `-m` prints its `#` and `**` verbatim. See [CLI.md](CL
 |---|---|
 | Width | 384 px, fixed |
 | Colour | 1 bit; a glyph pixel is black at ≥ 128/255 coverage |
-| Font | JetBrains Mono (Regular / Bold / Italic), embedded in the binary. Glyph coverage and any fallback are described in the crate's `raster/rich.rs` |
+| Font | JetBrains Mono (Regular / Bold / Italic), embedded in the binary, with Noto Sans JP Regular as a per-glyph fallback for characters JetBrains Mono lacks — see [CJK text](#cjk-text) |
 | Line height | 1.3 × the largest font size on the rendered line |
 | Wrapping | Greedy word wrap at `384 − indent`; an overlong word breaks mid-word |
 | Alignment | Left, always. Nothing centres except QR codes and barcodes |
 | Normalization | `\r\n` and `\r` → `\n`; tab → four spaces |
 
-Because the font is monospace, character counts are exact: the advance is 0.6 em, so a full-width line holds 26 characters at 24 px and 32 characters at 20 px.
+Because the font is monospace, character counts are exact: the advance is 0.6 em, so a full-width line holds 26 characters at 24 px and 32 characters at 20 px. Glyphs drawn from the CJK fallback are the exception — they advance a full 1 em, so a Japanese line holds 16 characters at 24 px. See [CJK text](#cjk-text).
 
 ## Block elements
 
@@ -264,6 +264,43 @@ A payload the encoder rejects prints its error message as code text (Regular 20 
 
 A bad code never panics and never costs the reader the rest of the document. The margins match on both branches deliberately: a fence is its own block, so the surrounding blank lines are trimmed, and unpadded error text would collide with the neighbouring paragraph.
 
+## CJK text
+
+Japanese text renders. There is no syntax, no flag and no configuration:
+
+```markdown
+# 珈琲店メニュー
+
+- 本日のコーヒー
+- 抹茶ラテ **おすすめ**
+```
+
+JetBrains Mono has no CJK coverage at all, so **Noto Sans JP Regular** is embedded alongside it and picked per glyph: the Latin face draws every character it has, and anything it lacks falls through to the CJK face. Glyph metrics come from whichever face actually draws the character, so spacing and word wrap stay correct across a mixed-script line. Line height and the shared baseline come from the Latin face either way, which keeps a mixed run on one baseline; Noto Sans JP declares a taller ascent than its ink needs, so nothing clips.
+
+This works everywhere the renderer does — the CLI, the server, and the web app — and in every block: headings, lists, blockquotes, code blocks, table cells, and image alt text.
+
+### The `cjk` feature
+
+The face is ~4.5 MB, which is larger than the rest of the binary put together. It is behind a cargo feature, **on by default** on `printa-ble-core` and passed through by both the CLI and the web crate:
+
+```sh
+cargo build --no-default-features --features url   # CLI, no CJK face
+scripts/build-web.sh                               # web bundle, CJK face included
+```
+
+Turning it off restores the previous behaviour exactly: no fallback face, so CJK characters rasterize as tofu (JetBrains Mono's `.notdef` box).
+
+The web bundle pays the most for it — **1.8 MB → 6.3 MB** of `.wasm` — and the project ships it on there anyway. A document that prints one way from the CLI and another way from the browser is a worse bug than a large download, and "the browser gets byte-identical rendering to the CLI" is a property worth more than four megabytes. Build `crates/printa-ble-web` with `--no-default-features` if your deployment disagrees.
+
+### Limitations
+
+Real ones, not theoretical:
+
+- **Bold and italic CJK render at Regular weight.** Noto Sans JP ships here as a single face. `**太字**` and `*斜体*` resolve to a bold or italic *Latin* style, find no glyph, and fall through to the one CJK face there is — so they come out identical to unstyled text. Three CJK weights would be 13 MB. Latin text in the same span is still bold or italic.
+- **No kinsoku shori.** Line breaking is the same greedy word wrap used for Latin text, and a CJK run has no spaces to break at, so it breaks wherever the 384 px runs out. Japanese typesetting forbids a line *starting* with a closing character — this renderer will happily start one with `。`, `、`, `」` or `）`, and will just as happily end one with `「`. Nothing wraps a line to avoid it.
+- **The bundled face is the Japanese subset.** Hiragana, katakana, and the Han characters used in Japanese all render. Korean **hangul renders as tofu** — Noto Sans JP is not Noto Sans KR and does not carry the syllable block. Chinese mostly works because Japanese and Chinese share most Han characters, but simplified-only forms that Japanese does not use (`简` is one) fall outside the subset and come out as tofu too.
+- **Table columns drift slightly.** A full-width character is budgeted at two monospace cells but advances 1 em rather than 1.2, so a Japanese cell pulls the columns after it about 4 px per character to the left. See [Tables](#tables).
+
 ## Images
 
 ```markdown
@@ -377,6 +414,7 @@ A blockquote body is set in the italic face rather than marked with a bar, so `*
 - **Tables wider than six columns lose their alignment** (see Tables).
 - **The document has no page breaks.** Height is unbounded until the protocol's 16-bit packet index runs out at 131,070 rows.
 - **Font size is fixed.** `--size` / the API's `size` apply to plain-text printing only; markdown always uses the sizes in this document.
+- **CJK gets no bold, no italic and no kinsoku line breaking**, and only the Japanese subset of Han (see [CJK text](#cjk-text)).
 
 ## A complete example
 

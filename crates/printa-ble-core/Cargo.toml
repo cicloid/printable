@@ -7,8 +7,9 @@ license.workspace = true
 [features]
 default = ["cjk"]
 # Bundles Noto Sans JP as a per-glyph fallback face so CJK text renders
-# instead of tofu. Costs ~4.5 MB of binary size; turn it off for size-
-# constrained targets (e.g. the WASM bundle).
+# instead of tofu. Costs ~4.5 MB of binary size. Kept on for every target,
+# WASM included, so a document prints the same from the browser as from the
+# CLI; turn it off only when that does not matter and the bytes do.
 cjk = []
 
 [dependencies]

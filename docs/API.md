@@ -24,7 +24,7 @@ None. Anyone who can reach the port can print, read printer status, and — thro
 | Response | `application/json` | All `/print/*` endpoints, `/health`, `/status`, and every error the handlers raise |
 | Response | `text/html` | `GET /` |
 
-Request bodies are capped at **20 MiB** (20 971 520 bytes) on every route. A larger body gets `413 Payload Too Large` with a plain-text message.
+Request bodies are capped at **20 MiB** (20 971 520 bytes) on every route. On the JSON routes a larger body gets `413 Payload Too Large` with a plain-text message; on the multipart routes it surfaces as a `400` in the JSON envelope instead (see [Errors](#the-plain-text-exception)).
 
 ## Endpoints
 
@@ -413,9 +413,9 @@ Errors raised by the handlers use a JSON envelope:
 |---|---|---|
 | `400` | Invalid input | Out-of-range option, empty `content`, `size` over 128, unknown `dither`, missing `file` field, undecodable image, non-`http(s)` URL, QR data too long, job over 65 535 raster packets |
 | `404` | No such route | Also the `url` routes in a build without the feature |
-| `405` | Wrong method | e.g. `GET /print/text` |
+| `405` | Wrong method | e.g. `GET /print/text`. **Empty body** — no JSON, no text; the `allow` header carries the answer |
 | `409` | Printer is out of paper | Detected before the job starts or from a mid-job status frame |
-| `413` | Body over 20 MiB | Plain text, not JSON |
+| `413` | Body over 20 MiB on a JSON route | Plain text, not JSON. The multipart routes report the same condition as `400` — see below |
 | `415` | Wrong `Content-Type` | Plain text, not JSON |
 | `422` | Body does not match the schema | Plain text, not JSON |
 | `500` | Print failed, or an internal render failure | Auth rejected, BLE write failed, printer stopped responding |
@@ -451,9 +451,24 @@ Expected request with `Content-Type: application/json`
 | Malformed JSON | `400` | plain text |
 | Missing required field, or a field of the wrong type | `422` | plain text |
 | Missing or wrong `Content-Type` | `415` | plain text |
-| Body over the 20 MiB limit | `413` | plain text |
+| Body over the 20 MiB limit, JSON route | `413` | plain text |
+| Body over the 20 MiB limit, multipart route | `400` | **JSON** — see below |
+| Wrong method for an existing route | `405` | **empty** |
 
 Everything a handler rejects — every validation rule documented above — comes back as JSON.
+
+Two rows in that table surprise people:
+
+**An oversized multipart body is a `400`, not a `413`.** The body limit trips while the handler is streaming a field rather than before it runs, so the handler sees a field-read failure and reports it in the normal envelope:
+
+```console
+$ curl -X POST localhost:8000/preview/image -F file=@21mb.png
+{"error":"failed to read file: Error parsing `multipart/form-data` request"}
+```
+
+The same 20 MiB ceiling applies either way; only the reporting differs. Since the image endpoints are the ones an oversized body actually reaches in practice, a client that treats `413` as "too big" and everything else as "malformed" will misreport the common case.
+
+**A `405` has no body at all** — not JSON, not text. The `allow` header names the methods the route does accept.
 
 ---
 

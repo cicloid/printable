@@ -8,7 +8,7 @@ The name **printa-ble** derives from *printa* (the ancestor project) plus *BLE* 
 
 All four phases of the [original design](docs/plans/2026-07-27-lxd2-design.md) are delivered: `scan`, `status`, and `print` (text, images, markdown, and web pages via `--url`) with PNG preview, QR codes via `qr`, multiple copies with `--copies`, a config file that remembers the last-connected printer, an HTTP print server with a phone-friendly web UI via `serve`, and a serverless Web Bluetooth page that prints straight from the browser.
 
-A [follow-up phase](docs/plans/2026-07-29-lxd2-phase5-implementation.md) extended the markdown renderer with tables, task-list checkboxes, strikethrough, embedded QR codes and barcodes, images, and a tear marker — see [Markdown](#markdown).
+A [follow-up phase](docs/plans/2026-07-29-lxd2-phase5-implementation.md) extended the markdown renderer with tables, task-list checkboxes, strikethrough, embedded QR codes and barcodes, images, and a tear marker. Since then it has gained `wagara` pattern bands, and `print` has gained `-m` for rendering markdown that did not arrive as a `.md` file — see [Markdown](#markdown).
 
 ## Documentation
 
@@ -125,6 +125,10 @@ https://example.com/order/42
 ORDER-42
 ```
 
+```wagara seigaiha
+height: 40
+```
+
 ![logo](logo.png)
 
 ---
@@ -166,7 +170,7 @@ Columns will not shrink below 3 characters, so **six columns is the practical ce
 
 #### QR and barcode fences
 
-A fenced code block whose info string's first word is `qr` or `barcode` (matched case-insensitively, so `QR` counts) renders as a graphic instead of code text. Every other info string — including none at all — still renders as plain code.
+A fenced code block whose info string's first word is `qr`, `barcode`, or `wagara` (matched case-insensitively, so `QR` counts) renders as a graphic instead of code text. Every other info string — including none at all — still renders as plain code.
 
 Barcodes are **Code128**, character set B: the payload must be printable ASCII (U+0020 space through U+007E tilde), which covers digits, both letter cases, and punctuation. Anything else (accents, emoji, tabs, newlines) is rejected. The maximum is **28 characters** — beyond that the bars cannot stay at least one pixel wide on 384 px paper. The payload is plain text: there are no escape characters, and the character-set prefix Code128 needs is added for you.
 
@@ -208,7 +212,7 @@ Image references are resolved by whichever surface is rendering, then handed to 
 
 | Surface | Local paths | `http(s)` URLs |
 |---|---|---|
-| CLI (`printable print -f notes.md`) | Yes — relative to the `.md` file's directory | Yes |
+| CLI (`printable print -f notes.md`) | Yes — relative to the document's own directory, or to the working directory when the markdown was piped or passed as an argument | Yes |
 | Server (`/print/markdown`, `/preview/markdown`) | **Never** | Yes, unless `--no-remote-images` |
 | Web app (Markdown tab) | No — a browser cannot read them | Yes, subject to CORS |
 
@@ -298,7 +302,7 @@ The server validates what the CLI leaves open, because it accepts input from any
 
 | Limit | Server | CLI |
 |---|---|---|
-| Request body | 20 MiB, then `413` | — |
+| Request body | 20 MiB | — |
 | `feed` | 0–2000 | ≥ 0, no upper bound |
 | `size` | > 0 and ≤ 128 px | > 0, finite, no upper bound |
 | `density` | 1–7 | 1–7 |
@@ -332,9 +336,9 @@ Errors raised by the handlers come back as `{"error": "message"}` JSON:
 |---|---|
 | 400 | Invalid input: out-of-range option, empty `content`, unknown `dither`, undecodable image, non-`http(s)` URL, QR data too long, job over 65 535 raster packets |
 | 404 | No such route (including the `url` routes in a build without the feature) |
-| 405 | Wrong method for the route |
+| 405 | Wrong method for the route (empty body; the `allow` header has the answer) |
 | 409 | Printer is out of paper |
-| 413 | Request body over 20 MiB |
+| 413 | Request body over 20 MiB on a JSON route — the multipart routes report the same ceiling as a 400 |
 | 415 | Missing or wrong `Content-Type` |
 | 422 | Body does not match the schema (missing or mistyped field) |
 | 500 | Print failed, or an internal render failure |

@@ -39,8 +39,9 @@ async fn main() {
 ///
 /// Logs go to stderr, never stdout: stdout carries the command's actual output
 /// (the preview path, the scan table) and scripts parse it. The default filter
-/// is `warn`, so an unflagged invocation prints exactly what it always did.
-/// `RUST_LOG` wins over `-v` when set.
+/// is `printable=warn` — this crate's warnings and nothing else, so an
+/// unflagged invocation prints exactly what it always did and no dependency
+/// gets to editorialize. `RUST_LOG` wins over `-v` when set.
 fn init_tracing(verbose: u8) {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(cli::log_filter(verbose)));

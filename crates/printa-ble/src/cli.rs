@@ -114,14 +114,23 @@ pub struct QrArgs {
 
 /// The `EnvFilter` directive a `-v` count maps to.
 ///
-/// Dependencies stay at `warn` until `-vvv`, so `-v`/`-vv` show this crate's
-/// own story without btleplug and hyper drowning it out. `RUST_LOG` (handled
-/// by the caller) is the escape hatch for anything finer.
+/// Every rung but the last names this crate and nothing else, so a dependency
+/// cannot log on our behalf. That is not tidiness: chromiumoxide reports the
+/// websocket frames it fails to deserialize at ERROR, and newer Chrome sends
+/// several per screenshot, so a global `warn` floor made a perfectly
+/// successful `print --url` print two red lines about a connection error. A
+/// filter with no bare level directive leaves every other target disabled
+/// outright.
+///
+/// `-vvv` is the exception, and is meant to be: it is the rung a user reaches
+/// for when the problem might be in btleplug or Chrome rather than here, so it
+/// turns dependencies back on — chromiumoxide's bogus errors included.
+/// `RUST_LOG` (handled by the caller) overrides all of this.
 pub fn log_filter(verbose: u8) -> String {
     match verbose {
-        0 => "warn".to_string(),
-        1 => "warn,printable=info".to_string(),
-        2 => "warn,printable=debug".to_string(),
+        0 => "printable=warn".to_string(),
+        1 => "printable=info".to_string(),
+        2 => "printable=debug".to_string(),
         _ => "debug,printable=trace".to_string(),
     }
 }
@@ -174,22 +183,93 @@ mod tests {
         Cli::command().debug_assert();
     }
 
-    /// No flag must stay silent: the CLI's default output is load-bearing
-    /// (scripts read the preview path off stdout).
+    /// No flag must stay silent about everything but our own warnings: the
+    /// CLI's default output is load-bearing (scripts read the preview path off
+    /// stdout) and a dependency's alarming-but-harmless ERROR is not ours to
+    /// show.
     #[test]
-    fn default_verbosity_logs_nothing_below_warn() {
-        assert_eq!(log_filter(0), "warn");
+    fn default_verbosity_covers_this_crate_only() {
+        assert_eq!(log_filter(0), "printable=warn");
     }
 
     #[test]
     fn verbosity_ladder_increases_this_crate_first() {
-        assert!(log_filter(1).contains("printable=info"));
-        assert!(log_filter(2).contains("printable=debug"));
+        assert_eq!(log_filter(1), "printable=info");
+        assert_eq!(log_filter(2), "printable=debug");
         assert!(log_filter(3).contains("printable=trace"));
         // Dependencies stay quiet until the last rung.
-        assert!(log_filter(1).starts_with("warn,"));
-        assert!(log_filter(2).starts_with("warn,"));
         assert!(log_filter(3).starts_with("debug,"));
+    }
+
+    /// Capture the formatted log output produced under a given filter.
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// What a subscriber built from `filter` actually prints for `f`'s events.
+    fn logged(filter: &str, f: impl FnOnce()) -> String {
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = capture.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    /// The regression this filter exists to prevent: chromiumoxide logs its
+    /// own (harmless) websocket deserialization failures at ERROR, and a
+    /// working `print --url` must not look like it failed.
+    #[test]
+    fn dependency_errors_are_silent_below_the_last_verbosity_rung() {
+        for verbose in 0..=2 {
+            let out = logged(&log_filter(verbose), || {
+                tracing::error!(target: "chromiumoxide::conn", "Failed to deserialize WS response");
+                tracing::error!(target: "chromiumoxide::handler", "WS Connection error");
+                tracing::warn!(target: "btleplug::corebluetooth", "some adapter grumble");
+            });
+            assert_eq!(out, "", "-v x{verbose} leaked dependency logs");
+        }
+    }
+
+    /// Our own warnings are the one thing the default level does show — a
+    /// stalled printer or an overheating head has to reach the user.
+    #[test]
+    fn our_own_warnings_survive_the_default_filter() {
+        let out = logged(&log_filter(0), || {
+            tracing::warn!("printer stalled");
+            tracing::info!("scanning");
+        });
+        assert!(out.contains("printer stalled"), "{out:?}");
+        assert!(!out.contains("scanning"), "info must stay hidden: {out:?}");
+    }
+
+    /// `-vvv` is the deliberate "tell me everything" rung, dependencies
+    /// included; that is where the chromiumoxide noise is allowed back.
+    #[test]
+    fn the_last_rung_lets_dependencies_speak() {
+        let out = logged(&log_filter(3), || {
+            tracing::debug!(target: "btleplug::corebluetooth", "adapter event");
+        });
+        assert!(out.contains("adapter event"), "{out:?}");
     }
 
     #[test]

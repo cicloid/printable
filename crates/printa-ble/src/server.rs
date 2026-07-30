@@ -28,7 +28,7 @@ use crate::ble;
 use crate::config::Config;
 use crate::md_images;
 use crate::print_service::{
-    self, NoPaper, NoPrinterFound, PrintFailure, PrintOptions, SCAN_TIMEOUT,
+    self, NoPaper, NoPrinterFound, PrintFailure, PrintOptions, PrinterNotResponding, SCAN_TIMEOUT,
 };
 
 /// Largest accepted request body (image uploads), in bytes.
@@ -650,7 +650,9 @@ async fn acquire_print_lock(state: &AppState) -> tokio::sync::MutexGuard<'_, ()>
 /// `PrintFailure`) may be layered on top of, so the more specific markers
 /// are checked before the generic print-failure context.
 fn print_error_to_api(e: &anyhow::Error) -> ApiError {
-    if e.downcast_ref::<NoPrinterFound>().is_some() {
+    if e.downcast_ref::<NoPrinterFound>().is_some()
+        || e.downcast_ref::<PrinterNotResponding>().is_some()
+    {
         ApiError::unavailable(format!("{e:#}"))
     } else if e.downcast_ref::<NoPaper>().is_some() {
         ApiError::conflict("printer is out of paper")
@@ -1102,6 +1104,12 @@ mod tests {
             print_error_to_api(&e).status,
             StatusCode::SERVICE_UNAVAILABLE
         );
+
+        // ble.rs: the liveness probe found the device but it never answered.
+        let e = anyhow::Error::msg(crate::print_service::PrinterNotResponding::new("LX-D02"));
+        let api = print_error_to_api(&e);
+        assert_eq!(api.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(api.message.contains("LX-D02"), "{}", api.message);
 
         // print_service.rs: anyhow::Error::msg(NoPaper)
         let e = anyhow::Error::msg(NoPaper);

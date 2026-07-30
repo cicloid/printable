@@ -19,7 +19,9 @@ use printa_ble_core::raster::{
 
 use crate::cli::{Cli, Command, DeviceArgs, PrintArgs, QrArgs};
 use crate::config::Config;
-use crate::print_service::{NoPaper, NoPrinterFound, PrintFailure, PrintOptions, SCAN_TIMEOUT};
+use crate::print_service::{
+    NoPaper, NoPrinterFound, PrintFailure, PrintOptions, PrinterNotResponding, SCAN_TIMEOUT,
+};
 
 #[tokio::main]
 async fn main() {
@@ -52,10 +54,12 @@ fn init_tracing(verbose: u8) {
         .init();
 }
 
-/// Distinct exit codes: 2 no printer found, 3 no paper, 4 auth/print
-/// failure, 1 anything else.
+/// Distinct exit codes: 2 no usable printer (none found, or one found that
+/// never answered), 3 no paper, 4 auth/print failure, 1 anything else.
 fn exit_code(e: &anyhow::Error) -> i32 {
-    if e.downcast_ref::<NoPrinterFound>().is_some() {
+    if e.downcast_ref::<NoPrinterFound>().is_some()
+        || e.downcast_ref::<PrinterNotResponding>().is_some()
+    {
         2
     } else if e.downcast_ref::<NoPaper>().is_some() {
         3
@@ -381,6 +385,22 @@ mod tests {
             resolved.height(),
             placeholder.height()
         );
+    }
+
+    /// A printer that is present but never answers is still "no usable
+    /// printer": a script testing for exit 2 must catch it there, not in the
+    /// catch-all.
+    #[test]
+    fn exit_codes_separate_the_failure_modes() {
+        use crate::print_service::PrinterNotResponding;
+        assert_eq!(exit_code(&anyhow::Error::msg(NoPrinterFound)), 2);
+        assert_eq!(
+            exit_code(&anyhow::Error::msg(PrinterNotResponding::new("LX-D02"))),
+            2
+        );
+        assert_eq!(exit_code(&anyhow::Error::msg(NoPaper)), 3);
+        assert_eq!(exit_code(&anyhow::anyhow!("x").context(PrintFailure)), 4);
+        assert_eq!(exit_code(&anyhow::anyhow!("x")), 1);
     }
 
     #[test]

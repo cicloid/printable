@@ -21,9 +21,10 @@ use futures::StreamExt;
 use tracing::{debug, info, trace, warn};
 
 use crate::config::SavedDevice;
-use crate::print_service::{NoPaper, NoPrinterFound};
+use crate::print_service::{NoPaper, NoPrinterFound, PrinterNotResponding};
 use printa_ble_core::protocol::job::{Action, JobStats, PrintJob};
 use printa_ble_core::protocol::notifications::{self, Notification, Status};
+use printa_ble_core::protocol::packets;
 use tokio::sync::mpsc;
 
 /// How long `run_job` waits for an expected notification before giving up.
@@ -48,6 +49,28 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Polling interval while waiting for a matching device to appear.
 const DISCOVERY_POLL: Duration = Duration::from_millis(300);
+
+/// How long the link may take to come up.
+///
+/// CoreBluetooth's own connect has no deadline: asked to connect to a
+/// peripheral that is not there, it waits for it to come back, forever. A real
+/// printer in range connects in about a second, so this is loose enough never
+/// to cut one off and tight enough that a switched-off printer is reported
+/// rather than waited on.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long the printer gets to answer the liveness hello.
+///
+/// A round trip over BLE is milliseconds; this is sized for a printer that is
+/// busy waking up, not for one that is off.
+const HELLO_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// How long a best-effort teardown may take before it is abandoned.
+///
+/// btleplug's `disconnect` waits for CoreBluetooth to report the peripheral
+/// disconnected, and a link that never really came up may never produce that
+/// callback. Cleanup must not outlast the error it is cleaning up after.
+const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Shortest pause worth an info-level "resumed after" line. Below this the
 /// printer barely broke stride (a lone cooldown is a fixed 100 ms back-off)
@@ -306,6 +329,19 @@ impl StallGuard {
     }
 }
 
+/// Drop the link, giving up if the platform never confirms it.
+async fn release(peripheral: &Peripheral) {
+    if tokio::time::timeout(DISCONNECT_TIMEOUT, peripheral.disconnect())
+        .await
+        .is_err()
+    {
+        debug!(
+            "disconnect did not complete within {}",
+            secs(DISCONNECT_TIMEOUT)
+        );
+    }
+}
+
 /// Find the first Bluetooth adapter, with a hint if Bluetooth is off.
 async fn default_adapter() -> Result<Adapter> {
     let manager = Manager::new()
@@ -446,7 +482,9 @@ pub struct Printer {
 }
 
 /// Scan until a matching device appears (up to `scan_timeout`), then connect,
-/// discover characteristics, and subscribe to notifications.
+/// discover characteristics, subscribe to notifications, and exchange a hello
+/// with the printer so that a returned [`Printer`] means a printer that is
+/// actually switched on.
 ///
 /// Resolution order (see [`Target`]): `explicit` filter > `saved` device id
 /// (falling back to a device with the saved name, else any `LX*` name, if
@@ -504,24 +542,53 @@ pub async fn connect_resolved(
     let _ = adapter.stop_scan().await;
     debug!("connecting to {name} ({})", peripheral.id());
 
-    peripheral
-        .connect()
-        .await
-        .with_context(|| format!("failed to connect to {name}"))?;
+    // CoreBluetooth will wait for an absent peripheral indefinitely, so the
+    // connect gets a deadline of its own.
+    match tokio::time::timeout(CONNECT_TIMEOUT, peripheral.connect()).await {
+        Ok(r) => r.with_context(|| format!("failed to connect to {name}"))?,
+        Err(_) => {
+            debug!(
+                "connect to {name} did not complete within {}",
+                secs(CONNECT_TIMEOUT)
+            );
+            // Cancel the attempt still pending in the OS, so it cannot
+            // complete later against a peripheral nobody holds.
+            release(&peripheral).await;
+            return Err(anyhow::Error::msg(PrinterNotResponding::new(&name)));
+        }
+    }
 
     // From here on the link is up: drop it again if setup fails.
     match initialize(peripheral.clone(), name).await {
         Ok(printer) => Ok(printer),
         Err(e) => {
-            let _ = peripheral.disconnect().await;
+            release(&peripheral).await;
             Err(e)
         }
     }
 }
 
-/// Post-connect setup: discover characteristics, subscribe, and spawn the
-/// notification forwarder. The caller disconnects on error.
+/// Post-connect setup: discover characteristics, subscribe, spawn the
+/// notification forwarder, and make the printer prove it is there. The caller
+/// disconnects on error.
+///
+/// Returning `Ok` from here is what lets a caller say "Connected to LX-D02",
+/// so it has to mean the printer answered — see [`handshake`].
 async fn initialize(peripheral: Peripheral, name: String) -> Result<Printer> {
+    // `connect` returning Ok is not the same as a live link. Asking outright
+    // turns a dead connection into one legible error instead of a puzzling
+    // failure three steps further down.
+    match peripheral.is_connected().await {
+        Ok(true) => {}
+        Ok(false) => {
+            debug!("{name} is not connected immediately after a successful connect()");
+            return Err(anyhow::Error::msg(PrinterNotResponding::new(&name)));
+        }
+        // Not knowing is not the same as knowing it is down; the handshake
+        // below settles it either way.
+        Err(e) => debug!("could not confirm the link to {name}: {e}"),
+    }
+
     peripheral
         .discover_services()
         .await
@@ -554,25 +621,62 @@ async fn initialize(peripheral: Peripheral, name: String) -> Result<Printer> {
         .notifications()
         .await
         .context("failed to open notification stream")?;
-    let (tx, notify_rx) = mpsc::unbounded_channel();
-    let forwarder = tokio::spawn(async move {
-        while let Some(data) = stream.next().await {
-            if data.uuid != notify_uuid {
-                continue;
-            }
-            trace!("notification frame {}", hex(&data.value));
-            match notifications::parse(&data.value) {
-                Some(n) => {
-                    debug!("notification: {n:?}");
-                    if tx.send(n).is_err() {
-                        break; // Printer was dropped.
-                    }
+    // `tx` is cloned into the forwarder and dropped when this function ends,
+    // so the channel still closes with the forwarder — which is how the
+    // receiver learns the link is gone.
+    let (tx, mut notify_rx) = mpsc::unbounded_channel();
+    let forwarder = tokio::spawn({
+        let tx = tx.clone();
+        async move {
+            while let Some(data) = stream.next().await {
+                if data.uuid != notify_uuid {
+                    continue;
                 }
-                None => debug!("ignoring unparseable frame {}", hex(&data.value)),
+                trace!("notification frame {}", hex(&data.value));
+                match notifications::parse(&data.value) {
+                    Some(n) => {
+                        debug!("notification: {n:?}");
+                        if tx.send(n).is_err() {
+                            break; // Printer was dropped.
+                        }
+                    }
+                    None => debug!("ignoring unparseable frame {}", hex(&data.value)),
+                }
             }
+            debug!("notification forwarder stopped");
         }
-        debug!("notification forwarder stopped");
     });
+
+    // Proof of life, and the point of this function. Everything above can
+    // succeed against a printer that is switched off: macOS keeps the GATT
+    // database of a peripheral it has paired with before, so the connect and
+    // the service discovery are answered from that cache. The `5A 01` reply
+    // is the first thing in the flow that only the hardware itself can
+    // produce, so nothing may claim a connection until it arrives.
+    let mut skipped = Vec::new();
+    match handshake(
+        &peripheral,
+        &write_char,
+        &mut notify_rx,
+        &name,
+        &mut skipped,
+    )
+    .await
+    {
+        Ok(mac) => debug!("{name} answered hello, MAC {}", hex(&mac)),
+        Err(e) => {
+            // The forwarder is parked on a stream nobody will read again.
+            forwarder.abort();
+            return Err(e);
+        }
+    }
+    // Hand back whatever the probe had to read past. The printer starts
+    // emitting status frames the moment we subscribe, so one of them is
+    // usually already in the queue — and it is the frame the pre-print paper
+    // check is waiting for.
+    for n in skipped {
+        let _ = tx.send(n);
+    }
 
     info!("connected to {name}, subscribed to notifications");
     Ok(Printer {
@@ -583,6 +687,60 @@ async fn initialize(peripheral: Peripheral, name: String) -> Result<Printer> {
         forwarder,
         name,
     })
+}
+
+/// Greet the printer and wait for it to greet us back, returning its MAC.
+///
+/// The hello exchange is idempotent: every print job opens with its own hello
+/// (each copy in a multi-copy run does so over the same connection), and the
+/// printer answers each one. This extra round trip therefore costs a frame and
+/// tells the truth about whether anything is listening.
+async fn handshake(
+    peripheral: &Peripheral,
+    write_char: &Characteristic,
+    rx: &mut mpsc::UnboundedReceiver<Notification>,
+    name: &str,
+    skipped: &mut Vec<Notification>,
+) -> Result<[u8; 6]> {
+    trace!("write hello (liveness probe)");
+    peripheral
+        .write(write_char, &packets::hello(), WriteType::WithoutResponse)
+        .await
+        .with_context(|| format!("failed to send hello to {name}"))?;
+    await_hello(rx, HELLO_TIMEOUT, name, skipped).await
+}
+
+/// Wait up to `timeout` for the printer's `5A 01` hello reply.
+///
+/// Only that reply will do here, but the frames read past on the way to it —
+/// status heartbeats, mostly — are collected into `skipped` rather than
+/// discarded, so the probe costs the rest of the program nothing.
+///
+/// Silence is [`PrinterNotResponding`], which reads differently from
+/// [`NoPrinterFound`] on purpose: the device is right there.
+async fn await_hello(
+    rx: &mut mpsc::UnboundedReceiver<Notification>,
+    timeout: Duration,
+    name: &str,
+    skipped: &mut Vec<Notification>,
+) -> Result<[u8; 6]> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let n = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .map_err(|_| {
+                debug!("{name} did not answer hello within {}", secs(timeout));
+                anyhow::Error::msg(PrinterNotResponding::new(name))
+            })?
+            .ok_or_else(|| anyhow!("notification stream closed while greeting {name}"))?;
+        match n {
+            Notification::Hello { mac } => return Ok(mac),
+            other => {
+                trace!("holding {other:?} until the hello reply arrives");
+                skipped.push(other);
+            }
+        }
+    }
 }
 
 impl Printer {
@@ -707,9 +865,13 @@ impl Printer {
     /// not sit parked on a stream that will never yield again.
     pub async fn disconnect(self) {
         debug!("disconnecting from {}", self.name);
-        let _ = self.peripheral.unsubscribe(&self.notify_char).await;
+        let _ = tokio::time::timeout(
+            DISCONNECT_TIMEOUT,
+            self.peripheral.unsubscribe(&self.notify_char),
+        )
+        .await;
         self.forwarder.abort();
-        let _ = self.peripheral.disconnect().await;
+        release(&self.peripheral).await;
     }
 }
 
@@ -1039,6 +1201,92 @@ mod tests {
         let stall = stall_message(Duration::from_secs(60), Duration::from_secs(60));
         assert!(stall.contains("stalled"), "{stall}");
         assert!(!stall.contains("silent"), "{stall}");
+    }
+
+    // -----------------------------------------------------------------
+    // Liveness. The write that starts the probe needs a radio, but the half
+    // that decides whether the printer is really there is just the wait for
+    // its answer — and that is testable.
+    // -----------------------------------------------------------------
+
+    const MAC: [u8; 6] = [0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33];
+
+    /// A short deadline keeps the timeout tests quick; the probe's real
+    /// budget is [`HELLO_TIMEOUT`].
+    const BRIEFLY: Duration = Duration::from_millis(50);
+
+    /// The `5A 01` reply is the proof: only a powered-on printer knows its
+    /// own MAC, and macOS's cached GATT database cannot invent one.
+    #[tokio::test]
+    async fn a_hello_reply_proves_the_printer_answered() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(Notification::Hello { mac: MAC }).unwrap();
+        let mut skipped = vec![];
+        let mac = await_hello(&mut rx, HELLO_TIMEOUT, "LX-D02", &mut skipped)
+            .await
+            .unwrap();
+        assert_eq!(mac, MAC);
+        assert!(skipped.is_empty());
+    }
+
+    /// Status heartbeats may arrive first; they are not the answer we asked
+    /// for, so the probe keeps waiting — and hands them back, because the
+    /// pre-print paper check is waiting for exactly that frame.
+    #[tokio::test]
+    async fn frames_read_past_on_the_way_to_the_reply_are_handed_back() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(heartbeat()).unwrap();
+        tx.send(Notification::Cooldown).unwrap();
+        tx.send(Notification::Hello { mac: MAC }).unwrap();
+        let mut skipped = vec![];
+        let mac = await_hello(&mut rx, HELLO_TIMEOUT, "LX-D02", &mut skipped)
+            .await
+            .unwrap();
+        assert_eq!(mac, MAC);
+        assert_eq!(skipped, vec![heartbeat(), Notification::Cooldown]);
+    }
+
+    /// The bug this exists for: on macOS everything up to here succeeds
+    /// against a printer that is switched off, and the user was told
+    /// "Connected to LX-D02." Silence must instead be an error that names the
+    /// device and says what is probably wrong.
+    #[tokio::test]
+    async fn silence_means_the_printer_is_not_really_there() {
+        let (_tx, mut rx) = mpsc::unbounded_channel();
+        let err = await_hello(&mut rx, BRIEFLY, "LX-D02", &mut vec![])
+            .await
+            .unwrap_err();
+        assert!(
+            err.downcast_ref::<PrinterNotResponding>().is_some(),
+            "wrong error type: {err:#}"
+        );
+        let msg = format!("{err:#}");
+        assert!(msg.contains("LX-D02"), "{msg}");
+        assert!(msg.contains("powered on"), "{msg}");
+    }
+
+    /// "Found it but it is dead" is not "found nothing": the two send the
+    /// user to different places, so the messages must not read alike.
+    #[tokio::test]
+    async fn a_silent_printer_does_not_read_like_a_missing_one() {
+        let (_tx, mut rx) = mpsc::unbounded_channel();
+        let err = await_hello(&mut rx, BRIEFLY, "LX-D02", &mut vec![])
+            .await
+            .unwrap_err();
+        assert!(err.downcast_ref::<NoPrinterFound>().is_none());
+        assert!(!format!("{err:#}").contains("no LX printer found"));
+    }
+
+    /// A dropped forwarder (the link went away mid-probe) is a distinct
+    /// failure from silence, and must not hang.
+    #[tokio::test]
+    async fn a_closed_notification_stream_ends_the_probe() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Notification>();
+        drop(tx);
+        let err = await_hello(&mut rx, HELLO_TIMEOUT, "LX-D02", &mut vec![])
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("stream closed"), "{err:#}");
     }
 
     /// A printer running hot cooldowns on every packet; the log must report

@@ -32,6 +32,39 @@ impl fmt::Display for NoPrinterFound {
     }
 }
 
+/// A device with the right name was found, but nothing answered on it.
+///
+/// This is not the same fault as [`NoPrinterFound`], and the difference
+/// matters to whoever is standing next to the printer: the radio found the
+/// device, so it is in range and paired — it just is not listening. On macOS
+/// that is almost always a printer that is switched off, because CoreBluetooth
+/// answers `connect` and service discovery out of its cached GATT database for
+/// any peripheral it has paired with before.
+///
+/// Shares [`NoPrinterFound`]'s exit code (2) and HTTP status (503): from a
+/// caller's point of view there is still no printer to print on.
+#[derive(Debug)]
+pub struct PrinterNotResponding {
+    /// The advertised name of the device that stayed silent.
+    pub name: String,
+}
+
+impl PrinterNotResponding {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+impl fmt::Display for PrinterNotResponding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "found {} but it did not respond — is the printer powered on?",
+            self.name
+        )
+    }
+}
+
 /// The printer reported it is out of paper.
 ///
 /// Kept as a distinct type so `main` can map it to its own exit code.
@@ -133,6 +166,8 @@ pub async fn print_bitmap(
     let mut config = Config::load();
     let mut printer =
         ble::connect_resolved(explicit_device, config.device.as_ref(), SCAN_TIMEOUT).await?;
+    // Earned, not assumed: `connect_resolved` only returns once the printer
+    // has answered a hello frame of its own accord.
     eprintln!("Connected to {}.", printer.name());
     remember_device(&mut config, &printer);
 

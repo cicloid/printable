@@ -4,6 +4,13 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["cjk"]
+# Bundles Noto Sans JP as a per-glyph fallback face so CJK text renders
+# instead of tofu. Costs ~4.5 MB of binary size; turn it off for size-
+# constrained targets (e.g. the WASM bundle).
+cjk = []
+
 [dependencies]
 thiserror = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

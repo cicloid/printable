@@ -10,6 +10,13 @@ const REGULAR_BYTES: &[u8] = include_bytes!("../../assets/JetBrainsMono-Regular.
 const BOLD_BYTES: &[u8] = include_bytes!("../../assets/JetBrainsMono-Bold.ttf");
 const ITALIC_BYTES: &[u8] = include_bytes!("../../assets/JetBrainsMono-Italic.ttf");
 
+/// Fallback face for characters JetBrains Mono has no glyph for — chiefly
+/// CJK. Noto Sans JP ships only as a single weight here: a bold or italic
+/// Latin span falls back to the regular CJK face, since three CJK weights
+/// would cost ~13 MB of binary size for a cosmetic gain.
+#[cfg(feature = "cjk")]
+const CJK_BYTES: &[u8] = include_bytes!("../../assets/NotoSansJP-Regular.otf");
+
 /// Glyph coverage at or above this value (of 255) is printed black.
 const COVERAGE_THRESHOLD: u8 = 128;
 
@@ -90,6 +97,41 @@ fn font_for(style: FontStyle) -> &'static Font {
     })
 }
 
+/// The bundled CJK fallback face, or `None` when built without the `cjk`
+/// feature (characters JetBrains Mono lacks then render as tofu).
+fn cjk_font() -> Option<&'static Font> {
+    #[cfg(feature = "cjk")]
+    {
+        static CJK: OnceLock<Font> = OnceLock::new();
+        Some(CJK.get_or_init(|| {
+            Font::from_bytes(CJK_BYTES, fontdue::FontSettings::default())
+                .expect("embedded CJK font is valid")
+        }))
+    }
+    #[cfg(not(feature = "cjk"))]
+    {
+        None
+    }
+}
+
+/// Pick the face that actually draws `ch`: the style's JetBrains Mono face
+/// when it has the glyph, otherwise the CJK fallback.
+///
+/// Callers must use the returned face for *glyph* metrics too — CJK glyphs
+/// are full-width (1 em) against JetBrains Mono's 0.6 em, so taking the
+/// advance from the wrong face wrecks spacing and wrapping.
+fn face_for(ch: char, style: FontStyle) -> &'static Font {
+    let latin = font_for(style);
+    if latin.lookup_glyph_index(ch) != 0 {
+        return latin;
+    }
+    match cjk_font() {
+        Some(cjk) if cjk.lookup_glyph_index(ch) != 0 => cjk,
+        // Neither face has it: let the Latin face draw its .notdef box.
+        _ => latin,
+    }
+}
+
 /// Normalize text for rendering: `\r\n` and bare `\r` become `\n`, and `\t`
 /// expands to four spaces (predictable with a monospace font).
 pub(crate) fn normalize(text: &str) -> String {
@@ -150,7 +192,7 @@ pub fn render_rich(lines: &[RichLine]) -> Bitmap {
         };
         let max_x = WIDTH as f32 - rich_line.indent as f32;
         let advance = |ch: char, style: Style| {
-            font_for(style.font)
+            face_for(ch, style.font)
                 .metrics(ch, style.size_px)
                 .advance_width
         };
@@ -212,6 +254,11 @@ pub fn render_rich(lines: &[RichLine]) -> Bitmap {
                 });
                 let line = rendered.last_mut().expect("at least one rendered line");
                 line.max_size = line.max_size.max(style.size_px);
+                // Deliberately the Latin face's ascent, even for fallback
+                // glyphs: it keeps mixed-script runs on one baseline and
+                // line heights unchanged. Noto Sans JP declares a taller
+                // ascent than its ink needs (CJK ink tops out near 0.88 em,
+                // inside JetBrains Mono's 1.02 em ascent), so nothing clips.
                 let ascent = font_for(style.font)
                     .horizontal_line_metrics(style.size_px)
                     .map(|m| m.ascent)
@@ -238,7 +285,7 @@ pub fn render_rich(lines: &[RichLine]) -> Bitmap {
     // Raster pass: blit each glyph's coverage onto the bitmap.
     for g in &placed {
         let line = &rendered[g.line];
-        let (metrics, coverage) = font_for(g.style.font).rasterize(g.ch, g.style.size_px);
+        let (metrics, coverage) = face_for(g.ch, g.style.font).rasterize(g.ch, g.style.size_px);
         let baseline = offsets[g.line] + line.ascent;
         let x0 = line.indent as i64 + (g.pen_x + metrics.xmin as f32).round() as i64;
         let y0 = (baseline - metrics.ymin as f32).round() as i64 - metrics.height as i64;
@@ -257,7 +304,7 @@ pub fn render_rich(lines: &[RichLine]) -> Bitmap {
         // Strikethrough: a bar across the glyph's full advance (pen to
         // pen + advance), so consecutive struck glyphs form a continuous line.
         if g.style.strike {
-            let advance = font_for(g.style.font)
+            let advance = face_for(g.ch, g.style.font)
                 .metrics(g.ch, g.style.size_px)
                 .advance_width;
             let y_top = (baseline - STRIKE_FACTOR * g.style.size_px).round() as i64;
@@ -433,6 +480,42 @@ mod tests {
         let font = font_for(FontStyle::Regular);
         assert_eq!(font.lookup_glyph_index('\u{2610}'), 0);
         assert_eq!(font.lookup_glyph_index('\u{2611}'), 0);
+    }
+
+    #[test]
+    #[cfg(feature = "cjk")]
+    fn font_has_cjk_glyphs() {
+        // The reason the fallback exists: JetBrains Mono has no CJK coverage.
+        let latin = font_for(FontStyle::Regular);
+        let cjk = cjk_font().expect("cjk feature is on");
+        for ch in ['和', '柄', 'あ', 'カ', '日', '本'] {
+            assert_eq!(
+                latin.lookup_glyph_index(ch),
+                0,
+                "JetBrains Mono unexpectedly covers {ch}"
+            );
+            assert_ne!(
+                cjk.lookup_glyph_index(ch),
+                0,
+                "bundled CJK face is missing {ch}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "cjk"))]
+    fn cjk_renders_as_tofu_without_the_feature() {
+        // Without `cjk` there is no fallback face, so CJK is indistinguishable
+        // from any other uncovered code point: the Latin .notdef box.
+        assert!(cjk_font().is_none());
+        let kanji = render_rich(&[line(vec![span("和", FontStyle::Regular, 24.0)], 0)]);
+        let unknown = render_rich(&[line(vec![span("\u{ABCDE}", FontStyle::Regular, 24.0)], 0)]);
+        assert!(has_ink(&kanji), "tofu box should still have ink");
+        assert_eq!(
+            rows(&kanji),
+            rows(&unknown),
+            "expected identical tofu boxes"
+        );
     }
 
     #[test]

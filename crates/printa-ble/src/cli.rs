@@ -47,6 +47,33 @@ pub enum Command {
         #[command(flatten)]
         device: DeviceArgs,
     },
+    /// Print an AirPrint job (Apple Raster)
+    ///
+    /// Not meant to be run by hand: this is the program `ippeveprinter -c`
+    /// invokes for each job, which is how the printer appears as an AirPrint
+    /// and CUPS destination. See docs/AIRPRINT.md.
+    #[command(name = "ipp-command")]
+    Ipp(IppCommandArgs),
+}
+
+#[derive(clap::Args)]
+pub struct IppCommandArgs {
+    #[command(flatten)]
+    pub device: DeviceArgs,
+    /// Job file, as ippeveprinter passes it; reads stdin when omitted
+    pub file: Option<std::path::PathBuf>,
+    /// Density 1-7
+    #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u8).range(1..=7))]
+    pub density: u8,
+    /// Blank feed lines after printing, to clear the tear bar
+    #[arg(long, default_value_t = 40)]
+    pub feed: usize,
+    /// Dithering for the rasterised page
+    #[arg(long, value_enum, default_value_t = DitherArg::Floyd)]
+    pub dither: DitherArg,
+    /// Render to PNG instead of printing (use this to test a queue safely)
+    #[arg(long)]
+    pub preview: Option<std::path::PathBuf>,
 }
 
 #[derive(clap::Args)]

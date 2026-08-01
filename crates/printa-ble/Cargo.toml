@@ -24,6 +24,7 @@ clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 btleplug = "0.11"
 futures = "0.3"
+flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

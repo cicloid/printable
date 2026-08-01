@@ -1494,6 +1494,7 @@ dependencies = [
  "chromiumoxide",
  "clap",
  "dirs",
+ "flate2",
  "futures",
  "http-body-util",
  "image",

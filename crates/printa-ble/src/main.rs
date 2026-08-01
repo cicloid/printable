@@ -3,6 +3,7 @@ mod ble;
 mod chrome;
 mod cli;
 mod config;
+mod ipp_command;
 mod md_images;
 mod print_service;
 mod server;
@@ -84,6 +85,7 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
         } => server::serve(&bind, port, device.device, !no_remote_images)
             .await
             .map(|()| 0),
+        Command::Ipp(args) => ipp_command::run(args).await,
     }
 }
 

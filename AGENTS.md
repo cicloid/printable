@@ -3,13 +3,13 @@
 ## Project Structure & Module Organization
 - `crates/printa-ble-core`: sans-IO library — protocol and rendering, no I/O deps.
   - `src/protocol/`: packets, CRC, auth, print-job state machine (`job.rs`, `JobStats`).
-  - `src/raster/`: text, markdown, dither, QR, barcode, wagara, bitmap, PNG preview.
+  - `src/raster/`: text, markdown, dither, QR, barcode, wagara, bitmap, PNG preview, URF (Apple Raster) decoding.
   - `assets/`: embedded font faces and their SIL OFL licences.
 - `crates/printa-ble`: CLI + HTTP server; builds the `printable` binary.
-  - `ble.rs` (btleplug transport), `server.rs` (+ `server/ui.html`), `cli.rs`, `md_images.rs`, `chrome.rs`, `config.rs`, `print_service.rs`.
+  - `ble.rs` (btleplug transport), `server.rs` (+ `server/ui.html`), `cli.rs`, `md_images.rs`, `chrome.rs`, `config.rs`, `print_service.rs`, `ipp_command.rs` (AirPrint job hook).
 - `crates/printa-ble-web`: WASM bindings for the static Web Bluetooth page.
 - `web/`: static page (`index.html`, `app.js`); `web/pkg/` is generated, gitignored.
-- `docs/`: `PROTOCOL.md`, `CLI.md`, `API.md`, `MARKDOWN.md`, `ARCHITECTURE.md`; `docs/plans/` is historical. The `README.md` Documentation section indexes them all.
+- `docs/`: `PROTOCOL.md`, `CLI.md`, `API.md`, `MARKDOWN.md`, `ARCHITECTURE.md`, `AIRPRINT.md`; `docs/plans/` is historical. The `README.md` Documentation section indexes them all.
 
 ## Build, Test, and Development Commands
 - Build: `cargo build`; release: `cargo build --release`.

@@ -94,6 +94,14 @@ CLI, and the five timeouts in `ble.rs`): grep for the constant rather than
 recalling it. Several of these were changed after the README was first written,
 and the CLI and server deliberately differ on some of them.
 
+The URF decoder in `raster/urf.rs` is the same kind of artifact as
+`protocol/`: its header layout and run encoding were derived from a file
+produced by Apple's `rastertourf`, not from a specification, and are pinned by
+a byte-exact round-trip test against that capture. Do not "correct" a field
+offset or a run-length rule from memory of the PWG raster spec — URF differs
+from it. Regenerate a capture (recipe in [docs/AIRPRINT.md](docs/AIRPRINT.md))
+and check against real bytes.
+
 ## The server's `allow_local = false`
 
 The HTTP server resolves markdown images with `allow_local = false`; the CLI

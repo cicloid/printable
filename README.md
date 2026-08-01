@@ -19,6 +19,7 @@ This README is the tour. The reference documents go deeper:
 | [docs/CLI.md](docs/CLI.md) | Every command, flag, exit code, failure message, and a recipe section |
 | [docs/API.md](docs/API.md) | The HTTP server: endpoints, request and response shapes, limits, errors, concurrency |
 | [docs/MARKDOWN.md](docs/MARKDOWN.md) | The markdown dialect — what renders, what doesn't, and the gotchas |
+| [docs/AIRPRINT.md](docs/AIRPRINT.md) | Exposing the printer over AirPrint / IPP Everywhere, and to CUPS |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the three crates fit together, and why the core is sans-IO |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | The reverse-engineered LX-D02 wire protocol, byte by byte |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, the test workflow, and the architectural rules |
@@ -415,6 +416,19 @@ then open http://localhost:8080. Web Bluetooth requires a secure context — `lo
 ### Hosting
 
 The `web/` directory (with `pkg/` built) is fully static — host it anywhere that serves over `https`, such as GitHub Pages.
+
+## AirPrint (and CUPS)
+
+The printer can appear in the macOS print dialog, in `lp`, and on iOS — with no driver, no PPD, and no CUPS backend:
+
+```sh
+PRINTABLE=./target/release/printable scripts/airprint.sh
+lpadmin -p printable -E -v ipp://localhost:8631/ipp/print -m everywhere
+```
+
+This wraps macOS's own `ippeveprinter` to provide the IPP server and the Bonjour advertisement, and hands each job to `printable ipp-command`. Because the printer advertises Apple Raster (`image/urf`) rather than PDF, the *client* rasterises the document — so there is no PDF renderer anywhere in this repository.
+
+Try it with `AIRPRINT_ARGS="--preview /tmp/job.png"` first: every job then renders to a PNG instead of consuming paper. Pages are cropped to their content before scaling, because a whole Letter page reduced onto 48 mm paper is unreadable — [docs/AIRPRINT.md](docs/AIRPRINT.md) explains that trade-off, the status reporting, what is verified and what is not.
 
 ## Configuration
 

@@ -16,6 +16,7 @@ use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use printa_ble_core::model::PrinterModel;
 use printa_ble_core::protocol::job::JobError;
 use printa_ble_core::raster::{
     bitmap_to_png, render_markdown_with, render_qr, render_text, Bitmap, Dither,
@@ -47,6 +48,10 @@ const MAX_TEXT_SIZE: f32 = 128.0;
 pub struct AppState {
     /// `--device` filter given at serve time (overrides the saved device).
     pub device: Option<String>,
+    /// `--model` restriction given at serve time. Like `--device`, this is
+    /// server configuration, not per-request: no HTTP route takes a model.
+    /// `None` means detect from the saved device or the advertised name.
+    pub model: Option<PrinterModel>,
     /// Serializes print jobs: one printer, one job at a time. Held across
     /// the whole connect-print-disconnect flow by the print endpoints, so
     /// concurrent print requests queue (no explicit timeout — the BLE layer
@@ -199,10 +204,12 @@ pub async fn serve(
     bind: &str,
     port: u16,
     device: Option<String>,
+    model: Option<PrinterModel>,
     remote_images: bool,
 ) -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         device,
+        model,
         print_lock: tokio::sync::Mutex::new(()),
         remote_images,
     });
@@ -263,7 +270,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Response, ApiError
     let mut printer = ble::connect_resolved(
         state.device.as_deref(),
         config.device.as_ref(),
-        None,
+        state.model,
         SCAN_TIMEOUT,
     )
     .await
@@ -592,13 +599,14 @@ async fn print_and_respond(
     );
 
     let _guard = acquire_print_lock(state).await;
-    let outcome = print_service::print_bitmap(bitmap, state.device.as_deref(), None, opts.into())
-        .await
-        .map_err(|e| {
-            let api = print_error_to_api(&e);
-            warn!("print job failed ({}): {e:#}", api.status.as_u16());
-            api
-        })?;
+    let outcome =
+        print_service::print_bitmap(bitmap, state.device.as_deref(), state.model, opts.into())
+            .await
+            .map_err(|e| {
+                let api = print_error_to_api(&e);
+                warn!("print job failed ({}): {e:#}", api.status.as_u16());
+                api
+            })?;
 
     let stats = outcome.stats;
     info!(
@@ -746,6 +754,7 @@ mod tests {
     fn app() -> Router {
         router(Arc::new(AppState {
             device: None,
+            model: None,
             print_lock: tokio::sync::Mutex::new(()),
             remote_images: true,
         }))
@@ -1037,6 +1046,7 @@ mod tests {
     async fn status_busy_returns_printing() {
         let state = Arc::new(AppState {
             device: None,
+            model: None,
             print_lock: tokio::sync::Mutex::new(()),
             remote_images: true,
         });
@@ -1055,6 +1065,7 @@ mod tests {
     async fn print_lock_is_taken_immediately_when_free() {
         let state = AppState {
             device: None,
+            model: None,
             print_lock: tokio::sync::Mutex::new(()),
             remote_images: true,
         };
@@ -1071,6 +1082,7 @@ mod tests {
     async fn print_lock_queues_behind_a_running_job() {
         let state = Arc::new(AppState {
             device: None,
+            model: None,
             print_lock: tokio::sync::Mutex::new(()),
             remote_images: true,
         });

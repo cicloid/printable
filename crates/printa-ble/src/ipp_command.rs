@@ -175,6 +175,8 @@ pub async fn run(args: IppCommandArgs) -> anyhow::Result<i32> {
         copies: 1,
     };
 
+    // Model stays `None`: ippeveprinter invokes this bridge, so there is no
+    // user-facing flag surface — the saved device or name detection decides.
     match print_service::print_bitmap(bitmap, args.device.device.as_deref(), None, opts).await {
         Ok(outcome) => {
             // Clear any state this command set on a previous job, so a queue

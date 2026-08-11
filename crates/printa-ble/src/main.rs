@@ -82,7 +82,7 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
             bind,
             no_remote_images,
             device,
-        } => server::serve(&bind, port, device.device, !no_remote_images)
+        } => server::serve(&bind, port, device.device, device.model, !no_remote_images)
             .await
             .map(|()| 0),
         Command::Ipp(args) => ipp_command::run(args).await,
@@ -108,7 +108,7 @@ async fn cmd_status(device: DeviceArgs) -> anyhow::Result<()> {
     let mut printer = ble::connect_resolved(
         device.device.as_deref(),
         config.device.as_ref(),
-        None,
+        device.model,
         SCAN_TIMEOUT,
     )
     .await?;
@@ -193,9 +193,7 @@ async fn dispatch(
     let outcome = print_service::print_bitmap(
         bitmap,
         device.device.as_deref(),
-        // Explicit model requests arrive with the `--model` flag (Task 10);
-        // until then the saved device or name detection decides.
-        None,
+        device.model,
         PrintOptions {
             density,
             feed,

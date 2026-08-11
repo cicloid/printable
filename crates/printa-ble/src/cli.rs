@@ -1,6 +1,7 @@
 //! Command-line interface definitions.
 
 use clap::{Parser, Subcommand};
+use printa_ble_core::model::PrinterModel;
 
 #[derive(Parser)]
 #[command(
@@ -19,7 +20,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// List nearby LX printers
+    /// List nearby supported printers
     Scan {
         /// Seconds to scan
         #[arg(long, default_value_t = 5)]
@@ -174,9 +175,20 @@ fn parse_font_size(s: &str) -> Result<f32, String> {
 
 #[derive(clap::Args)]
 pub struct DeviceArgs {
-    /// Device name or identifier substring (default: first device named LX*)
+    /// Device name or identifier substring (default: first supported printer found)
     #[arg(long)]
     pub device: Option<String>,
+    /// Printer model to target (lx-d02 | x6). Default: detect from the device name.
+    #[arg(long, value_parser = parse_model)]
+    pub model: Option<PrinterModel>,
+}
+
+/// Parse a `--model` value, folding case first: users type `X6` as often as
+/// `x6`, and core's `FromStr` is deliberately exact (it also reads config
+/// values, which are normalized on write). The lowercased input flows into
+/// the error message, so a typo still names the valid choices.
+fn parse_model(s: &str) -> Result<PrinterModel, String> {
+    s.to_lowercase().parse()
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, clap::ValueEnum)]
@@ -362,5 +374,59 @@ mod tests {
         let args = print_args(&["printable", "print", "-m", "--file", "doc.md"]);
         assert!(args.markdown);
         assert_eq!(args.file.as_deref(), Some(std::path::Path::new("doc.md")));
+    }
+
+    #[test]
+    fn model_flag_defaults_to_none() {
+        assert_eq!(print_args(&["printable", "print", "hi"]).device.model, None);
+    }
+
+    #[test]
+    fn model_flag_parses_both_models() {
+        let args = print_args(&["printable", "print", "hi", "--model", "x6"]);
+        assert_eq!(args.device.model, Some(PrinterModel::X6));
+        let args = print_args(&["printable", "print", "hi", "--model", "lx-d02"]);
+        assert_eq!(args.device.model, Some(PrinterModel::LxD02));
+    }
+
+    /// Users type `--model X6` as often as `--model x6`; the CLI folds case
+    /// before core's deliberately-exact `FromStr` sees the value.
+    #[test]
+    fn model_flag_is_case_insensitive() {
+        let args = print_args(&["printable", "print", "hi", "--model", "X6"]);
+        assert_eq!(args.device.model, Some(PrinterModel::X6));
+        let args = print_args(&["printable", "print", "hi", "--model", "LX-D02"]);
+        assert_eq!(args.device.model, Some(PrinterModel::LxD02));
+    }
+
+    /// A typo must name the valid choices, not just reject the input.
+    #[test]
+    fn invalid_model_errors_listing_the_choices() {
+        let Err(err) = Cli::try_parse_from(["printable", "print", "hi", "--model", "gb01"]) else {
+            panic!("`--model gb01` must not parse");
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("lx-d02"), "{msg}");
+        assert!(msg.contains("x6"), "{msg}");
+    }
+
+    /// The flag rides on `DeviceArgs`, so every command that picks a printer
+    /// accepts it — `status` and `serve` pinned here as representatives.
+    #[test]
+    fn model_flag_parses_on_status_and_serve() {
+        match Cli::try_parse_from(["printable", "status", "--model", "x6"])
+            .unwrap()
+            .command
+        {
+            Command::Status(args) => assert_eq!(args.model, Some(PrinterModel::X6)),
+            _ => panic!("expected a status command"),
+        }
+        match Cli::try_parse_from(["printable", "serve", "--model", "x6"])
+            .unwrap()
+            .command
+        {
+            Command::Serve { device, .. } => assert_eq!(device.model, Some(PrinterModel::X6)),
+            _ => panic!("expected a serve command"),
+        }
     }
 }

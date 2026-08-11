@@ -1,8 +1,10 @@
-//! BLE transport for LX-D02 printers, built on btleplug.
+//! BLE transport for the supported printers, built on btleplug.
 //!
-//! The printer exposes service 0xFFE6 with a write-without-response
-//! characteristic 0xFFE1 and a notify characteristic 0xFFE2. Status frames
-//! (5A 02) arrive unsolicited once subscribed.
+//! Every supported model exposes one service with a write-without-response
+//! characteristic and a notify characteristic; the UUIDs come from
+//! [`PrinterModel`]. The LX-D02 (0xFFE6/0xFFE1/0xFFE2) sends unsolicited
+//! `5A 02` status frames once subscribed; the X6 (0xAE30/0xAE01/0xAE02)
+//! sends only flow-control frames.
 //!
 //! macOS note: the first BLE access triggers the TCC permission prompt for
 //! the terminal app. If permission is denied, btleplug errors out — the
@@ -26,6 +28,8 @@ use printa_ble_core::model::PrinterModel;
 use printa_ble_core::protocol::job::{Action, JobStats, PrintJob};
 use printa_ble_core::protocol::notifications::{self, Notification, Status};
 use printa_ble_core::protocol::packets;
+use printa_ble_core::protocol_x6::job::X6PrintJob;
+use printa_ble_core::protocol_x6::notifications::{self as x6_notifications, X6Notification};
 use tokio::sync::mpsc;
 
 /// How long `run_job` waits for an expected notification before giving up.
@@ -133,6 +137,70 @@ fn observe(n: &Notification, log: &mut JobLog) -> Result<()> {
     check_paper(n)
 }
 
+/// A parsed notification from whichever printer model is connected.
+///
+/// The forwarder parses with the connected model's dialect, so each pump
+/// only ever sees its own variant; the other arm is unreachable by
+/// construction and is debug-logged and dropped if it somehow appears.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrinterEvent {
+    Lx(Notification),
+    X6(X6Notification),
+}
+
+/// Parse a raw notify-characteristic frame with the given model's dialect.
+///
+/// Pure, so the dispatch is testable against captured frames without a
+/// radio. Frames neither parser understands return `None` and are left to
+/// the caller to debug-log.
+fn parse_event(model: PrinterModel, data: &[u8]) -> Option<PrinterEvent> {
+    match model {
+        PrinterModel::LxD02 => notifications::parse(data).map(PrinterEvent::Lx),
+        PrinterModel::X6 => x6_notifications::parse(data).map(PrinterEvent::X6),
+    }
+}
+
+/// Unwrap an event for the LX pump; an X6 event here is impossible by
+/// construction (the forwarder parses with the LX dialect), so it is
+/// dropped with a debug line rather than crashing a print.
+fn lx_event(ev: PrinterEvent) -> Option<Notification> {
+    match ev {
+        PrinterEvent::Lx(n) => Some(n),
+        PrinterEvent::X6(n) => {
+            debug!("dropping X6 event {n:?} on an LX printer");
+            None
+        }
+    }
+}
+
+/// Unwrap an event for the X6 pump; the mirror of [`lx_event`].
+fn x6_event(ev: PrinterEvent) -> Option<X6Notification> {
+    match ev {
+        PrinterEvent::X6(n) => Some(n),
+        PrinterEvent::Lx(n) => {
+            debug!("dropping LX event {n:?} on an X6 printer");
+            None
+        }
+    }
+}
+
+/// Log what an incoming X6 notification means for the job.
+///
+/// `BufferFull` opens the pause window exactly as an LX `Hold` does.
+/// `Ready` does not close it — the next scanline write does, the same way a
+/// resumed raster send closes an LX pause — so a printer that says Ready
+/// but stays slow keeps being counted as paused. Nothing here can abort
+/// the job: the X6 has no known paper or error signal.
+fn observe_x6(n: &X6Notification, log: &mut JobLog) {
+    match n {
+        X6Notification::BufferFull => {
+            log.pause(Instant::now());
+            info!("printer paused the stream (receive buffer full); waiting to resume…");
+        }
+        X6Notification::Ready => debug!("printer reports its buffer has drained"),
+    }
+}
+
 /// Lowercase hex, for trace-logging raw frames. Notification frames are at
 /// most a dozen bytes, so they are dumped whole.
 fn hex(bytes: &[u8]) -> String {
@@ -145,10 +213,16 @@ fn hex(bytes: &[u8]) -> String {
 /// A short label for an outgoing frame.
 ///
 /// Raster packets are named by index, never dumped: the payload is 96 bytes
-/// of pixels per packet and a page is thousands of them.
+/// of pixels per packet and a page is thousands of them. The X6 scanline
+/// (`51 78 A2`, 48 bytes of pixels per row) follows the same rule, minus
+/// the index — its frames carry none.
 fn describe_write(bytes: &[u8]) -> String {
     match bytes {
         [0x55, hi, lo, ..] => format!("raster idx={}", u16::from_be_bytes([*hi, *lo])),
+        [0x51, 0x78, 0xA2, ..] => "x6 scanline".to_string(),
+        [0x51, 0x78, 0xA1, _, _, _, lo, hi, ..] => {
+            format!("x6 feed ({} px)", u16::from_le_bytes([*lo, *hi]))
+        }
         [0x5A, 0x01, ..] => "hello".to_string(),
         [0x5A, 0x0A, ..] => "auth challenge".to_string(),
         [0x5A, 0x0B, ..] => "auth response".to_string(),
@@ -166,6 +240,13 @@ fn describe_write(bytes: &[u8]) -> String {
 /// Is this an outgoing raster packet (as opposed to a control frame)?
 fn is_raster(bytes: &[u8]) -> bool {
     bytes.first() == Some(&0x55)
+}
+
+/// Is this an outgoing X6 scanline frame? The X6 pump's equivalent of
+/// [`is_raster`]: a scanline going out is the printer letting us move
+/// again, which is what closes an open pause window.
+fn is_x6_scanline(bytes: &[u8]) -> bool {
+    matches!(bytes, [0x51, 0x78, 0xA2, ..])
 }
 
 /// Render a duration the way a person reads it off a stopwatch.
@@ -269,8 +350,9 @@ struct Progress {
 }
 
 impl Progress {
-    fn of(job: &PrintJob) -> Self {
-        let stats = job.stats();
+    /// Both job types report the same [`JobStats`], so one fingerprint
+    /// serves both pumps.
+    fn of(stats: JobStats) -> Self {
         Self {
             packets_sent: stats.packets_sent,
             retransmits: stats.retransmits,
@@ -482,27 +564,38 @@ pub async fn scan(timeout: Duration) -> Result<Vec<(String, String, PrinterModel
     Ok(found)
 }
 
+/// A discovered peripheral that satisfied the target, carrying the model
+/// its advertised name identifies (`None`: an explicit `--device` filter
+/// hit a name no model claims).
+struct Candidate {
+    peripheral: Peripheral,
+    name: String,
+    model: Option<PrinterModel>,
+}
+
 /// One pass over the currently discovered peripherals: the first exact match
 /// for `target`, plus the best-ranked fallback candidate (see [`MatchKind`]).
-#[allow(clippy::type_complexity)]
 async fn find_match(
     adapter: &Adapter,
     target: &Target<'_>,
     restrict: Option<PrinterModel>,
-) -> Result<(
-    Option<(Peripheral, String)>,
-    Option<(Peripheral, String, FallbackRank)>,
-)> {
-    let mut fallback: Option<(Peripheral, String, FallbackRank)> = None;
+) -> Result<(Option<Candidate>, Option<(Candidate, FallbackRank)>)> {
+    let mut fallback: Option<(Candidate, FallbackRank)> = None;
     for p in adapter.peripherals().await? {
-        match match_target(&p, target, restrict).await {
-            Some((MatchKind::Exact, name, _)) => return Ok((Some((p, name)), fallback)),
-            Some((MatchKind::Fallback(rank), name, _))
-                if fallback.as_ref().is_none_or(|(_, _, held)| rank > *held) =>
-            {
-                fallback = Some((p, name, rank));
+        let Some((kind, name, model)) = match_target(&p, target, restrict).await else {
+            continue;
+        };
+        let candidate = Candidate {
+            peripheral: p,
+            name,
+            model,
+        };
+        match kind {
+            MatchKind::Exact => return Ok((Some(candidate), fallback)),
+            MatchKind::Fallback(rank) if fallback.as_ref().is_none_or(|(_, held)| rank > *held) => {
+                fallback = Some((candidate, rank));
             }
-            _ => {}
+            MatchKind::Fallback(_) => {}
         }
     }
     Ok((None, fallback))
@@ -513,11 +606,14 @@ pub struct Printer {
     peripheral: Peripheral,
     write_char: Characteristic,
     notify_char: Characteristic,
-    notify_rx: mpsc::UnboundedReceiver<Notification>,
+    notify_rx: mpsc::UnboundedReceiver<PrinterEvent>,
     /// The task forwarding raw notifications into `notify_rx`; aborted on
     /// disconnect so it does not park on the stream forever.
     forwarder: tokio::task::JoinHandle<()>,
     name: String,
+    /// The model the matched advertised name identified (LX-D02 when the
+    /// name identified none — see `connect_resolved`).
+    model: PrinterModel,
 }
 
 /// Scan until a matching device appears (up to `scan_timeout`), then connect,
@@ -559,21 +655,21 @@ pub async fn connect_resolved(
     );
 
     let deadline = tokio::time::Instant::now() + scan_timeout;
-    let mut fallback: Option<(Peripheral, String, FallbackRank)> = None;
-    let (peripheral, name) = loop {
+    let mut fallback: Option<(Candidate, FallbackRank)> = None;
+    let found = loop {
         let (exact, fb) = find_match(&adapter, &target, restrict).await?;
         if let Some(found) = exact {
             break found;
         }
         // Upgrade the held fallback when a better-ranked candidate appears.
         if let Some(fb) = fb {
-            if fallback.as_ref().is_none_or(|(_, _, held)| fb.2 > *held) {
+            if fallback.as_ref().is_none_or(|(_, held)| fb.1 > *held) {
                 fallback = Some(fb);
             }
         }
         if tokio::time::Instant::now() >= deadline {
             match fallback.take() {
-                Some((p, n, _)) => break (p, n),
+                Some((candidate, _)) => break candidate,
                 None => {
                     let _ = adapter.stop_scan().await;
                     return Err(anyhow::Error::msg(NoPrinterFound));
@@ -583,7 +679,22 @@ pub async fn connect_resolved(
         tokio::time::sleep(DISCOVERY_POLL).await;
     };
     let _ = adapter.stop_scan().await;
-    debug!("connecting to {name} ({})", peripheral.id());
+    let Candidate {
+        peripheral,
+        name,
+        model,
+    } = found;
+    // A device only an explicit `--device` filter could have matched, under
+    // a name no model claims: drive it as an LX-D02, which is what this
+    // code did unconditionally before models existed.
+    let model = model.unwrap_or_else(|| {
+        debug!(
+            "{name} matches no known model; assuming {}",
+            PrinterModel::LxD02
+        );
+        PrinterModel::LxD02
+    });
+    debug!("connecting to {name} ({}) [{model}]", peripheral.id());
 
     // CoreBluetooth will wait for an absent peripheral indefinitely, so the
     // connect gets a deadline of its own.
@@ -602,7 +713,7 @@ pub async fn connect_resolved(
     }
 
     // From here on the link is up: drop it again if setup fails.
-    match initialize(peripheral.clone(), name).await {
+    match initialize(peripheral.clone(), name, model).await {
         Ok(printer) => Ok(printer),
         Err(e) => {
             release(&peripheral).await;
@@ -612,12 +723,20 @@ pub async fn connect_resolved(
 }
 
 /// Post-connect setup: discover characteristics, subscribe, spawn the
-/// notification forwarder, and make the printer prove it is there. The caller
-/// disconnects on error.
+/// notification forwarder, and — on the LX-D02 — make the printer prove it
+/// is there. The caller disconnects on error.
 ///
-/// Returning `Ok` from here is what lets a caller say "Connected to LX-D02",
-/// so it has to mean the printer answered — see [`handshake`].
-async fn initialize(peripheral: Peripheral, name: String) -> Result<Printer> {
+/// For the LX-D02, returning `Ok` is what lets a caller say "Connected to
+/// LX-D02", so it has to mean the printer answered — see [`handshake`].
+///
+/// For the X6 the guarantee is weaker: the protocol has no documented
+/// liveness probe, so `Ok` means only "subscribed". On macOS, CoreBluetooth
+/// answers connects and service discovery for a previously-seen peripheral
+/// from its cached GATT database, so an X6 that is switched off can still
+/// reach this point — the failure then shows up as a silent print job, not
+/// as a connect error. Do not invent a probe from the undocumented X6
+/// commands; this is a known, accepted gap.
+async fn initialize(peripheral: Peripheral, name: String, model: PrinterModel) -> Result<Printer> {
     // `connect` returning Ok is not the same as a live link. Asking outright
     // turns a dead connection into one legible error instead of a puzzling
     // failure three steps further down.
@@ -637,20 +756,28 @@ async fn initialize(peripheral: Peripheral, name: String) -> Result<Printer> {
         .await
         .context("service discovery failed")?;
 
-    let write_uuid = uuid_from_u16(0xFFE1);
-    let notify_uuid = uuid_from_u16(0xFFE2);
+    let write_uuid = uuid_from_u16(model.write_char_uuid16());
+    let notify_uuid = uuid_from_u16(model.notify_char_uuid16());
     let chars = peripheral.characteristics();
     let write_char = chars
         .iter()
         .find(|c| c.uuid == write_uuid)
         .cloned()
-        .ok_or_else(|| anyhow!("{name} has no 0xFFE1 write characteristic — not an LX printer?"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "{name} has no {:#06X} write characteristic — not a {model} printer?",
+                model.write_char_uuid16()
+            )
+        })?;
     let notify_char = chars
         .iter()
         .find(|c| c.uuid == notify_uuid)
         .cloned()
         .ok_or_else(|| {
-            anyhow!("{name} has no 0xFFE2 notify characteristic — not an LX printer?")
+            anyhow!(
+                "{name} has no {:#06X} notify characteristic — not a {model} printer?",
+                model.notify_char_uuid16()
+            )
         })?;
 
     peripheral
@@ -676,10 +803,10 @@ async fn initialize(peripheral: Peripheral, name: String) -> Result<Printer> {
                     continue;
                 }
                 trace!("notification frame {}", hex(&data.value));
-                match notifications::parse(&data.value) {
-                    Some(n) => {
-                        debug!("notification: {n:?}");
-                        if tx.send(n).is_err() {
+                match parse_event(model, &data.value) {
+                    Some(ev) => {
+                        debug!("notification: {ev:?}");
+                        if tx.send(ev).is_err() {
                             break; // Printer was dropped.
                         }
                     }
@@ -690,35 +817,39 @@ async fn initialize(peripheral: Peripheral, name: String) -> Result<Printer> {
         }
     });
 
-    // Proof of life, and the point of this function. Everything above can
-    // succeed against a printer that is switched off: macOS keeps the GATT
-    // database of a peripheral it has paired with before, so the connect and
-    // the service discovery are answered from that cache. The `5A 01` reply
-    // is the first thing in the flow that only the hardware itself can
-    // produce, so nothing may claim a connection until it arrives.
-    let mut skipped = Vec::new();
-    match handshake(
-        &peripheral,
-        &write_char,
-        &mut notify_rx,
-        &name,
-        &mut skipped,
-    )
-    .await
-    {
-        Ok(mac) => debug!("{name} answered hello, MAC {}", hex(&mac)),
-        Err(e) => {
-            // The forwarder is parked on a stream nobody will read again.
-            forwarder.abort();
-            return Err(e);
+    if model == PrinterModel::LxD02 {
+        // Proof of life, and the point of this function for the LX-D02.
+        // Everything above can succeed against a printer that is switched
+        // off: macOS keeps the GATT database of a peripheral it has paired
+        // with before, so the connect and the service discovery are answered
+        // from that cache. The `5A 01` reply is the first thing in the flow
+        // that only the hardware itself can produce, so nothing may claim a
+        // connection until it arrives. The X6 protocol has no equivalent —
+        // see the function doc comment for what that costs.
+        let mut skipped = Vec::new();
+        match handshake(
+            &peripheral,
+            &write_char,
+            &mut notify_rx,
+            &name,
+            &mut skipped,
+        )
+        .await
+        {
+            Ok(mac) => debug!("{name} answered hello, MAC {}", hex(&mac)),
+            Err(e) => {
+                // The forwarder is parked on a stream nobody will read again.
+                forwarder.abort();
+                return Err(e);
+            }
         }
-    }
-    // Hand back whatever the probe had to read past. The printer starts
-    // emitting status frames the moment we subscribe, so one of them is
-    // usually already in the queue — and it is the frame the pre-print paper
-    // check is waiting for.
-    for n in skipped {
-        let _ = tx.send(n);
+        // Hand back whatever the probe had to read past. The printer starts
+        // emitting status frames the moment we subscribe, so one of them is
+        // usually already in the queue — and it is the frame the pre-print
+        // paper check is waiting for.
+        for ev in skipped {
+            let _ = tx.send(ev);
+        }
     }
 
     info!("connected to {name}, subscribed to notifications");
@@ -729,10 +860,13 @@ async fn initialize(peripheral: Peripheral, name: String) -> Result<Printer> {
         notify_rx,
         forwarder,
         name,
+        model,
     })
 }
 
 /// Greet the printer and wait for it to greet us back, returning its MAC.
+/// LX-D02 only: the X6 protocol has no hello, so [`initialize`] never calls
+/// this for one.
 ///
 /// The hello exchange is idempotent: every print job opens with its own hello
 /// (each copy in a multi-copy run does so over the same connection), and the
@@ -741,9 +875,9 @@ async fn initialize(peripheral: Peripheral, name: String) -> Result<Printer> {
 async fn handshake(
     peripheral: &Peripheral,
     write_char: &Characteristic,
-    rx: &mut mpsc::UnboundedReceiver<Notification>,
+    rx: &mut mpsc::UnboundedReceiver<PrinterEvent>,
     name: &str,
-    skipped: &mut Vec<Notification>,
+    skipped: &mut Vec<PrinterEvent>,
 ) -> Result<[u8; 6]> {
     trace!("write hello (liveness probe)");
     peripheral
@@ -762,22 +896,22 @@ async fn handshake(
 /// Silence is [`PrinterNotResponding`], which reads differently from
 /// [`NoPrinterFound`] on purpose: the device is right there.
 async fn await_hello(
-    rx: &mut mpsc::UnboundedReceiver<Notification>,
+    rx: &mut mpsc::UnboundedReceiver<PrinterEvent>,
     timeout: Duration,
     name: &str,
-    skipped: &mut Vec<Notification>,
+    skipped: &mut Vec<PrinterEvent>,
 ) -> Result<[u8; 6]> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        let n = tokio::time::timeout_at(deadline, rx.recv())
+        let ev = tokio::time::timeout_at(deadline, rx.recv())
             .await
             .map_err(|_| {
                 debug!("{name} did not answer hello within {}", secs(timeout));
                 anyhow::Error::msg(PrinterNotResponding::new(name))
             })?
             .ok_or_else(|| anyhow!("notification stream closed while greeting {name}"))?;
-        match n {
-            Notification::Hello { mac } => return Ok(mac),
+        match ev {
+            PrinterEvent::Lx(Notification::Hello { mac }) => return Ok(mac),
             other => {
                 trace!("holding {other:?} until the hello reply arrives");
                 skipped.push(other);
@@ -798,17 +932,34 @@ impl Printer {
         self.peripheral.id().to_string()
     }
 
+    /// The model this connection is being driven as.
+    // Dead-code allowance until the model dispatch in print_service starts
+    // calling this; remove it then.
+    #[allow(dead_code)]
+    pub fn model(&self) -> PrinterModel {
+        self.model
+    }
+
     /// Wait for the first Status notification. Status frames arrive
     /// spontaneously after subscribing; if none shows up within `timeout`,
     /// this errors.
+    ///
+    /// LX-D02 only: the X6 sends nothing comparable, so an X6 connection
+    /// errors immediately rather than sitting out the whole timeout.
+    /// Callers already treat a status failure as non-fatal.
     pub async fn wait_status(&mut self, timeout: Duration) -> Result<Status> {
+        if self.model != PrinterModel::LxD02 {
+            return Err(anyhow!(
+                "status notifications are not supported on this printer model"
+            ));
+        }
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            let n = tokio::time::timeout_at(deadline, self.notify_rx.recv())
+            let ev = tokio::time::timeout_at(deadline, self.notify_rx.recv())
                 .await
                 .map_err(|_| anyhow!("no status received"))?
                 .ok_or_else(|| anyhow!("notification stream closed"))?;
-            if let Notification::Status(s) = n {
+            if let PrinterEvent::Lx(Notification::Status(s)) = ev {
                 return Ok(s);
             }
         }
@@ -845,21 +996,23 @@ impl Printer {
     /// The action pump itself. Split out of [`Printer::run_job`] so the job
     /// summary is logged on the failure paths too.
     async fn pump(&mut self, job: &mut PrintJob, log: &mut JobLog) -> Result<()> {
-        let mut stall = StallGuard::new(Instant::now(), Progress::of(job));
+        let mut stall = StallGuard::new(Instant::now(), Progress::of(job.stats()));
         loop {
             // Drain pending notifications first so mid-stream flow control
             // (Hold / LostPacket / Cooldown) reaches the FSM even while we
             // are on the Send/WaitMs fast path. A no-paper Status aborts the
             // job here rather than dying later on a misleading timeout.
-            while let Ok(n) = self.notify_rx.try_recv() {
-                observe(&n, log)?;
-                job.on_notification(n);
+            while let Ok(ev) = self.notify_rx.try_recv() {
+                if let Some(n) = lx_event(ev) {
+                    observe(&n, log)?;
+                    job.on_notification(n);
+                }
             }
 
             // Every path below is bounded, so this runs at least once per
             // NOTIFICATION_TIMEOUT even when the printer says nothing at all.
             let now = Instant::now();
-            let idle = stall.observe(now, Progress::of(job));
+            let idle = stall.observe(now, Progress::of(job.stats()));
             if idle >= STALL_TIMEOUT {
                 warn!("printer stalled for {}; abandoning the job", secs(idle));
                 return Err(anyhow!(stall_message(idle, log.paused_total(now))));
@@ -885,7 +1038,7 @@ impl Printer {
                 }
                 Action::WaitMs(ms) => tokio::time::sleep(Duration::from_millis(ms)).await,
                 Action::WaitNotification => {
-                    let n = tokio::time::timeout(NOTIFICATION_TIMEOUT, self.notify_rx.recv())
+                    let ev = tokio::time::timeout(NOTIFICATION_TIMEOUT, self.notify_rx.recv())
                         .await
                         .map_err(|_| {
                             anyhow!(
@@ -894,8 +1047,101 @@ impl Printer {
                             )
                         })?
                         .ok_or_else(|| anyhow!("notification stream closed"))?;
-                    observe(&n, log)?;
+                    if let Some(n) = lx_event(ev) {
+                        observe(&n, log)?;
+                        job.on_notification(n);
+                    }
+                }
+                Action::Done => return Ok(()),
+            }
+        }
+    }
+
+    /// Drive an X6 print job to completion, pumping its sans-IO state
+    /// machine. The X6 counterpart of [`Printer::run_job`].
+    ///
+    /// Two deliberate differences from the LX path: there is no paper-status
+    /// abort (the X6 has no known paper signal), and no fatal-error check
+    /// after the pump (the X6 job cannot fail — no auth to be rejected).
+    // Dead-code allowance until the model dispatch in print_service starts
+    // calling this; remove it then.
+    #[allow(dead_code)]
+    pub async fn run_x6_job(&mut self, job: &mut X6PrintJob) -> Result<JobStats> {
+        let started = Instant::now();
+        let mut log = JobLog::default();
+
+        let result = self.pump_x6(job, &mut log).await;
+
+        let stats = job.stats();
+        let summary = job_summary(started.elapsed(), log.paused_total(Instant::now()), stats);
+        match &result {
+            Ok(()) => info!("print job finished: {summary}"),
+            // Info, not warn: the caller reports the failure itself, and the
+            // CLI must stay silent at the default log level.
+            Err(e) => info!("print job aborted after {summary}: {e:#}"),
+        }
+        result.map(|()| stats)
+    }
+
+    /// The X6 action pump, mirroring [`Printer::pump`]: same stall guard,
+    /// same timeouts, same pause accounting — `BufferFull` opens the pause
+    /// window like `Hold`, and the next scanline write closes it like a
+    /// resumed raster send.
+    async fn pump_x6(&mut self, job: &mut X6PrintJob, log: &mut JobLog) -> Result<()> {
+        let mut stall = StallGuard::new(Instant::now(), Progress::of(job.stats()));
+        loop {
+            // Drain pending notifications first so a BufferFull reaches the
+            // FSM even while we are on the Send/WaitMs fast path.
+            while let Ok(ev) = self.notify_rx.try_recv() {
+                if let Some(n) = x6_event(ev) {
+                    observe_x6(&n, log);
                     job.on_notification(n);
+                }
+            }
+
+            // Every path below is bounded, so this runs at least once per
+            // NOTIFICATION_TIMEOUT even when the printer says nothing at all.
+            let now = Instant::now();
+            let idle = stall.observe(now, Progress::of(job.stats()));
+            if idle >= STALL_TIMEOUT {
+                warn!("printer stalled for {}; abandoning the job", secs(idle));
+                return Err(anyhow!(stall_message(idle, log.paused_total(now))));
+            }
+
+            match job.next_action() {
+                Action::Send(bytes) => {
+                    // A scanline going out is the printer letting us move
+                    // again.
+                    if is_x6_scanline(&bytes) {
+                        if let Some(held) = log.resume(Instant::now()) {
+                            if held >= NOTEWORTHY_PAUSE {
+                                info!("printing resumed after {}", secs(held));
+                            } else {
+                                debug!("printing resumed after {}", secs(held));
+                            }
+                        }
+                    }
+                    trace!(len = bytes.len(), "write {}", describe_write(&bytes));
+                    self.peripheral
+                        .write(&self.write_char, &bytes, WriteType::WithoutResponse)
+                        .await
+                        .context("BLE write failed")?;
+                }
+                Action::WaitMs(ms) => tokio::time::sleep(Duration::from_millis(ms)).await,
+                Action::WaitNotification => {
+                    let ev = tokio::time::timeout(NOTIFICATION_TIMEOUT, self.notify_rx.recv())
+                        .await
+                        .map_err(|_| {
+                            anyhow!(
+                                "printer went silent (no BLE notification at all for {}s)",
+                                NOTIFICATION_TIMEOUT.as_secs()
+                            )
+                        })?
+                        .ok_or_else(|| anyhow!("notification stream closed"))?;
+                    if let Some(n) = x6_event(ev) {
+                        observe_x6(&n, log);
+                        job.on_notification(n);
+                    }
                 }
                 Action::Done => return Ok(()),
             }
@@ -928,6 +1174,8 @@ impl Printer {
 mod tests {
     use super::*;
     use printa_ble_core::protocol::packets;
+    use printa_ble_core::protocol_x6::packets as x6_packets;
+    use printa_ble_core::raster::bitmap::BYTES_PER_ROW;
 
     #[test]
     fn hex_is_lowercase_and_unpadded() {
@@ -979,6 +1227,103 @@ mod tests {
     fn unknown_writes_fall_back_to_hex() {
         assert_eq!(describe_write(&[0x99, 0x01]), "unknown frame 9901");
         assert_eq!(describe_write(&[]), "unknown frame ");
+    }
+
+    // -----------------------------------------------------------------
+    // X6 frames: labelling and event parsing.
+    // -----------------------------------------------------------------
+
+    /// The captured X6 flow-control frames (parzivail, verbatim hex).
+    const X6_BUFFER_FULL: [u8; 9] = [0x51, 0x78, 0xAE, 0x01, 0x01, 0x00, 0x10, 0x70, 0xFF];
+    const X6_READY: [u8; 9] = [0x51, 0x78, 0xAE, 0x01, 0x01, 0x00, 0x00, 0x00, 0xFF];
+
+    /// The forwarder parses with the matched model's dialect: the captured
+    /// X6 frames parse only as X6 events, the LX heartbeat only as an LX one.
+    #[test]
+    fn parse_event_dispatches_by_model() {
+        assert_eq!(
+            parse_event(PrinterModel::X6, &X6_BUFFER_FULL),
+            Some(PrinterEvent::X6(X6Notification::BufferFull))
+        );
+        assert_eq!(
+            parse_event(PrinterModel::X6, &X6_READY),
+            Some(PrinterEvent::X6(X6Notification::Ready))
+        );
+        assert_eq!(
+            parse_event(PrinterModel::LxD02, &[0x5A, 0x02, 80, 0, 0]),
+            Some(PrinterEvent::Lx(heartbeat()))
+        );
+    }
+
+    /// A frame from the other model's dialect is unparseable, not misread.
+    #[test]
+    fn parse_event_rejects_the_other_models_frames() {
+        assert_eq!(parse_event(PrinterModel::LxD02, &X6_BUFFER_FULL), None);
+        assert_eq!(parse_event(PrinterModel::X6, &[0x5A, 0x02, 80, 0, 0]), None);
+    }
+
+    #[test]
+    fn parse_event_rejects_garbage_for_both_models() {
+        for model in [PrinterModel::LxD02, PrinterModel::X6] {
+            assert_eq!(parse_event(model, &[]), None);
+            assert_eq!(parse_event(model, &[0x99, 0x01]), None);
+        }
+    }
+
+    /// Same rule as the LX raster packets: a scanline is named, never
+    /// hex-dumped — the payload is 48 bytes of pixels per row.
+    #[test]
+    fn x6_scanline_writes_are_labelled_not_dumped() {
+        let frame = x6_packets::raw_scanline(&[0xFF; BYTES_PER_ROW]);
+        assert_eq!(frame.len(), 56);
+        let label = describe_write(&frame);
+        assert_eq!(label, "x6 scanline");
+        assert!(!label.contains("ff"), "payload leaked into the label");
+        assert!(is_x6_scanline(&frame));
+    }
+
+    #[test]
+    fn x6_feed_writes_are_named() {
+        let frame = x6_packets::feed_paper(320);
+        assert_eq!(describe_write(&frame), "x6 feed (320 px)");
+        assert!(!is_x6_scanline(&frame));
+    }
+
+    /// The two raster predicates must not claim each other's frames.
+    #[test]
+    fn raster_predicates_are_model_specific() {
+        let lx = packets::raster(0, &[0; packets::RASTER_DATA_LEN]);
+        let x6 = x6_packets::raw_scanline(&[0; BYTES_PER_ROW]);
+        assert!(!is_x6_scanline(&lx));
+        assert!(!is_raster(&x6));
+    }
+
+    /// BufferFull opens the pause window like Hold does; Ready alone does
+    /// not close it — the next scanline write does, mirroring how an LX
+    /// raster send closes a Hold. Without that, a printer that says Ready
+    /// but takes seconds to accept the next scanline would under-report.
+    #[test]
+    fn buffer_full_pauses_the_log_until_the_next_scanline() {
+        let mut log = JobLog::default();
+        observe_x6(&X6Notification::BufferFull, &mut log);
+        assert!(log.paused_since.is_some(), "BufferFull must open a pause");
+        observe_x6(&X6Notification::Ready, &mut log);
+        assert!(
+            log.paused_since.is_some(),
+            "Ready alone must not close the pause; the next scanline send does"
+        );
+        assert!(log.resume(Instant::now()).is_some());
+    }
+
+    /// A repeated BufferFull while already paused must not restart the clock
+    /// (same rule as overlapping Hold/Cooldown on the LX).
+    #[test]
+    fn repeated_buffer_full_does_not_restart_the_pause_clock() {
+        let mut log = JobLog::default();
+        observe_x6(&X6Notification::BufferFull, &mut log);
+        let since = log.paused_since;
+        observe_x6(&X6Notification::BufferFull, &mut log);
+        assert_eq!(log.paused_since, since);
     }
 
     /// A clean job says only what happened; no flow-control noise.
@@ -1119,8 +1464,8 @@ mod tests {
     fn a_job_that_just_started_is_not_stalled() {
         let job = streaming_job();
         let t0 = Instant::now();
-        let mut stall = StallGuard::new(t0, Progress::of(&job));
-        assert_eq!(stall.observe(t0, Progress::of(&job)), Duration::ZERO);
+        let mut stall = StallGuard::new(t0, Progress::of(job.stats()));
+        assert_eq!(stall.observe(t0, Progress::of(job.stats())), Duration::ZERO);
     }
 
     /// Every raster packet written restarts the clock, so a slow but moving
@@ -1129,14 +1474,14 @@ mod tests {
     fn a_printer_taking_packets_never_stalls() {
         let mut job = streaming_job();
         let t0 = Instant::now();
-        let mut stall = StallGuard::new(t0, Progress::of(&job));
+        let mut stall = StallGuard::new(t0, Progress::of(job.stats()));
 
         // One packet every 59s — glacial, but never a stall.
         for i in 1..=3 {
             let _ = job.next_action(); // raster i
             let idle = stall.observe(
                 t0 + Duration::from_secs(i * (STALL_TIMEOUT.as_secs() - 1)),
-                Progress::of(&job),
+                Progress::of(job.stats()),
             );
             assert!(idle < STALL_TIMEOUT, "iteration {i} idle for {idle:?}");
         }
@@ -1153,13 +1498,13 @@ mod tests {
         assert!(matches!(job.next_action(), Action::WaitNotification));
 
         let t0 = Instant::now();
-        let mut stall = StallGuard::new(t0, Progress::of(&job));
+        let mut stall = StallGuard::new(t0, Progress::of(job.stats()));
         let mut idle = Duration::ZERO;
         for i in 1..=STALL_TIMEOUT.as_secs() {
             job.on_notification(heartbeat());
             job.on_notification(Notification::Cooldown);
             let _ = job.next_action();
-            idle = stall.observe(t0 + Duration::from_secs(i), Progress::of(&job));
+            idle = stall.observe(t0 + Duration::from_secs(i), Progress::of(job.stats()));
         }
         assert!(idle >= STALL_TIMEOUT, "idle only {idle:?}");
     }
@@ -1172,12 +1517,12 @@ mod tests {
         while let Action::Send(_) | Action::WaitMs(_) = job.next_action() {}
 
         let t0 = Instant::now();
-        let mut stall = StallGuard::new(t0, Progress::of(&job));
+        let mut stall = StallGuard::new(t0, Progress::of(job.stats()));
         let mut idle = Duration::ZERO;
         for i in 1..=STALL_TIMEOUT.as_secs() {
             job.on_notification(heartbeat());
             let _ = job.next_action();
-            idle = stall.observe(t0 + Duration::from_secs(i), Progress::of(&job));
+            idle = stall.observe(t0 + Duration::from_secs(i), Progress::of(job.stats()));
         }
         assert!(idle >= STALL_TIMEOUT, "idle only {idle:?}");
     }
@@ -1190,15 +1535,15 @@ mod tests {
         job.on_notification(Notification::Hold);
 
         let t0 = Instant::now();
-        let mut stall = StallGuard::new(t0, Progress::of(&job));
+        let mut stall = StallGuard::new(t0, Progress::of(job.stats()));
         let almost = STALL_TIMEOUT - Duration::from_secs(1);
-        assert!(stall.observe(t0 + almost, Progress::of(&job)) < STALL_TIMEOUT);
+        assert!(stall.observe(t0 + almost, Progress::of(job.stats())) < STALL_TIMEOUT);
 
         // The printer asks for a resend, which is how a hold ends.
         job.on_notification(Notification::LostPacket { index: 1 });
         let _ = job.next_action(); // raster 0 again
         assert_eq!(
-            stall.observe(t0 + almost, Progress::of(&job)),
+            stall.observe(t0 + almost, Progress::of(job.stats())),
             Duration::ZERO
         );
     }
@@ -1209,13 +1554,13 @@ mod tests {
     fn flow_control_counters_are_not_treated_as_progress() {
         let mut job = streaming_job();
         job.on_notification(Notification::Hold);
-        let before = Progress::of(&job);
+        let before = Progress::of(job.stats());
         for _ in 0..50 {
             job.on_notification(Notification::Cooldown);
         }
         job.on_notification(Notification::Hold);
         assert!(job.stats().cooldowns > 0 || job.stats().holds > 0);
-        assert_eq!(Progress::of(&job), before);
+        assert_eq!(Progress::of(job.stats()), before);
     }
 
     /// The actionable case: the printer paused for heat and never came back.
@@ -1263,7 +1608,8 @@ mod tests {
     #[tokio::test]
     async fn a_hello_reply_proves_the_printer_answered() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        tx.send(Notification::Hello { mac: MAC }).unwrap();
+        tx.send(PrinterEvent::Lx(Notification::Hello { mac: MAC }))
+            .unwrap();
         let mut skipped = vec![];
         let mac = await_hello(&mut rx, HELLO_TIMEOUT, "LX-D02", &mut skipped)
             .await
@@ -1278,15 +1624,22 @@ mod tests {
     #[tokio::test]
     async fn frames_read_past_on_the_way_to_the_reply_are_handed_back() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        tx.send(heartbeat()).unwrap();
-        tx.send(Notification::Cooldown).unwrap();
-        tx.send(Notification::Hello { mac: MAC }).unwrap();
+        tx.send(PrinterEvent::Lx(heartbeat())).unwrap();
+        tx.send(PrinterEvent::Lx(Notification::Cooldown)).unwrap();
+        tx.send(PrinterEvent::Lx(Notification::Hello { mac: MAC }))
+            .unwrap();
         let mut skipped = vec![];
         let mac = await_hello(&mut rx, HELLO_TIMEOUT, "LX-D02", &mut skipped)
             .await
             .unwrap();
         assert_eq!(mac, MAC);
-        assert_eq!(skipped, vec![heartbeat(), Notification::Cooldown]);
+        assert_eq!(
+            skipped,
+            vec![
+                PrinterEvent::Lx(heartbeat()),
+                PrinterEvent::Lx(Notification::Cooldown)
+            ]
+        );
     }
 
     /// The bug this exists for: on macOS everything up to here succeeds
@@ -1324,7 +1677,7 @@ mod tests {
     /// failure from silence, and must not hang.
     #[tokio::test]
     async fn a_closed_notification_stream_ends_the_probe() {
-        let (tx, mut rx) = mpsc::unbounded_channel::<Notification>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<PrinterEvent>();
         drop(tx);
         let err = await_hello(&mut rx, HELLO_TIMEOUT, "LX-D02", &mut vec![])
             .await
@@ -1420,6 +1773,19 @@ mod tests {
         let lx = Some(PrinterModel::LxD02);
         assert!(match_advertised("X6h-A1B2", PID, &Target::Filter("X6h"), lx).is_none());
         assert!(match_advertised("X6h-A1B2", PID, &Target::AnySupported, lx).is_none());
+    }
+
+    /// The restriction is absolute: even an exact saved-id hit does not
+    /// match while the saved device is of another model. The user asked for
+    /// an X6; silently connecting to the remembered LX would be worse than
+    /// finding nothing.
+    #[test]
+    fn model_restriction_excludes_a_saved_id_of_another_model() {
+        let target = Target::SavedId {
+            id: PID,
+            name: "LX-D02",
+        };
+        assert!(match_advertised("LX-D02", PID, &target, Some(PrinterModel::X6)).is_none());
     }
 
     /// The restriction admits its own model unchanged.

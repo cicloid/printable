@@ -53,7 +53,8 @@ impl PrinterModel {
 
 impl fmt::Display for PrinterModel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+        // `pad`, not `write_str`, so width specifiers work in table output.
+        f.pad(match self {
             Self::LxD02 => "lx-d02",
             Self::X6 => "x6",
         })

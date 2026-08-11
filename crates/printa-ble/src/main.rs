@@ -98,7 +98,7 @@ async fn cmd_scan(timeout: u64) -> anyhow::Result<i32> {
     }
     println!("{:<20} {:<8} ID", "NAME", "MODEL");
     for (name, id, model) in &found {
-        println!("{name:<20} {:<8} {id}", model.to_string());
+        println!("{name:<20} {model:<8} {id}");
     }
     Ok(0)
 }

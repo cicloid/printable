@@ -116,9 +116,12 @@ pub struct PrintOutcome {
 ///
 /// Best effort: a failed save warns but never fails the command.
 pub fn remember_device(config: &mut Config, printer: &ble::Printer) {
+    // A device saved before model support reconnects with `model: None` on
+    // file but `Some(..)` here, so it is re-saved once to gain the field.
     let current = SavedDevice {
         id: printer.id(),
         name: printer.name().to_string(),
+        model: Some(printer.model().to_string()),
     };
     if config.device.as_ref() != Some(&current) {
         debug!("remembering device {} ({})", current.name, current.id);

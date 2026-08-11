@@ -20,6 +20,11 @@ pub struct Config {
 pub struct SavedDevice {
     pub id: String,
     pub name: String,
+    /// The printer model's display form (`"lx-d02"`, `"x6"`), stored as a
+    /// plain string so the file stays human-editable and core types stay out
+    /// of serde. Absent in configs written before model support existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl Config {
@@ -119,10 +124,38 @@ mod tests {
             device: Some(SavedDevice {
                 id: "12345678-abcd-4321-8765-1234567890ab".into(),
                 name: "LX-D02".into(),
+                model: None,
             }),
         };
         config.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path), config);
+    }
+
+    #[test]
+    fn roundtrip_save_load_with_model() {
+        let tmp = TempDir::new("roundtrip-model");
+        let path = tmp.path().join("config.toml");
+        let config = Config {
+            device: Some(SavedDevice {
+                id: "12345678-abcd-4321-8765-1234567890ab".into(),
+                name: "X6h123456".into(),
+                model: Some("x6".into()),
+            }),
+        };
+        config.save_to(&path).unwrap();
+        assert_eq!(Config::load_from(&path), config);
+    }
+
+    #[test]
+    fn old_config_without_model_still_loads() {
+        // Configs written before the model field existed must keep loading.
+        let config: Config = toml::from_str(
+            "[device]\nid = \"12345678-abcd-4321-8765-1234567890ab\"\nname = \"LX-D02\"\n",
+        )
+        .unwrap();
+        let device = config.device.unwrap();
+        assert_eq!(device.name, "LX-D02");
+        assert_eq!(device.model, None);
     }
 
     #[test]

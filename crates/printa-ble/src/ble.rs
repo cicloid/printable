@@ -933,9 +933,6 @@ impl Printer {
     }
 
     /// The model this connection is being driven as.
-    // Dead-code allowance until the model dispatch in print_service starts
-    // calling this; remove it then.
-    #[allow(dead_code)]
     pub fn model(&self) -> PrinterModel {
         self.model
     }

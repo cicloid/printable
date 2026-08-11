@@ -16,11 +16,12 @@ const COOLDOWN_MS: u64 = 100;
 /// What the caller should do next.
 #[derive(Debug)]
 pub enum Action {
-    /// Write these bytes to characteristic 0xFFE1.
+    /// Write these bytes to the printer's write characteristic.
     Send(Vec<u8>),
     /// Sleep for this many milliseconds, then call `next_action()` again.
     WaitMs(u64),
-    /// Block on 0xFFE2 until a notification is fed via `on_notification()`.
+    /// Block on the notify characteristic until a notification is fed via
+    /// `on_notification()`.
     WaitNotification,
     /// The job is over. Check [`PrintJob::error`] for whether it failed.
     Done,

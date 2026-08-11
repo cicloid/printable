@@ -22,6 +22,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::config::SavedDevice;
 use crate::print_service::{NoPaper, NoPrinterFound, PrinterNotResponding};
+use printa_ble_core::model::PrinterModel;
 use printa_ble_core::protocol::job::{Action, JobStats, PrintJob};
 use printa_ble_core::protocol::notifications::{self, Notification, Status};
 use printa_ble_core::protocol::packets;
@@ -371,12 +372,13 @@ async fn start_scan(adapter: &Adapter) -> Result<()> {
 /// 2. `SavedId` — the id remembered in the config file; an exact id match
 ///    wins, but fallbacks are kept in case the saved device never shows up
 ///    before the scan deadline: a device whose local name equals the saved
-///    name is preferred over any other `LX*` name.
-/// 3. `AnyLx` — no flag, no saved device: first device named `LX*`.
+///    name is preferred over any other supported printer's name.
+/// 3. `AnySupported` — no flag, no saved device: first device whose name
+///    identifies a printer model this workspace can drive.
 enum Target<'a> {
     Filter(&'a str),
     SavedId { id: &'a str, name: &'a str },
-    AnyLx,
+    AnySupported,
 }
 
 /// How well a peripheral satisfies a [`Target`].
@@ -391,37 +393,71 @@ enum MatchKind {
 /// Preference order among fallback candidates (higher wins).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum FallbackRank {
-    /// Any device named `LX*`.
-    AnyLx,
+    /// Any device whose name identifies a supported printer model.
+    AnySupported,
     /// Local name equals the saved device's name.
     SavedName,
 }
 
-/// Match a peripheral against `target`, returning its advertised name.
-async fn match_target(p: &Peripheral, target: &Target<'_>) -> Option<(MatchKind, String)> {
-    let props = p.properties().await.ok()??;
-    let name = props.local_name?;
+/// Match an advertised name and platform id against `target`, restricted to
+/// `restrict` when a specific model was requested. Pure, so the resolution
+/// ladder is testable without a radio; [`match_target`] is the async shim.
+///
+/// Returns how well the device matched and the model its name identifies —
+/// `None` for a [`Target::Filter`] hit on a name no model claims, because an
+/// explicit `--device` string may point at anything.
+///
+/// The restriction is absolute: a device of a different model (or of no
+/// recognizable model) never matches while `restrict` is set, even under a
+/// filter string that would otherwise hit it.
+fn match_advertised(
+    name: &str,
+    id: &str,
+    target: &Target<'_>,
+    restrict: Option<PrinterModel>,
+) -> Option<(MatchKind, Option<PrinterModel>)> {
+    let detected = PrinterModel::from_device_name(name);
+    if restrict.is_some() && detected != restrict {
+        return None;
+    }
     match target {
         Target::Filter(f) => {
-            (name.contains(f) || p.id().to_string().contains(f)).then_some((MatchKind::Exact, name))
+            (name.contains(f) || id.contains(f)).then_some((MatchKind::Exact, detected))
         }
-        Target::SavedId { id, name: saved } => {
-            if p.id().to_string() == *id {
-                Some((MatchKind::Exact, name))
+        Target::SavedId {
+            id: saved_id,
+            name: saved,
+        } => {
+            if id == *saved_id {
+                Some((MatchKind::Exact, detected))
             } else if name == *saved {
-                Some((MatchKind::Fallback(FallbackRank::SavedName), name))
-            } else if name.starts_with("LX") {
-                Some((MatchKind::Fallback(FallbackRank::AnyLx), name))
+                Some((MatchKind::Fallback(FallbackRank::SavedName), detected))
+            } else if detected.is_some() {
+                Some((MatchKind::Fallback(FallbackRank::AnySupported), detected))
             } else {
                 None
             }
         }
-        Target::AnyLx => name.starts_with("LX").then_some((MatchKind::Exact, name)),
+        Target::AnySupported => detected.is_some().then_some((MatchKind::Exact, detected)),
     }
 }
 
-/// Scan for `timeout`, returning (name, id) of every device named `LX*`.
-pub async fn scan(timeout: Duration) -> Result<Vec<(String, String)>> {
+/// Match a peripheral against `target`, returning its advertised name and
+/// the model that name identifies, if any.
+async fn match_target(
+    p: &Peripheral,
+    target: &Target<'_>,
+    restrict: Option<PrinterModel>,
+) -> Option<(MatchKind, String, Option<PrinterModel>)> {
+    let props = p.properties().await.ok()??;
+    let name = props.local_name?;
+    let (kind, model) = match_advertised(&name, &p.id().to_string(), target, restrict)?;
+    Some((kind, name, model))
+}
+
+/// Scan for `timeout`, returning (name, id, model) of every supported
+/// printer seen.
+pub async fn scan(timeout: Duration) -> Result<Vec<(String, String, PrinterModel)>> {
     let adapter = default_adapter().await?;
     start_scan(&adapter).await?;
     info!("scanning for {}s", timeout.as_secs());
@@ -431,16 +467,18 @@ pub async fn scan(timeout: Duration) -> Result<Vec<(String, String)>> {
     let mut seen = 0usize;
     for p in adapter.peripherals().await? {
         seen += 1;
-        match match_target(&p, &Target::AnyLx).await {
-            Some((_, name)) => {
-                debug!("match: {name} ({})", p.id());
-                found.push((name, p.id().to_string()));
+        match match_target(&p, &Target::AnySupported, None).await {
+            // `AnySupported` only matches names a model claims, so the model
+            // is always present here.
+            Some((_, name, Some(model))) => {
+                debug!("match: {name} ({}) [{model}]", p.id());
+                found.push((name, p.id().to_string(), model));
             }
-            None => trace!("skipping {}", p.id()),
+            _ => trace!("skipping {}", p.id()),
         }
     }
     let _ = adapter.stop_scan().await;
-    info!("scan saw {seen} devices, {} named LX*", found.len());
+    info!("scan saw {seen} devices, {} supported", found.len());
     Ok(found)
 }
 
@@ -450,15 +488,16 @@ pub async fn scan(timeout: Duration) -> Result<Vec<(String, String)>> {
 async fn find_match(
     adapter: &Adapter,
     target: &Target<'_>,
+    restrict: Option<PrinterModel>,
 ) -> Result<(
     Option<(Peripheral, String)>,
     Option<(Peripheral, String, FallbackRank)>,
 )> {
     let mut fallback: Option<(Peripheral, String, FallbackRank)> = None;
     for p in adapter.peripherals().await? {
-        match match_target(&p, target).await {
-            Some((MatchKind::Exact, name)) => return Ok((Some((p, name)), fallback)),
-            Some((MatchKind::Fallback(rank), name))
+        match match_target(&p, target, restrict).await {
+            Some((MatchKind::Exact, name, _)) => return Ok((Some((p, name)), fallback)),
+            Some((MatchKind::Fallback(rank), name, _))
                 if fallback.as_ref().is_none_or(|(_, _, held)| rank > *held) =>
             {
                 fallback = Some((p, name, rank));
@@ -487,20 +526,24 @@ pub struct Printer {
 /// actually switched on.
 ///
 /// Resolution order (see [`Target`]): `explicit` filter > `saved` device id
-/// (falling back to a device with the saved name, else any `LX*` name, if
-/// the saved id is not seen before the deadline) > first device named `LX*`.
+/// (falling back to a device with the saved name, else any supported
+/// printer, if the saved id is not seen before the deadline) > first device
+/// advertising a supported printer name.
 pub async fn connect_resolved(
     explicit: Option<&str>,
     saved: Option<&SavedDevice>,
     scan_timeout: Duration,
 ) -> Result<Printer> {
+    // No model restriction yet: the `--model` flag reaches here when model
+    // dispatch is wired up.
+    let restrict: Option<PrinterModel> = None;
     let target = match (explicit, saved) {
         (Some(f), _) => Target::Filter(f),
         (None, Some(d)) => Target::SavedId {
             id: &d.id,
             name: &d.name,
         },
-        (None, None) => Target::AnyLx,
+        (None, None) => Target::AnySupported,
     };
 
     let adapter = default_adapter().await?;
@@ -511,14 +554,14 @@ pub async fn connect_resolved(
         match &target {
             Target::Filter(f) => format!("a device matching `{f}`"),
             Target::SavedId { id, .. } => format!("saved device {id}"),
-            Target::AnyLx => "any LX printer".to_string(),
+            Target::AnySupported => "any supported printer".to_string(),
         }
     );
 
     let deadline = tokio::time::Instant::now() + scan_timeout;
     let mut fallback: Option<(Peripheral, String, FallbackRank)> = None;
     let (peripheral, name) = loop {
-        let (exact, fb) = find_match(&adapter, &target).await?;
+        let (exact, fb) = find_match(&adapter, &target, restrict).await?;
         if let Some(found) = exact {
             break found;
         }
@@ -1304,5 +1347,141 @@ mod tests {
         // Once the gap elapses, the suppressed ones are reported together.
         assert_eq!(log.note_cooldown(t0 + COOLDOWN_REPORT_GAP), Some(10));
         assert_eq!(log.note_cooldown(t0 + COOLDOWN_REPORT_GAP), None);
+    }
+
+    // -----------------------------------------------------------------
+    // Discovery: matching an advertised device against a target. The
+    // resolution ladder is pure (`match_advertised`); the async
+    // `match_target` only feeds it BLE advertisement properties.
+    // -----------------------------------------------------------------
+
+    /// A stand-in platform id, shaped like nothing a filter test matches on.
+    const PID: &str = "hhhhhhhh-hhhh-hhhh-hhhh-hhhhhhhhhhhh";
+
+    /// No flag, no saved device: an X6 is now as discoverable as an LX.
+    #[test]
+    fn an_x6_device_matches_any_supported() {
+        assert!(matches!(
+            match_advertised("X6h-A1B2", PID, &Target::AnySupported, None),
+            Some((MatchKind::Exact, Some(PrinterModel::X6)))
+        ));
+    }
+
+    /// The original family keeps matching exactly as before.
+    #[test]
+    fn lx_devices_still_match_any_supported() {
+        assert!(matches!(
+            match_advertised("LX-D02", PID, &Target::AnySupported, None),
+            Some((MatchKind::Exact, Some(PrinterModel::LxD02)))
+        ));
+    }
+
+    /// A device from an unsupported family is invisible to discovery, both
+    /// with no target and as a saved-device fallback candidate.
+    #[test]
+    fn an_unsupported_device_never_matches() {
+        assert!(match_advertised("GB01", PID, &Target::AnySupported, None).is_none());
+        let target = Target::SavedId {
+            id: "some-other-id",
+            name: "LX-D02",
+        };
+        assert!(match_advertised("GB01", PID, &target, None).is_none());
+    }
+
+    /// An explicit `--device` string is taken literally — name or id
+    /// substring, whatever the name looks like. Today's behavior, preserved.
+    #[test]
+    fn filter_matches_by_name_or_id_substring() {
+        assert!(matches!(
+            match_advertised("LX-D02", PID, &Target::Filter("LX"), None),
+            Some((MatchKind::Exact, Some(PrinterModel::LxD02)))
+        ));
+        assert!(matches!(
+            match_advertised("X6h-A1B2", PID, &Target::Filter("A1B2"), None),
+            Some((MatchKind::Exact, Some(PrinterModel::X6)))
+        ));
+        // A hit on the platform id, under a name no model claims: still a
+        // match, with no model to report.
+        assert!(matches!(
+            match_advertised("Oddball", "aabbccdd", &Target::Filter("bbcc"), None),
+            Some((MatchKind::Exact, None))
+        ));
+        assert!(match_advertised("LX-D02", PID, &Target::Filter("GB"), None).is_none());
+    }
+
+    /// A requested model is a hard restriction: a device of another model
+    /// never matches, even under a filter string that hits it.
+    #[test]
+    fn model_restriction_excludes_other_models() {
+        let x6 = Some(PrinterModel::X6);
+        assert!(match_advertised("LX-D02", PID, &Target::Filter("LX"), x6).is_none());
+        assert!(match_advertised("LX-D02", PID, &Target::AnySupported, x6).is_none());
+
+        let lx = Some(PrinterModel::LxD02);
+        assert!(match_advertised("X6h-A1B2", PID, &Target::Filter("X6h"), lx).is_none());
+        assert!(match_advertised("X6h-A1B2", PID, &Target::AnySupported, lx).is_none());
+    }
+
+    /// The restriction admits its own model unchanged.
+    #[test]
+    fn model_restriction_admits_the_requested_model() {
+        assert!(matches!(
+            match_advertised(
+                "X6h-A1B2",
+                PID,
+                &Target::AnySupported,
+                Some(PrinterModel::X6)
+            ),
+            Some((MatchKind::Exact, Some(PrinterModel::X6)))
+        ));
+        assert!(matches!(
+            match_advertised(
+                "LX-D02",
+                PID,
+                &Target::Filter("LX"),
+                Some(PrinterModel::LxD02)
+            ),
+            Some((MatchKind::Exact, Some(PrinterModel::LxD02)))
+        ));
+    }
+
+    /// Saved-device resolution: the saved id wins outright.
+    #[test]
+    fn saved_id_matches_exactly() {
+        let target = Target::SavedId {
+            id: PID,
+            name: "LX-D02",
+        };
+        assert!(matches!(
+            match_advertised("LX-D02", PID, &target, None),
+            Some((MatchKind::Exact, Some(PrinterModel::LxD02)))
+        ));
+    }
+
+    /// While waiting for the saved id, a device named exactly the saved name
+    /// outranks a merely-supported device — and an X6 now qualifies for the
+    /// any-supported fallback where only `LX*` names used to.
+    #[test]
+    fn saved_name_outranks_any_supported_device() {
+        let target = Target::SavedId {
+            id: "id-never-seen",
+            name: "LX-D02",
+        };
+        let Some((MatchKind::Fallback(named), _)) =
+            match_advertised("LX-D02", "another-id", &target, None)
+        else {
+            panic!("a device named exactly the saved name must be a fallback");
+        };
+        let Some((MatchKind::Fallback(supported), Some(PrinterModel::X6))) =
+            match_advertised("X6h-A1B2", "x6-id", &target, None)
+        else {
+            panic!("a supported device must be a fallback while the saved id is missing");
+        };
+        assert_eq!(named, FallbackRank::SavedName);
+        assert_eq!(supported, FallbackRank::AnySupported);
+        assert!(
+            named > supported,
+            "saved name must outrank merely-supported"
+        );
     }
 }

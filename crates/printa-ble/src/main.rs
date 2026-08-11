@@ -92,13 +92,13 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
 async fn cmd_scan(timeout: u64) -> anyhow::Result<i32> {
     let found = ble::scan(Duration::from_secs(timeout)).await?;
     if found.is_empty() {
-        eprintln!("No LX printers found. Is the printer on?");
+        eprintln!("No supported printers found. Is the printer on?");
         // Same exit code as a failed connect: no printer found.
         return Ok(2);
     }
-    println!("{:<20} ID", "NAME");
-    for (name, id) in &found {
-        println!("{name:<20} {id}");
+    println!("{:<20} {:<8} ID", "NAME", "MODEL");
+    for (name, id, model) in &found {
+        println!("{name:<20} {:<8} {id}", model.to_string());
     }
     Ok(0)
 }

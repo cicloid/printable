@@ -6,3 +6,4 @@
 //! 48-byte scanline per packet.
 
 pub mod crc;
+pub mod packets;

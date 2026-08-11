@@ -263,6 +263,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Response, ApiError
     let mut printer = ble::connect_resolved(
         state.device.as_deref(),
         config.device.as_ref(),
+        None,
         SCAN_TIMEOUT,
     )
     .await
@@ -591,7 +592,7 @@ async fn print_and_respond(
     );
 
     let _guard = acquire_print_lock(state).await;
-    let outcome = print_service::print_bitmap(bitmap, state.device.as_deref(), opts.into())
+    let outcome = print_service::print_bitmap(bitmap, state.device.as_deref(), None, opts.into())
         .await
         .map_err(|e| {
             let api = print_error_to_api(&e);

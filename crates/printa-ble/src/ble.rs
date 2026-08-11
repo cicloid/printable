@@ -601,6 +601,53 @@ async fn find_match(
     Ok((None, fallback))
 }
 
+/// The model restriction a connect attempt scans under.
+///
+/// Precedence: an explicitly requested `model` always restricts. Otherwise
+/// the saved device's remembered model does — but only when the saved device
+/// is actually the target: an explicit `--device` filter may point at any
+/// device (see [`Target::Filter`]), and the remembered model of some *other*
+/// printer must not veto it. With neither, name detection at match time
+/// decides, exactly as before models existed.
+///
+/// Restricting a reconnect to the saved model is deliberate: the point of
+/// the saved device is "the same printer as last time", and that includes
+/// what kind of printer it was — a fallback of the other family would be
+/// driven with the wrong protocol.
+fn resolve_restriction(
+    explicit: Option<&str>,
+    saved: Option<&SavedDevice>,
+    model: Option<PrinterModel>,
+) -> Option<PrinterModel> {
+    model.or_else(|| {
+        if explicit.is_some() {
+            return None;
+        }
+        saved.and_then(saved_model)
+    })
+}
+
+/// Parse a saved device's remembered model string, leniently.
+///
+/// Lenient on purpose: the string comes from a config file the user may
+/// hand-edit (or that a newer version wrote), and a value this build does
+/// not recognize must degrade to name detection with a warning — never a
+/// hard error that makes the printer unreachable.
+fn saved_model(saved: &SavedDevice) -> Option<PrinterModel> {
+    let s = saved.model.as_deref()?;
+    match s.parse() {
+        Ok(model) => Some(model),
+        Err(_) => {
+            eprintln!(
+                "warning: ignoring unrecognized model {s:?} saved for {}; \
+                 detecting the model from the device name instead",
+                saved.name
+            );
+            None
+        }
+    }
+}
+
 /// A connected printer with its notification stream already subscribed.
 pub struct Printer {
     peripheral: Peripheral,
@@ -625,14 +672,17 @@ pub struct Printer {
 /// (falling back to a device with the saved name, else any supported
 /// printer, if the saved id is not seen before the deadline) > first device
 /// advertising a supported printer name.
+///
+/// `model` is an explicit model request (the `--model` flag); see
+/// [`resolve_restriction`] for how it combines with the saved device's
+/// remembered model to restrict the scan.
 pub async fn connect_resolved(
     explicit: Option<&str>,
     saved: Option<&SavedDevice>,
+    model: Option<PrinterModel>,
     scan_timeout: Duration,
 ) -> Result<Printer> {
-    // No model restriction yet: the `--model` flag reaches here when model
-    // dispatch is wired up.
-    let restrict: Option<PrinterModel> = None;
+    let restrict = resolve_restriction(explicit, saved, model);
     let target = match (explicit, saved) {
         (Some(f), _) => Target::Filter(f),
         (None, Some(d)) => Target::SavedId {
@@ -1060,9 +1110,6 @@ impl Printer {
     /// Two deliberate differences from the LX path: there is no paper-status
     /// abort (the X6 has no known paper signal), and no fatal-error check
     /// after the pump (the X6 job cannot fail — no auth to be rejected).
-    // Dead-code allowance until the model dispatch in print_service starts
-    // calling this; remove it then.
-    #[allow(dead_code)]
     pub async fn run_x6_job(&mut self, job: &mut X6PrintJob) -> Result<JobStats> {
         let started = Instant::now();
         let mut log = JobLog::default();
@@ -1667,7 +1714,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.downcast_ref::<NoPrinterFound>().is_none());
-        assert!(!format!("{err:#}").contains("no LX printer found"));
+        assert!(!format!("{err:#}").contains("no supported printer found"));
     }
 
     /// A dropped forwarder (the link went away mid-probe) is a distinct
@@ -1806,6 +1853,73 @@ mod tests {
             ),
             Some((MatchKind::Exact, Some(PrinterModel::LxD02)))
         ));
+    }
+
+    // -----------------------------------------------------------------
+    // Model resolution: explicit request > saved model string > name
+    // detection at match time (`restrict = None`).
+    // -----------------------------------------------------------------
+
+    fn saved_device(model: Option<&str>) -> SavedDevice {
+        SavedDevice {
+            id: PID.to_string(),
+            name: "X6h-A1B2".to_string(),
+            model: model.map(str::to_string),
+        }
+    }
+
+    /// The remembered model string is advice, not law: a missing or
+    /// unrecognized value degrades to name detection, never a hard error —
+    /// a hand-edited (or newer-version) config must not make the printer
+    /// unreachable.
+    #[test]
+    fn saved_model_parses_leniently() {
+        assert_eq!(
+            saved_model(&saved_device(Some("x6"))),
+            Some(PrinterModel::X6)
+        );
+        assert_eq!(
+            saved_model(&saved_device(Some("lx-d02"))),
+            Some(PrinterModel::LxD02)
+        );
+        assert_eq!(saved_model(&saved_device(Some("gb01"))), None);
+        assert_eq!(saved_model(&saved_device(None)), None);
+    }
+
+    /// An explicitly requested model outranks whatever the config remembers.
+    #[test]
+    fn explicit_model_outranks_the_saved_one() {
+        let saved = saved_device(Some("x6"));
+        assert_eq!(
+            resolve_restriction(None, Some(&saved), Some(PrinterModel::LxD02)),
+            Some(PrinterModel::LxD02)
+        );
+    }
+
+    /// With no explicit request, reconnecting to the saved device restricts
+    /// the scan to its remembered model: "the same printer as last time"
+    /// includes what kind of printer it was.
+    #[test]
+    fn saved_model_restricts_a_reconnect() {
+        let saved = saved_device(Some("x6"));
+        assert_eq!(
+            resolve_restriction(None, Some(&saved), None),
+            Some(PrinterModel::X6)
+        );
+        assert_eq!(resolve_restriction(None, None, None), None);
+    }
+
+    /// An explicit `--device` filter may point at any device, so the
+    /// remembered model of some *other* printer must not veto it.
+    #[test]
+    fn saved_model_does_not_restrict_an_explicit_filter() {
+        let saved = saved_device(Some("x6"));
+        assert_eq!(resolve_restriction(Some("LX"), Some(&saved), None), None);
+        // But an explicit model request still restricts, filter or not.
+        assert_eq!(
+            resolve_restriction(Some("LX"), Some(&saved), Some(PrinterModel::X6)),
+            Some(PrinterModel::X6)
+        );
     }
 
     /// Saved-device resolution: the saved id wins outright.

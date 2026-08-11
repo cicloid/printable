@@ -7,7 +7,9 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context as _};
+use printa_ble_core::model::PrinterModel;
 use printa_ble_core::protocol::job::{JobStats, PrintJob};
+use printa_ble_core::protocol_x6::job::X6PrintJob;
 use printa_ble_core::raster::{image_to_bitmap, prepare, Bitmap, Dither};
 use tracing::{debug, info};
 
@@ -28,7 +30,7 @@ pub struct NoPrinterFound;
 
 impl fmt::Display for NoPrinterFound {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("no LX printer found. Is the printer on and in range?")
+        f.write_str("no supported printer found. Is the printer on and in range?")
     }
 }
 
@@ -90,7 +92,9 @@ impl fmt::Display for PrintFailure {
 /// Knobs for a print job, independent of what is being printed.
 #[derive(Debug, Clone, Copy)]
 pub struct PrintOptions {
-    /// Print density, 1-7.
+    /// Print density, 1-7. LX-D02 only: the X6 job does not yet use that
+    /// printer's quality/energy commands, so on an X6 the value is accepted
+    /// but has no effect.
     pub density: u8,
     /// Blank feed lines appended after the content.
     pub feed: usize,
@@ -141,8 +145,16 @@ pub fn bitmap_from_image_bytes(bytes: &[u8], dither: Dither) -> anyhow::Result<B
     Ok(image_to_bitmap(&prepare(&img), dither))
 }
 
-/// Append feed, validate, connect (resolution: explicit > saved > any LX),
-/// run `opts.copies` jobs over one connection, remember the device.
+/// Connect (resolution: explicit > saved > any supported printer, optionally
+/// restricted to `model` — see `ble::connect_resolved`), then run
+/// `opts.copies` jobs over one connection with the connected model's
+/// protocol, and remember the device.
+///
+/// Feed handling and validation are per-model, so both happen after connect,
+/// once the model is known: the LX appends `opts.feed` blank raster lines to
+/// the bitmap, the X6 sends the feed as its own command. An oversized LX job
+/// is therefore rejected after the connect rather than before it — same
+/// error, later.
 ///
 /// Known wart: progress ("Connected to …", "Printed copy i/N.") is printed
 /// directly to stdout/stderr to preserve exact CLI behavior. The server task
@@ -150,10 +162,19 @@ pub fn bitmap_from_image_bytes(bytes: &[u8], dither: Dither) -> anyhow::Result<B
 pub async fn print_bitmap(
     mut bitmap: Bitmap,
     explicit_device: Option<&str>,
+    model: Option<PrinterModel>,
     opts: PrintOptions,
 ) -> anyhow::Result<PrintOutcome> {
     let started = Instant::now();
-    bitmap.extend_blank(opts.feed);
+    // Refuse an empty bitmap before touching BLE: with content of height 0
+    // an X6 job would still consume paper (its blank lead row plus the
+    // feed), and an LX job would print only the feed. Defensive — every
+    // existing caller already rejects empty content upstream ("nothing to
+    // print" in the CLI, 400s in the server, zero-width images in
+    // `bitmap_from_image_bytes`) — so no caller-observable behavior changes.
+    if bitmap.height() == 0 {
+        bail!("nothing to print: bitmap is empty");
+    }
     debug!(
         "print job: {} lines, density {}, feed {}, {} copies",
         bitmap.height(),
@@ -162,64 +183,111 @@ pub async fn print_bitmap(
         opts.copies
     );
 
-    // Validate the job before touching BLE so an oversized bitmap fails fast.
-    PrintJob::new(&bitmap, opts.density, rand::random(), INTER_PACKET_DELAY_MS)
-        .context("cannot print this job")?;
-
     let mut config = Config::load();
     let mut printer =
-        ble::connect_resolved(explicit_device, config.device.as_ref(), SCAN_TIMEOUT).await?;
+        ble::connect_resolved(explicit_device, config.device.as_ref(), model, SCAN_TIMEOUT).await?;
     // Earned, not assumed: `connect_resolved` only returns once the printer
-    // has answered a hello frame of its own accord.
+    // has answered a hello frame of its own accord. (X6: subscribed only —
+    // the protocol has no liveness probe; see `ble::initialize`.)
     eprintln!("Connected to {}.", printer.name());
     remember_device(&mut config, &printer);
 
-    // Pre-print check, best effort: status frames arrive unsolicited after
-    // subscribing, but not receiving one is not fatal.
-    match printer.wait_status(Duration::from_secs(3)).await {
-        Ok(s) => {
-            debug!(
-                "pre-print status: battery {}%, paper {}",
-                s.battery_pct,
-                if s.no_paper { "out" } else { "ok" }
-            );
-            if s.no_paper {
-                printer.disconnect().await;
-                return Err(anyhow::Error::msg(NoPaper));
-            }
-            if s.low_battery {
-                eprintln!("warning: printer battery is low");
-            }
-        }
-        Err(e) => debug!("no pre-print status frame: {e:#}"),
-    }
-
-    // One connection, one full job (fresh challenge, auth included) per copy.
     let mut stats = JobStats::default();
-    for copy in 1..=opts.copies {
-        let mut job = PrintJob::new(&bitmap, opts.density, rand::random(), INTER_PACKET_DELAY_MS)
-            .context("cannot print this job")?;
-        if opts.copies > 1 {
-            info!("printing copy {copy}/{}", opts.copies);
-        }
-        match printer.run_job(&mut job).await {
-            Ok(s) => stats = add_stats(stats, s),
-            Err(e) => {
+    match printer.model() {
+        PrinterModel::LxD02 => {
+            // The feed rides along as blank raster lines on this model.
+            bitmap.extend_blank(opts.feed);
+
+            // Validate before the paper check so an oversized job fails
+            // without sitting out the status wait.
+            if let Err(e) =
+                PrintJob::new(&bitmap, opts.density, rand::random(), INTER_PACKET_DELAY_MS)
+            {
                 printer.disconnect().await;
-                return Err(e.context(PrintFailure));
+                return Err(anyhow::Error::new(e).context("cannot print this job"));
+            }
+
+            // Pre-print check, best effort: status frames arrive unsolicited
+            // after subscribing, but not receiving one is not fatal. LX-D02
+            // only — the X6 has no paper (or any other status) signal, so
+            // there is nothing to wait for there.
+            match printer.wait_status(Duration::from_secs(3)).await {
+                Ok(s) => {
+                    debug!(
+                        "pre-print status: battery {}%, paper {}",
+                        s.battery_pct,
+                        if s.no_paper { "out" } else { "ok" }
+                    );
+                    if s.no_paper {
+                        printer.disconnect().await;
+                        return Err(anyhow::Error::msg(NoPaper));
+                    }
+                    if s.low_battery {
+                        eprintln!("warning: printer battery is low");
+                    }
+                }
+                Err(e) => debug!("no pre-print status frame: {e:#}"),
+            }
+
+            // One connection, one full job (fresh challenge, auth included)
+            // per copy.
+            for copy in 1..=opts.copies {
+                let mut job =
+                    PrintJob::new(&bitmap, opts.density, rand::random(), INTER_PACKET_DELAY_MS)
+                        .context("cannot print this job")?;
+                if opts.copies > 1 {
+                    info!("printing copy {copy}/{}", opts.copies);
+                }
+                match printer.run_job(&mut job).await {
+                    Ok(s) => stats = add_stats(stats, s),
+                    Err(e) => {
+                        printer.disconnect().await;
+                        return Err(e.context(PrintFailure));
+                    }
+                }
+                if opts.copies > 1 {
+                    println!("Printed copy {copy}/{}.", opts.copies);
+                }
             }
         }
-        if opts.copies > 1 {
-            println!("Printed copy {copy}/{}.", opts.copies);
+        PrinterModel::X6 => {
+            // No `extend_blank`: the X6 feed is a command carrying a pixel
+            // count, sent by the job after the raster. `opts.density` is
+            // unused here — see `PrintOptions::density`.
+            for copy in 1..=opts.copies {
+                let mut job = X6PrintJob::new(&bitmap, feed_px(opts.feed), INTER_PACKET_DELAY_MS);
+                if opts.copies > 1 {
+                    info!("printing copy {copy}/{}", opts.copies);
+                }
+                match printer.run_x6_job(&mut job).await {
+                    Ok(s) => stats = add_stats(stats, s),
+                    Err(e) => {
+                        printer.disconnect().await;
+                        return Err(e.context(PrintFailure));
+                    }
+                }
+                if opts.copies > 1 {
+                    println!("Printed copy {copy}/{}.", opts.copies);
+                }
+            }
         }
     }
     printer.disconnect().await;
 
     Ok(PrintOutcome {
+        // On the LX the feed lines are part of the bitmap by now; on the X6
+        // they are fed, not printed, and are not counted.
         lines: bitmap.height() * usize::from(opts.copies),
         stats,
         elapsed: started.elapsed(),
     })
+}
+
+/// Clamp a feed request to the u16 the X6 feed command carries. The CLI
+/// deliberately leaves `--feed` unbounded, so out-of-range saturates rather
+/// than failing a job over blank paper.
+fn feed_px(feed: usize) -> u16 {
+    u16::try_from(feed).unwrap_or(u16::MAX)
 }
 
 /// Sum two copies' worth of counters.
@@ -229,5 +297,22 @@ fn add_stats(a: JobStats, b: JobStats) -> JobStats {
         retransmits: a.retransmits.saturating_add(b.retransmits),
         holds: a.holds.saturating_add(b.holds),
         cooldowns: a.cooldowns.saturating_add(b.cooldowns),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The X6 feed command carries a u16; a CLI `--feed` beyond that must
+    /// saturate rather than wrap or panic (the CLI deliberately leaves
+    /// `feed` unbounded, unlike the server).
+    #[test]
+    fn feed_clamps_to_the_x6_command_range() {
+        assert_eq!(feed_px(0), 0);
+        assert_eq!(feed_px(320), 320);
+        assert_eq!(feed_px(65_535), u16::MAX);
+        assert_eq!(feed_px(65_536), u16::MAX);
+        assert_eq!(feed_px(usize::MAX), u16::MAX);
     }
 }

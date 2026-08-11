@@ -53,7 +53,7 @@ Every command that talks to the printer resolves a device the same way. `scan` i
 | 2b | Any `LX*` | Advertised name starts with `LX` | Only at the scan deadline |
 | 3 | No flag, no saved device | Advertised name starts with `LX` | Immediately, first match |
 
-The scan runs up to **10 seconds**, polling every 300 ms. An exact match short-circuits it; the ranked fallbacks are used only if no exact match appears before the deadline. If nothing matches at all, the command fails with `no LX printer found. Is the printer on and in range?` and exit code 2.
+The scan runs up to **10 seconds**, polling every 300 ms. An exact match short-circuits it; the ranked fallbacks are used only if no exact match appears before the deadline. If nothing matches at all, the command fails with `no supported printer found. Is the printer on and in range?` and exit code 2.
 
 After every successful connection the device's id and name are written to the config file, so the next run reconnects to the same printer without a flag. `--device` overrides the saved printer *and* replaces it.
 
@@ -331,7 +331,7 @@ printable print "invoice" --device c0076683      # id substring
 | `failed to open …` / `failed to read …` | 1 | Unreadable file |
 | `failed to decode image: …` | 1 | Not a valid PNG or JPEG |
 | `cannot print this job: print too large: …` | 1 | Over 65 535 raster packets (more than 131 070 rows). Note the server answers `400` for the same condition |
-| `no LX printer found. Is the printer on and in range?` | 2 | Nothing matched within the 10 s scan |
+| `no supported printer found. Is the printer on and in range?` | 2 | Nothing matched within the 10 s scan |
 | `found <name> but it did not respond — is the printer powered on?` | 2 | The device was there and connected, but never answered hello |
 | `printer is out of paper` | 3 | Pre-print check or a mid-job status frame |
 | `print failed: …` | 4 | Auth rejected, BLE write failed, the printer went silent, or the job stalled |

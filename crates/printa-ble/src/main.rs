@@ -108,6 +108,7 @@ async fn cmd_status(device: DeviceArgs) -> anyhow::Result<()> {
     let mut printer = ble::connect_resolved(
         device.device.as_deref(),
         config.device.as_ref(),
+        None,
         SCAN_TIMEOUT,
     )
     .await?;
@@ -192,6 +193,9 @@ async fn dispatch(
     let outcome = print_service::print_bitmap(
         bitmap,
         device.device.as_deref(),
+        // Explicit model requests arrive with the `--model` flag (Task 10);
+        // until then the saved device or name detection decides.
+        None,
         PrintOptions {
             density,
             feed,

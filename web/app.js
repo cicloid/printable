@@ -352,9 +352,9 @@ function runJob(bitmap, density, feed) {
     let j;
     try {
       if (model === "x6") {
-        // No density (the X6 protocol has none — the slider has no effect)
-        // and no auth. Feed rides as a pixel-count command, not blank lines.
-        j = new WasmX6Job(bitmap, feed);
+        // No auth. Density maps to the X6's printhead-energy commands, and
+        // feed rides as a pixel-count command, not blank lines.
+        j = new WasmX6Job(bitmap, density, feed);
       } else {
         const challenge = crypto.getRandomValues(new Uint8Array(10));
         j = new WasmJob(bitmap, density, challenge);

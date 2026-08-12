@@ -4,8 +4,9 @@
 //! the Web Bluetooth page, with the same drive contract as
 //! [`crate::job::WasmJob`]: JS asks for the next action, performs it (GATT
 //! write, sleep, or wait), and feeds raw 0xAE02 notification bytes back in.
-//! The X6 flow is much simpler — no auth, no density, no completion
-//! notification — so the constructor takes only a bitmap and a feed length.
+//! The X6 flow is much simpler — no auth, no completion notification — so
+//! the constructor takes only a bitmap, a density and a feed length. The
+//! density maps to the X6's printhead-energy commands in core.
 
 use printa_ble_core::protocol_x6::job::X6PrintJob;
 use printa_ble_core::protocol_x6::notifications;
@@ -23,19 +24,25 @@ pub struct WasmX6Job {
 
 #[wasm_bindgen]
 impl WasmX6Job {
-    /// Start a job that prints `bitmap`, then feeds `feed_px` rows of blank
-    /// paper via the 0xA1 feed command (0 skips the feed).
+    /// Start a job that sets the printhead energy from `density` (1-7,
+    /// same knob as the LX-D02's), prints `bitmap`, then feeds `feed_px`
+    /// rows of blank paper via the 0xA1 feed command (0 skips the feed).
     ///
-    /// Unlike the LX-D02 job there is no density and no auth challenge.
+    /// Unlike the LX-D02 job there is no auth challenge.
     #[wasm_bindgen(constructor)]
-    pub fn new(bitmap: &WasmBitmap, feed_px: u16) -> Result<WasmX6Job, String> {
+    pub fn new(bitmap: &WasmBitmap, density: u8, feed_px: u16) -> Result<WasmX6Job, String> {
+        // Core clamps an out-of-range density; reject it here instead,
+        // with the same message as WasmJob.
+        if !(1..=7).contains(&density) {
+            return Err(format!("density must be 1-7, got {density}"));
+        }
         // An empty bitmap would send nothing but the blank lead row and the
         // feed; reject it up front, with the same message as WasmJob.
         if bitmap.height() == 0 {
             return Err("nothing to print: bitmap is empty".to_string());
         }
         Ok(WasmX6Job {
-            inner: X6PrintJob::new(&bitmap.inner, feed_px, INTER_PACKET_DELAY_MS),
+            inner: X6PrintJob::new(&bitmap.inner, density, feed_px, INTER_PACKET_DELAY_MS),
         })
     }
 
@@ -89,12 +96,20 @@ mod tests {
     const BUFFER_FULL: [u8; 9] = [0x51, 0x78, 0xAE, 0x01, 0x01, 0x00, 0x10, 0x70, 0xFF];
     const READY: [u8; 9] = [0x51, 0x78, 0xAE, 0x01, 0x01, 0x00, 0x00, 0x00, 0xFF];
 
-    /// A 2-row bitmap job with a 64 px trailing feed.
+    /// A 2-row bitmap job at density 3 with a 64 px trailing feed.
     fn two_row_job() -> WasmX6Job {
         let bitmap = WasmBitmap {
             inner: Bitmap::new(2),
         };
-        WasmX6Job::new(&bitmap, 64).unwrap()
+        WasmX6Job::new(&bitmap, 3, 64).unwrap()
+    }
+
+    /// Pull sends until the job has streamed its energy setup pair and the
+    /// blank lead row, leaving it mid-scanline where flow control applies.
+    fn past_setup_and_lead(job: &mut WasmX6Job) {
+        for _ in 0..3 {
+            assert!(matches!(job.next_action_inner(), ActionMsg::Send { .. }));
+        }
     }
 
     /// Pull actions until the job blocks on a notification (or is done),
@@ -130,12 +145,16 @@ mod tests {
         let actions = drain(&mut job);
         let sends = sent_bytes(&actions);
 
-        // Blank artifact-guard lead row + 2 bitmap rows, then the feed.
-        assert_eq!(sends.len(), 4);
-        for (i, send) in sends[..3].iter().enumerate() {
+        // Energy setup pair, blank artifact-guard lead row + 2 bitmap
+        // rows, then the feed.
+        assert_eq!(sends.len(), 6);
+        assert_eq!(&sends[0][..3], [0x51, 0x78, 0xAF]);
+        assert_eq!(&sends[0][6..8], [0xC0, 0x5D]); // density 3 = 24000 LE
+        assert_eq!(&sends[1][..3], [0x51, 0x78, 0xBE]);
+        for (i, send) in sends[2..5].iter().enumerate() {
             assert_eq!(&send[..3], [0x51, 0x78, 0xA2], "scanline {i}");
         }
-        assert_eq!(&sends[3][..3], [0x51, 0x78, 0xA1]);
+        assert_eq!(&sends[5][..3], [0x51, 0x78, 0xA1]);
 
         // ... then a settle wait, then done.
         let n = actions.len();
@@ -159,16 +178,28 @@ mod tests {
         let bitmap = WasmBitmap {
             inner: Bitmap::new(0),
         };
-        let err = WasmX6Job::new(&bitmap, 64).unwrap_err();
+        let err = WasmX6Job::new(&bitmap, 3, 64).unwrap_err();
         assert_eq!(err, "nothing to print: bitmap is empty");
+    }
+
+    /// Same message as WasmJob's density check.
+    #[test]
+    fn bad_density_errors() {
+        let bitmap = WasmBitmap {
+            inner: Bitmap::new(2),
+        };
+        for density in [0, 8] {
+            let err = WasmX6Job::new(&bitmap, density, 64).unwrap_err();
+            assert_eq!(err, format!("density must be 1-7, got {density}"));
+        }
     }
 
     #[test]
     fn buffer_full_pauses_and_ready_resumes() {
         let mut job = two_row_job();
 
-        // Take the lead-row send, then the printer reports BufferFull.
-        assert!(matches!(job.next_action_inner(), ActionMsg::Send { .. }));
+        // Stream up to the lead row, then the printer reports BufferFull.
+        past_setup_and_lead(&mut job);
         job.on_notification(&BUFFER_FULL);
         assert!(matches!(
             job.next_action_inner(),
@@ -195,7 +226,7 @@ mod tests {
     #[test]
     fn garbage_notifications_ignored() {
         let mut job = two_row_job();
-        assert!(matches!(job.next_action_inner(), ActionMsg::Send { .. }));
+        past_setup_and_lead(&mut job);
         job.on_notification(&BUFFER_FULL);
 
         // Garbage while paused: wrong magic, truncated frames, empty.

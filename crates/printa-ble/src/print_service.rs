@@ -92,9 +92,9 @@ impl fmt::Display for PrintFailure {
 /// Knobs for a print job, independent of what is being printed.
 #[derive(Debug, Clone, Copy)]
 pub struct PrintOptions {
-    /// Print density, 1-7. LX-D02 only: the X6 job does not yet use that
-    /// printer's quality/energy commands, so on an X6 the value is accepted
-    /// but has no effect.
+    /// Print density, 1-7. On the LX-D02 this is the `5A 0C` density
+    /// command; on the X6 it maps to printhead energy (see
+    /// `protocol_x6::job::density_to_energy`).
     pub density: u8,
     /// Blank feed lines appended after the content.
     pub feed: usize,
@@ -268,10 +268,15 @@ pub async fn print_bitmap(
         }
         PrinterModel::X6 => {
             // No `extend_blank`: the X6 feed is a command carrying a pixel
-            // count, sent by the job after the raster. `opts.density` is
-            // unused here — see `PrintOptions::density`.
+            // count, sent by the job after the raster. `opts.density` maps
+            // to printhead energy — see `PrintOptions::density`.
             for copy in 1..=opts.copies {
-                let mut job = X6PrintJob::new(&bitmap, feed_px(opts.feed), INTER_PACKET_DELAY_MS);
+                let mut job = X6PrintJob::new(
+                    &bitmap,
+                    opts.density,
+                    feed_px(opts.feed),
+                    INTER_PACKET_DELAY_MS,
+                );
                 if opts.copies > 1 {
                     info!("printing copy {copy}/{}", opts.copies);
                 }

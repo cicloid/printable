@@ -223,6 +223,10 @@ fn describe_write(bytes: &[u8]) -> String {
         [0x51, 0x78, 0xA1, _, _, _, lo, hi, ..] => {
             format!("x6 feed ({} px)", u16::from_le_bytes([*lo, *hi]))
         }
+        [0x51, 0x78, 0xAF, _, _, _, lo, hi, ..] => {
+            format!("x6 energy ({})", u16::from_le_bytes([*lo, *hi]))
+        }
+        [0x51, 0x78, 0xBE, ..] => "x6 apply-energy".to_string(),
         [0x5A, 0x01, ..] => "hello".to_string(),
         [0x5A, 0x0A, ..] => "auth challenge".to_string(),
         [0x5A, 0x0B, ..] => "auth response".to_string(),
@@ -1352,6 +1356,16 @@ mod tests {
         let frame = x6_packets::feed_paper(320);
         assert_eq!(describe_write(&frame), "x6 feed (320 px)");
         assert!(!is_x6_scanline(&frame));
+    }
+
+    #[test]
+    fn x6_energy_writes_are_named() {
+        let set = x6_packets::set_energy(24000);
+        assert_eq!(describe_write(&set), "x6 energy (24000)");
+        let apply = x6_packets::apply_energy();
+        assert_eq!(describe_write(&apply), "x6 apply-energy");
+        assert!(!is_x6_scanline(&set));
+        assert!(!is_x6_scanline(&apply));
     }
 
     /// The two raster predicates must not claim each other's frames.

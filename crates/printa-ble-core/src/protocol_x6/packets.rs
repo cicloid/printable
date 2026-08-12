@@ -12,6 +12,8 @@ const TRAILER: u8 = 0xFF;
 
 const CMD_FEED_PAPER: u8 = 0xA1;
 const CMD_RAW_SCANLINE: u8 = 0xA2;
+const CMD_SET_ENERGY: u8 = 0xAF;
+const CMD_APPLY_ENERGY: u8 = 0xBE;
 
 /// Build one framed command.
 pub fn frame(cmd: u8, payload: &[u8]) -> Vec<u8> {
@@ -30,6 +32,26 @@ pub fn frame(cmd: u8, payload: &[u8]) -> Vec<u8> {
 /// Feed `pixels` rows of blank paper (0xA1).
 pub fn feed_paper(pixels: u16) -> Vec<u8> {
     frame(CMD_FEED_PAPER, &pixels.to_le_bytes())
+}
+
+/// Set the thermal printhead energy (0xAF), payload LE u16.
+///
+/// From NaitLee/kitty-printer (`SetEnergy` in `common/cat-protocol.ts`),
+/// whose "strength" presets are 12000 (low), 24000 (medium, its default)
+/// and 48000 (high); parzivail documents the same command as "Energy —
+/// LE U16, thermal printhead energy". Follow with [`apply_energy`] —
+/// kitty-printer always sends the pair, and the energy may not latch
+/// without it.
+pub fn set_energy(energy: u16) -> Vec<u8> {
+    frame(CMD_SET_ENERGY, &energy.to_le_bytes())
+}
+
+/// Latch a previously sent energy value (0xBE), payload `[0x01]`.
+///
+/// kitty-printer (`ApplyEnergy` in `common/cat-protocol.ts`) sends this
+/// immediately after every `SetEnergy`, always with payload `0x01`.
+pub fn apply_energy() -> Vec<u8> {
+    frame(CMD_APPLY_ENERGY, &[0x01])
 }
 
 /// One uncompressed 1bpp scanline (0xA2).
@@ -62,6 +84,30 @@ mod tests {
         assert_eq!(
             feed_paper(0x0140),
             vec![0x51, 0x78, 0xA1, 0x00, 0x02, 0x00, 0x40, 0x01, 0x5C, 0xFF]
+        );
+    }
+
+    /// CRCs derived by running the payloads through this crate's `crc8`
+    /// in a throwaway script (like feed_paper's 0x5C vector): 12000 =
+    /// 0x2EE0 → payload E0 2E, crc 0x89; 48000 = 0xBB80 → 80 BB, 0x9E.
+    #[test]
+    fn set_energy_encodes_le_u16() {
+        assert_eq!(
+            set_energy(12000),
+            vec![0x51, 0x78, 0xAF, 0x00, 0x02, 0x00, 0xE0, 0x2E, 0x89, 0xFF]
+        );
+        assert_eq!(
+            set_energy(48000),
+            vec![0x51, 0x78, 0xAF, 0x00, 0x02, 0x00, 0x80, 0xBB, 0x9E, 0xFF]
+        );
+    }
+
+    /// crc8([0x01]) = 0x07, derived the same way as set_energy's vectors.
+    #[test]
+    fn apply_energy_is_fixed() {
+        assert_eq!(
+            apply_energy(),
+            vec![0x51, 0x78, 0xBE, 0x00, 0x01, 0x00, 0x01, 0x07, 0xFF]
         );
     }
 

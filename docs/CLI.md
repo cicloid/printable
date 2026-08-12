@@ -37,7 +37,7 @@ The flag is a **restriction**, not just a hint: while `--model` is set, a device
 
 What the X6 does differently:
 
-- **`--density` has no effect.** The X6 quality/energy commands are not implemented; the flag is accepted and ignored.
+- **`--density` maps to printhead energy.** The same 1–7 knob drives the X6's `0xAF` SetEnergy / `0xBE` ApplyEnergy commands as `energy = 12000 + 6000 × (density − 1)`: density 1 = 12000, 3 (the default) = 24000, 7 = 48000 — kitty-printer's low/medium/high "strength" presets. Without an energy command the printhead runs at its internal default, which prints noticeably light. [PROTOCOL.md](PROTOCOL.md) §11 has the wire details and provenance.
 - **`--feed` is a printer command,** not blank raster lines. The feed does not count toward `Printed <N> lines.`, and a value beyond 65 535 saturates at that maximum. (`--preview` renders before any model is known, so preview output always shows the feed as blank rows.)
 - **No status.** The X6 reports no paper, battery, or density. [`status`](#status) fails immediately against one, the pre-print paper check is skipped, and running out of paper mid-job cannot be detected.
 - **No liveness probe.** The hello handshake of [Connecting means the printer answered](#connecting-means-the-printer-answered) is LX-only; on an X6, "connected" proves only that the notification subscription is up. On macOS a switched-off X6 can therefore appear to connect (CoreBluetooth answers from its cached GATT database), and the failure surfaces as a print job that stalls in silence — ended by the 10 s notification timeout — rather than as a connect error.
@@ -298,7 +298,7 @@ A `--file` document's image references resolve against **that document's own dir
 | `-f, --file <PATH>` | path | — | `-` means stdin | — |
 | `-m, --markdown` | flag | off | — | Text input and `.txt`; rejected for images and `--url` |
 | `--url <URL>` | string | — | `http://` or `https://` only | — |
-| `--density <N>` | integer | `3` | 1–7, enforced by the parser | All (no effect on X6) |
+| `--density <N>` | integer | `3` | 1–7, enforced by the parser | All (maps to energy on an X6 — see [Printer models](#printer-models)) |
 | `--feed <N>` | integer | `40` | ≥ 0, no upper bound | All |
 | `--dither <MODE>` | enum | `floyd` | `floyd`, `atkinson`, `threshold` (alias `none`) | Image files and `--url` only |
 | `--size <PX>` | float | `24` | > 0, finite, no upper bound | Plain text only (`TEXT`, stdin, `.txt`) |
@@ -385,7 +385,7 @@ printable qr <DATA> [OPTIONS]
 | `--caption <TEXT>` | string | — | Rendered below the code at 24 px, left-aligned |
 | `--device <STR>` | string | saved, else first supported printer | — |
 | `--model <MODEL>` | enum | detect from the name | `lx-d02` \| `x6`, case-insensitive |
-| `--density <N>` | integer | `3` | 1–7 (no effect on X6) |
+| `--density <N>` | integer | `3` | 1–7 (maps to energy on an X6 — see [Printer models](#printer-models)) |
 | `--feed <N>` | integer | `40` | ≥ 0 |
 | `--preview <PATH>` | path | — | — |
 | `--copies <N>` | integer | `1` | 1–20 |

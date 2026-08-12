@@ -70,7 +70,7 @@ Options are validated before rendering and before the printer is touched, so an 
 { "error": "density must be between 1 and 7" }
 ```
 
-`feed` appends blank rows after the content so the paper clears the tear bar; on an LX-D02 they ride along as blank raster rows and count toward `printed_lines`, while an X6 receives the feed as a printer command instead and does **not** count it. `density` is honored by the LX-D02 and accepted-but-ignored on an X6, whose quality commands are not implemented. `copies` runs one full print job per copy over a single BLE connection.
+`feed` appends blank rows after the content so the paper clears the tear bar; on an LX-D02 they ride along as blank raster rows and count toward `printed_lines`, while an X6 receives the feed as a printer command instead and does **not** count it. `density` is honored by both models: the LX-D02 takes it directly, and an X6 maps it to printhead energy (`12000 + 6000 × (density − 1)` — see [docs/CLI.md](CLI.md#printer-models)). `copies` runs one full print job per copy over a single BLE connection.
 
 Unknown fields are ignored. A value of the wrong JSON type, or an integer outside its numeric type (`"density": 300` for a `u8`), is rejected by the deserializer with `422` and a plain-text body — see [Errors](#errors).
 

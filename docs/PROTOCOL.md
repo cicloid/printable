@@ -935,7 +935,7 @@ different CRC, no authentication.
 |---|---|
 | [parzivail's BLE thermal printer notes](https://parzivail.github.io/ble-thermal-printer/) | Frame format, command table, the raw-scanline command, the flow-control notification, and the captured frames the CRC tests pin |
 | [nazarovmi/tinyprint-x6h](https://github.com/nazarovmi/tinyprint-x6h) | A working Python implementation: the CRC8 table, the `X6h-`/`x6h-` name prefixes, the blank lead row |
-| [NaitLee/kitty-printer](https://github.com/NaitLee/kitty-printer) | Web Bluetooth precedent for the same family |
+| [NaitLee/kitty-printer](https://github.com/NaitLee/kitty-printer) | Web Bluetooth precedent for the same family; the energy commands (`SetEnergy` 0xAF / `ApplyEnergy` 0xBE in its `common/cat-protocol.ts`) and their "strength" presets — 12000 low, 24000 medium (its default), 48000 high |
 
 None of these sources is vendored here; claims attributed to them are
 secondhand, exactly as §10 treats the LX references. The captured frames quoted
@@ -1005,16 +1005,41 @@ Check vectors, all lifted from captured frames rather than computed:
 
 ### The command subset this project uses
 
-The family has many more commands (quality, energy, device info, an
-LZO-compressed scanline…). This project sends exactly two and parses exactly
+The family has many more commands (quality, dpi, speed, device info, an
+LZO-compressed scanline…). This project sends exactly four and parses exactly
 one, and this document deliberately describes only those — the rest are
 unverified here and belong to the sources.
 
 | Command | Direction | Payload | Meaning |
 |---|---|---|---|
+| `0xAF` | host → printer | u16 LE | Set thermal printhead energy (darkness) |
+| `0xBE` | host → printer | 1 byte, always `0x01` | Apply (latch) the energy just set |
 | `0xA2` | host → printer | 48 bytes | One uncompressed 1bpp scanline |
 | `0xA1` | host → printer | u16 LE | Feed that many pixel rows of blank paper |
 | `0xAE` | printer → host | 1 byte | Device status: `0x10` = buffer full, `0x00` = ready |
+
+#### `0xAF` / `0xBE` — printhead energy, the darkness knob
+
+Both from kitty-printer (`SetEnergy` / `ApplyEnergy` in its
+`common/cat-protocol.ts`); parzivail documents `0xAF` the same way ("Energy —
+LE U16, thermal printhead energy") and lists `0xBE`. kitty-printer's
+"strength" presets are 12000 (low), 24000 (medium — its `DEF_ENERGY`) and
+48000 (high), and it sends `0xBE` with payload `0x01` immediately after every
+`0xAF`; this project does the same, since the energy may not latch without
+the apply. Without the pair the printhead runs at its internal default, which
+comes out light.
+
+The user-facing knob is the same `--density` 1–7 the LX-D02 uses
+(`density_to_energy` in `protocol_x6/job.rs`):
+
+```
+energy = 12000 + 6000 × (density − 1)        density clamped to 1–7
+```
+
+so density 1 = 12000, 3 (the default) = 24000 and 7 = 48000 — exactly the
+kitty-printer presets at the endpoints and midpoint. The pair is sent once,
+at the start of every job, before the blank lead row. The maximum, 48000,
+fits a u16 with room to spare.
 
 #### `0xA2` — raw scanline, and the bit order
 
@@ -1074,6 +1099,8 @@ No hello, no auth, no start/end bracketing. The whole session is:
 
 ```
 connect, discover 0xAE30, subscribe 0xAE02
+0xAF set energy              … from --density, see the 0xAF/0xBE section
+0xBE apply energy
 0xA2 blank lead row
 0xA2 per bitmap row          … 15 ms apart (INTER_PACKET_DELAY_MS, same
                                value the LX-D02 path uses); pause on
@@ -1086,7 +1113,10 @@ The 500 ms settle (`SETTLE_MS` in `protocol_x6/job.rs`) exists because the
 printer sends no completion event: without it the transport would tear the
 link down while the printer is still draining its buffer. **The value is a
 guess, to be tuned against hardware.** The inter-packet delay applies between
-scanlines only — not before the feed command.
+scanlines only — the two energy frames are written back to back with no delay
+before the lead row, and there is none before the feed command either.
+Neither energy frame counts toward `packets_sent`, which counts scanlines
+alone.
 
 The transport reuses the LX-D02 path's deadlines — `NOTIFICATION_TIMEOUT`,
 `STALL_TIMEOUT`, and the connect/disconnect deadlines of §9's table;
@@ -1122,6 +1152,8 @@ do not implement 4bpp from either source without hardware confirmation.
 ```
 HOST → PRINTER (0xAE01, write without response)
 
+  51 78 AF 00 02 00 <e lo> <e hi> <crc8> FF  set printhead energy <e> (u16 LE)
+  51 78 BE 00 01 00 01 07 FF                 apply energy (fixed frame)
   51 78 A2 00 30 00 <48 bytes> <crc8> FF     scanline, LSB = leftmost pixel
   51 78 A1 00 02 00 <px lo> <px hi> <crc8> FF   feed <px> rows (u16 LE)
 

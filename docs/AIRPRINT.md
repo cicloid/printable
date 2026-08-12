@@ -63,7 +63,8 @@ no elevated privileges.
  printable ipp-command  inflate → decode URF → fit → dither → 384 px bitmap
         │
         ▼
- printer over BLE (LX-D02, or an X6 via AIRPRINT_ARGS="--model x6")
+ printer over BLE (LX-D02 or X6, detected from the device name;
+                    AIRPRINT_ARGS="--model …" restricts to one family)
 ```
 
 `ippeveprinter` is a complete IPP Everywhere server included with CUPS. Stage 1

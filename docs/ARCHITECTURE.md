@@ -25,7 +25,7 @@ The cost is real and visible in the API: the core cannot fetch a markdown image,
 
 ## The print FSM
 
-`printa_ble_core::protocol::job::PrintJob` drives the whole LX-D02 flow — hello, auth, density, raster streaming, flow control, finish — without performing any I/O. The contract is three calls:
+There is one job state machine per printer model, and they share a drive contract but nothing else. `printa_ble_core::protocol::job::PrintJob` drives the whole LX-D02 flow — hello, auth, density, raster streaming, flow control, finish — without performing any I/O. `protocol_x6::job::X6PrintJob` does the same for the X6/X6h "cat printer" family, whose flow is far shorter (no hello, no auth, no completion event: stream one scanline per packet, pause on `BufferFull` / resume on `Ready`, feed, settle); it reuses the same `Action` vocabulary and `JobStats` counters, so the browser's single pump drives either job unchanged and the native `pump_x6` is a line-for-line mirror of the LX loop. The rest of this section walks the LX-D02 flow; the X6's bytes live in [PROTOCOL.md §11](PROTOCOL.md). The contract is three calls:
 
 ```rust
 let mut job = PrintJob::new(&bitmap, density, challenge, inter_packet_delay_ms)?;
@@ -126,7 +126,7 @@ JS has no blocking receive, so the shape inverts: `pump()` *returns* on `waitNot
 
 The result: a protocol fix — a flow-control quirk, a retry rule, an auth detail — is made once, in core, and both transports get it.
 
-The transports do hold a little protocol knowledge, and it is worth knowing exactly how much. The BLE module knows the two characteristic UUIDs (0xFFE1 write, 0xFFE2 notify), the hello frame and its `5A 01` reply, and — for trace logging only — how to put a human-readable label on an outgoing frame. The hello is not a leak but a deliberate exception: the transport has to greet the printer *before* a `PrintJob` exists, because a connection that has not been answered is not a connection at all (see [The liveness handshake](#the-liveness-handshake)). The web page holds the same two UUIDs plus the service UUID 0xFFE6 and one two-byte peek at `5A 02` frames to show battery percentage in the status chip.
+The transports do hold a little protocol knowledge, and it is worth knowing exactly how much. The GATT UUIDs are no longer transport knowledge at all: they live in core's `model::PrinterModel` (LX-D02 service 0xFFE6, write 0xFFE1, notify 0xFFE2; X6 service 0xAE30, write 0xAE01, notify 0xAE02) as plain per-model values — facts, not I/O, so core stays sans-IO — and both transports read them from there, the web page via `#[wasm_bindgen]` getters. Beyond that, the BLE module knows the LX hello frame and its `5A 01` reply, and — for trace logging only — how to put a human-readable label on an outgoing frame. The hello is not a leak but a deliberate exception: the transport has to greet the printer *before* a `PrintJob` exists, because a connection that has not been answered is not a connection at all (see [The liveness handshake](#the-liveness-handshake)). The web page holds the name prefixes for the device chooser, one two-byte peek at `5A 02` frames to show battery percentage in the status chip (LX only — the X6 has no battery frame), and one structural fact used for model detection: the two families expose disjoint primary services, so `connect()` in `app.js` probes for the LX service and falls back to the X6 — whichever service the device answers with *is* the model switch.
 
 ### The liveness handshake
 
@@ -253,12 +253,18 @@ Genuinely requires hardware: BLE scan/connect/subscribe, an end-to-end print, We
 ```
 crates/printa-ble-core/          sans-IO: no tokio, no BLE, no rand, no network
   assets/                        JetBrains Mono ×3 + Noto Sans JP (CJK fallback), OFL licences
-  src/protocol/
+  src/model.rs                   PrinterModel: per-model UUIDs and name prefixes, as values
+  src/protocol/                  the LX-D02 wire protocol
     packets.rs                   command builders (5A 01/04/0A/0B/0C, 55 raster)
     notifications.rs             0xFFE2 frame parser → Notification
     crc.rs                       CRC16/XMODEM (auth only)
     auth.rs                      challenge ⊕ MAC → 10-byte response
     job.rs                       the print FSM: Action / next_action / on_notification
+  src/protocol_x6/               the X6/X6h wire protocol (unrelated to the above)
+    packets.rs                   51 78 frame builder, 0xA2 scanline, 0xA1 feed
+    notifications.rs             0xAE02 frame parser → X6Notification
+    crc.rs                       CRC8, polynomial 0x07
+    job.rs                       X6PrintJob: stream / pause / feed / settle
   src/raster/
     bitmap.rs                    384 px 1-bit canvas, raster chunking
     rich.rs                      styled-span typesetter (fonts, wrap, strike)
@@ -324,6 +330,6 @@ Note for archaeologists: the plan documents in `docs/plans/` predate a rename an
 6. `crates/printa-ble-web/src/lib.rs` — a `#[wasm_bindgen]` wrapper returning `WasmBitmap` (fallible ones return `Result<_, String>`), then a tab in `web/index.html` and a `renderCurrent()` arm in `web/app.js`.
 7. Tests: pixel assertions in core, a 400-path test in the server, a wrapper test in the web crate. Run `cargo test --workspace` — it needs no hardware.
 
-**A protocol change** (new packet, new notification, different retry rule): `protocol/packets.rs`, `protocol/notifications.rs`, and `protocol/job.rs` only. Add a replay test. Both transports inherit it; do not add protocol knowledge to `ble.rs` or `app.js`.
+**A protocol change** (new packet, new notification, different retry rule): the owning model's module only — `protocol/{packets,notifications,job}.rs` for the LX-D02, `protocol_x6/{packets,notifications,job}.rs` for the X6. Add a replay test. Both transports inherit it; do not add protocol knowledge to `ble.rs` or `app.js`, and do not let one protocol module reach into the other — they share nothing but the `Action` / `JobStats` vocabulary.
 
 **A new print surface** (Matrix bot, ESC/POS bridge, whatever): depend on `printa-ble-core`, drive `PrintJob` with your own pump, and supply your own randomness. That is the entire contract — the action loops in `ble.rs::run_job` and `app.js::pump` are both complete reference implementations, and each fits on a screen.

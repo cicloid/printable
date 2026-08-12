@@ -298,7 +298,7 @@ starts an HTTP print server (REST API + web UI) on `0.0.0.0:8000`. `--port` and 
 |---|---|---|---|
 | GET | `/` | — | The web UI (a single self-contained HTML page) |
 | GET | `/health` | — | `{"status":"ok","version":…,"url_printing":…}` |
-| GET | `/status` | — | Battery, paper, density, charging, voltage as JSON |
+| GET | `/status` | — | Battery, paper, density, charging, voltage as JSON (LX-D02 only — the X6 reports no status) |
 | POST | `/preview/text` | JSON `{"content", "size"?}` | PNG |
 | POST | `/preview/markdown` | JSON `{"content"}` | PNG |
 | POST | `/preview/qr` | JSON `{"data", "caption"?}` | PNG |

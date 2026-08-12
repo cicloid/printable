@@ -1,8 +1,8 @@
-# LX-D02 / LX-D2 BLE thermal printer protocol
+# BLE thermal printer protocols
 
-A complete description of the wire protocol spoken by LX-D02 and LX-D2 Bluetooth
-Low Energy thermal printers, written for someone implementing it from scratch in
-any language.
+A complete description of the wire protocols spoken by the printers this
+project drives — the LX-D02 / LX-D2, and the X6 / X6h "cat printer" family —
+written for someone implementing them from scratch in any language.
 
 Sections 1–10 and the appendices cover the LX-D02 / LX-D2 protocol. **§11 covers
 the X6 / X6h "cat printer" family**, a second, entirely unrelated protocol this

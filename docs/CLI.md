@@ -298,7 +298,7 @@ A `--file` document's image references resolve against **that document's own dir
 | `-f, --file <PATH>` | path | — | `-` means stdin | — |
 | `-m, --markdown` | flag | off | — | Text input and `.txt`; rejected for images and `--url` |
 | `--url <URL>` | string | — | `http://` or `https://` only | — |
-| `--density <N>` | integer | `3` | 1–7, enforced by the parser | All |
+| `--density <N>` | integer | `3` | 1–7, enforced by the parser | All (no effect on X6) |
 | `--feed <N>` | integer | `40` | ≥ 0, no upper bound | All |
 | `--dither <MODE>` | enum | `floyd` | `floyd`, `atkinson`, `threshold` (alias `none`) | Image files and `--url` only |
 | `--size <PX>` | float | `24` | > 0, finite, no upper bound | Plain text only (`TEXT`, stdin, `.txt`) |
@@ -385,7 +385,7 @@ printable qr <DATA> [OPTIONS]
 | `--caption <TEXT>` | string | — | Rendered below the code at 24 px, left-aligned |
 | `--device <STR>` | string | saved, else first supported printer | — |
 | `--model <MODEL>` | enum | detect from the name | `lx-d02` \| `x6`, case-insensitive |
-| `--density <N>` | integer | `3` | 1–7 |
+| `--density <N>` | integer | `3` | 1–7 (no effect on X6) |
 | `--feed <N>` | integer | `40` | ≥ 0 |
 | `--preview <PATH>` | path | — | — |
 | `--copies <N>` | integer | `1` | 1–20 |

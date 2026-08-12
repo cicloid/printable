@@ -346,14 +346,14 @@ function finishJob(err) {
 // Run one print job (one copy) to completion. The bitmap is only borrowed
 // by the WasmJob constructor (the job copies what it needs), so the same
 // WasmBitmap is safely reused across copies and freed by the caller.
-function runJob(bitmap, density) {
+function runJob(bitmap, density, feed) {
   return new Promise((resolve, reject) => {
     let j;
     try {
       if (model === "x6") {
         // No density (the X6 protocol has none — the slider has no effect)
         // and no auth. Feed rides as a pixel-count command, not blank lines.
-        j = new WasmX6Job(bitmap, optFeed());
+        j = new WasmX6Job(bitmap, feed);
       } else {
         const challenge = crypto.getRandomValues(new Uint8Array(10));
         j = new WasmJob(bitmap, density, challenge);
@@ -380,15 +380,18 @@ async function doPrint() {
       return;
     }
     if (!connected) await connect();
+    // Snapshot the options once, so editing the form mid-print cannot change
+    // later copies of the same job.
+    const density = optDensity();
+    const feed = optFeed();
+    const copies = optCopies();
     // On the LX the feed is part of the bitmap, so it repeats per copy (same
     // as the CLI). On the X6 it is a printer command instead — runJob passes
     // it to the job, so it must not also be baked in here.
-    if (model !== "x6") bitmap.extend_blank(optFeed());
-    const density = optDensity();
-    const copies = optCopies();
+    if (model !== "x6") bitmap.extend_blank(feed);
     const lines = bitmap.height();
     for (let i = 0; i < copies; i++) {
-      await runJob(bitmap, density);
+      await runJob(bitmap, density, feed);
     }
     let msg = "Printed " + lines + " lines";
     if (copies > 1) msg += " × " + copies + " copies";

@@ -120,19 +120,35 @@ pub struct PrintOutcome {
 ///
 /// Best effort: a failed save warns but never fails the command.
 pub fn remember_device(config: &mut Config, printer: &ble::Printer) {
-    // A device saved before model support reconnects with `model: None` on
-    // file but `Some(..)` here, so it is re-saved once to gain the field.
-    let current = SavedDevice {
-        id: printer.id(),
-        name: printer.name().to_string(),
-        model: Some(printer.model().to_string()),
-    };
+    let current = device_record(printer.id(), printer.name(), printer.detected_model());
     if config.device.as_ref() != Some(&current) {
         debug!("remembering device {} ({})", current.name, current.id);
         config.device = Some(current);
         if let Err(e) = config.save() {
             eprintln!("warning: failed to save config: {e:#}");
         }
+    }
+}
+
+/// The [`SavedDevice`] a connected printer is remembered as.
+///
+/// Saves the model the advertised name *identified*, not the model the
+/// connection was driven as: an explicit `--device` filter can match a name
+/// no model claims, and the LX-D02 that `connect_resolved` then assumes is a
+/// guess. Recording that guess would make the next flagless run restrict its
+/// scan to LX-D02 — a restriction the unclaimed name can never satisfy, so
+/// the saved device would become permanently unreachable. Saving `None`
+/// instead leaves the reconnect to name detection and saved-id matching,
+/// exactly as before models were remembered.
+///
+/// A device saved before model support existed reconnects with `model: None`
+/// on file; if its name identifies a model, it is re-saved once to gain the
+/// field.
+fn device_record(id: String, name: &str, detected: Option<PrinterModel>) -> SavedDevice {
+    SavedDevice {
+        id,
+        name: name.to_string(),
+        model: detected.map(|m| m.to_string()),
     }
 }
 
@@ -314,5 +330,34 @@ mod tests {
         assert_eq!(feed_px(65_535), u16::MAX);
         assert_eq!(feed_px(65_536), u16::MAX);
         assert_eq!(feed_px(usize::MAX), u16::MAX);
+    }
+
+    /// A device whose name no model claims (reachable only via an explicit
+    /// `--device` filter) is driven as an LX-D02 by assumption — but that
+    /// guess must not be written to the config as fact. Saving
+    /// `model: "lx-d02"` would restrict the next flagless scan to LX-D02,
+    /// which the unclaimed name can never satisfy, making the saved device
+    /// permanently unreachable.
+    #[test]
+    fn an_unclaimed_name_is_remembered_without_a_model() {
+        let record = device_record("aabbccdd".to_string(), "Oddball", None);
+        assert_eq!(
+            record,
+            SavedDevice {
+                id: "aabbccdd".to_string(),
+                name: "Oddball".to_string(),
+                model: None,
+            }
+        );
+    }
+
+    /// A detected model is still remembered, so a reconnect to a recognized
+    /// printer keeps restricting the scan to its family.
+    #[test]
+    fn a_detected_model_is_remembered() {
+        let record = device_record("x6-id".to_string(), "X6h-A1B2", Some(PrinterModel::X6));
+        assert_eq!(record.model.as_deref(), Some("x6"));
+        let record = device_record("lx-id".to_string(), "LX-D02", Some(PrinterModel::LxD02));
+        assert_eq!(record.model.as_deref(), Some("lx-d02"));
     }
 }

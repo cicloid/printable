@@ -658,9 +658,13 @@ pub struct Printer {
     /// disconnect so it does not park on the stream forever.
     forwarder: tokio::task::JoinHandle<()>,
     name: String,
-    /// The model the matched advertised name identified (LX-D02 when the
+    /// The model this connection is driven as (LX-D02 when the advertised
     /// name identified none — see `connect_resolved`).
     model: PrinterModel,
+    /// The model the matched advertised name actually identified — `None`
+    /// for a name no model claims, where `model` above is only an
+    /// assumption. What `remember_device` may record; the assumption is not.
+    detected: Option<PrinterModel>,
 }
 
 /// Scan until a matching device appears (up to `scan_timeout`), then connect,
@@ -732,12 +736,13 @@ pub async fn connect_resolved(
     let Candidate {
         peripheral,
         name,
-        model,
+        model: detected,
     } = found;
     // A device only an explicit `--device` filter could have matched, under
     // a name no model claims: drive it as an LX-D02, which is what this
-    // code did unconditionally before models existed.
-    let model = model.unwrap_or_else(|| {
+    // code did unconditionally before models existed. The assumption stays
+    // separate from `detected` so it is never saved as fact.
+    let model = detected.unwrap_or_else(|| {
         debug!(
             "{name} matches no known model; assuming {}",
             PrinterModel::LxD02
@@ -763,7 +768,7 @@ pub async fn connect_resolved(
     }
 
     // From here on the link is up: drop it again if setup fails.
-    match initialize(peripheral.clone(), name, model).await {
+    match initialize(peripheral.clone(), name, model, detected).await {
         Ok(printer) => Ok(printer),
         Err(e) => {
             release(&peripheral).await;
@@ -786,7 +791,12 @@ pub async fn connect_resolved(
 /// reach this point — the failure then shows up as a silent print job, not
 /// as a connect error. Do not invent a probe from the undocumented X6
 /// commands; this is a known, accepted gap.
-async fn initialize(peripheral: Peripheral, name: String, model: PrinterModel) -> Result<Printer> {
+async fn initialize(
+    peripheral: Peripheral,
+    name: String,
+    model: PrinterModel,
+    detected: Option<PrinterModel>,
+) -> Result<Printer> {
     // `connect` returning Ok is not the same as a live link. Asking outright
     // turns a dead connection into one legible error instead of a puzzling
     // failure three steps further down.
@@ -911,6 +921,7 @@ async fn initialize(peripheral: Peripheral, name: String, model: PrinterModel) -
         forwarder,
         name,
         model,
+        detected,
     })
 }
 
@@ -982,9 +993,19 @@ impl Printer {
         self.peripheral.id().to_string()
     }
 
-    /// The model this connection is being driven as.
+    /// The model this connection is being driven as. For a device whose
+    /// advertised name no model claims, this is the assumed LX-D02 — see
+    /// [`Printer::detected_model`] for the distinction.
     pub fn model(&self) -> PrinterModel {
         self.model
+    }
+
+    /// The model the advertised name actually identified, or `None` when no
+    /// model claims the name. This is what may be persisted: recording the
+    /// driven default instead would restrict future scans to a model the
+    /// name can never match.
+    pub fn detected_model(&self) -> Option<PrinterModel> {
+        self.detected
     }
 
     /// Wait for the first Status notification. Status frames arrive
@@ -1920,6 +1941,22 @@ mod tests {
             resolve_restriction(Some("LX"), Some(&saved), Some(PrinterModel::X6)),
             Some(PrinterModel::X6)
         );
+    }
+
+    /// A saved device with no remembered model (`restrict = None`) reconnects
+    /// by its exact id even when its name identifies no model — the
+    /// pre-model reconnect behavior for odd names, which `remember_device`
+    /// preserves by never saving the driven default as if it were detected.
+    #[test]
+    fn a_saved_id_with_no_model_matches_an_unclaimed_name() {
+        let target = Target::SavedId {
+            id: "aabbccdd",
+            name: "Oddball",
+        };
+        assert!(matches!(
+            match_advertised("Oddball", "aabbccdd", &target, None),
+            Some((MatchKind::Exact, None))
+        ));
     }
 
     /// Saved-device resolution: the saved id wins outright.

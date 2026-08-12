@@ -20,9 +20,13 @@ pub struct Config {
 pub struct SavedDevice {
     pub id: String,
     pub name: String,
-    /// The printer model's display form (`"lx-d02"`, `"x6"`), stored as a
-    /// plain string so the file stays human-editable and core types stay out
-    /// of serde. Absent in configs written before model support existed.
+    /// The model the device's advertised name identified (display form,
+    /// `"lx-d02"` or `"x6"`), stored as a plain string so the file stays
+    /// human-editable and core types stay out of serde. Absent in configs
+    /// written before model support existed, and for a device whose name no
+    /// model claims — only the *detected* model is recorded, never the
+    /// LX-D02 default such a device is driven as, so the reconnect scan is
+    /// never restricted to a model the name cannot match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }

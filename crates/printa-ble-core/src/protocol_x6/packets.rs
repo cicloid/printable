@@ -13,6 +13,7 @@ const TRAILER: u8 = 0xFF;
 const CMD_FEED_PAPER: u8 = 0xA1;
 const CMD_RAW_SCANLINE: u8 = 0xA2;
 const CMD_SET_ENERGY: u8 = 0xAF;
+const CMD_SET_SPEED: u8 = 0xBD;
 const CMD_APPLY_ENERGY: u8 = 0xBE;
 
 /// Build one framed command.
@@ -44,6 +45,20 @@ pub fn feed_paper(pixels: u16) -> Vec<u8> {
 /// without it.
 pub fn set_energy(energy: u16) -> Vec<u8> {
     frame(CMD_SET_ENERGY, &energy.to_le_bytes())
+}
+
+/// Set the feed speed (0xBD), payload one byte: a speed *divisor*, so
+/// smaller is faster.
+///
+/// From NaitLee/kitty-printer (`setSpeed` in `common/cat-protocol.ts`),
+/// whose presets in `common/constants.ts` are quick = 8, fast = 16 and
+/// normal = 32 (its `DEF_SPEED`); parzivail documents the same command as
+/// "0xBD Set Feed Speed — U8, speed divisor (smaller is faster)". On the
+/// validated X6h unit speed is the dominant darkness control — slower
+/// prints come out darker. kitty-printer sends this before its
+/// `SetEnergy`/`ApplyEnergy` pair; this project keeps that order.
+pub fn set_speed(divisor: u8) -> Vec<u8> {
+    frame(CMD_SET_SPEED, &[divisor])
 }
 
 /// Latch a previously sent energy value (0xBE), payload `[0x01]`.
@@ -99,6 +114,27 @@ mod tests {
         assert_eq!(
             set_energy(48000),
             vec![0x51, 0x78, 0xAF, 0x00, 0x02, 0x00, 0x80, 0xBB, 0x9E, 0xFF]
+        );
+    }
+
+    /// CRCs derived by running the one-byte payloads through this crate's
+    /// `crc8` in a throwaway script validated against the pinned feed_paper
+    /// vector (crc8([0x40, 0x01]) = 0x5C): crc8([0x20]) = 0xE0,
+    /// crc8([0x10]) = 0x70 (which also matches the captured buffer-full
+    /// frame's CRC over the same byte), crc8([0x08]) = 0x38.
+    #[test]
+    fn set_speed_encodes_one_byte_divisor() {
+        assert_eq!(
+            set_speed(32),
+            vec![0x51, 0x78, 0xBD, 0x00, 0x01, 0x00, 0x20, 0xE0, 0xFF]
+        );
+        assert_eq!(
+            set_speed(16),
+            vec![0x51, 0x78, 0xBD, 0x00, 0x01, 0x00, 0x10, 0x70, 0xFF]
+        );
+        assert_eq!(
+            set_speed(8),
+            vec![0x51, 0x78, 0xBD, 0x00, 0x01, 0x00, 0x08, 0x38, 0xFF]
         );
     }
 

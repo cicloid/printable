@@ -352,8 +352,8 @@ function runJob(bitmap, density, feed) {
     let j;
     try {
       if (model === "x6") {
-        // No auth. Density maps to the X6's printhead-energy commands, and
-        // feed rides as a pixel-count command, not blank lines.
+        // No auth. Density maps to the X6's feed-speed and printhead-energy
+        // commands, and feed rides as a pixel-count command, not blank lines.
         j = new WasmX6Job(bitmap, density, feed);
       } else {
         const challenge = crypto.getRandomValues(new Uint8Array(10));

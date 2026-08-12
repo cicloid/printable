@@ -226,6 +226,9 @@ fn describe_write(bytes: &[u8]) -> String {
         [0x51, 0x78, 0xAF, _, _, _, lo, hi, ..] => {
             format!("x6 energy ({})", u16::from_le_bytes([*lo, *hi]))
         }
+        [0x51, 0x78, 0xBD, _, _, _, divisor, ..] => {
+            format!("x6 speed ({divisor})")
+        }
         [0x51, 0x78, 0xBE, ..] => "x6 apply-energy".to_string(),
         [0x5A, 0x01, ..] => "hello".to_string(),
         [0x5A, 0x0A, ..] => "auth challenge".to_string(),
@@ -1355,6 +1358,13 @@ mod tests {
     fn x6_feed_writes_are_named() {
         let frame = x6_packets::feed_paper(320);
         assert_eq!(describe_write(&frame), "x6 feed (320 px)");
+        assert!(!is_x6_scanline(&frame));
+    }
+
+    #[test]
+    fn x6_speed_writes_are_named() {
+        let frame = x6_packets::set_speed(32);
+        assert_eq!(describe_write(&frame), "x6 speed (32)");
         assert!(!is_x6_scanline(&frame));
     }
 

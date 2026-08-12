@@ -93,8 +93,8 @@ impl fmt::Display for PrintFailure {
 #[derive(Debug, Clone, Copy)]
 pub struct PrintOptions {
     /// Print density, 1-7. On the LX-D02 this is the `5A 0C` density
-    /// command; on the X6 it maps to printhead energy (see
-    /// `protocol_x6::job::density_to_energy`).
+    /// command; on the X6 it maps to feed speed and printhead energy (see
+    /// `protocol_x6::job::density_to_speed` and `density_to_energy`).
     pub density: u8,
     /// Blank feed lines appended after the content.
     pub feed: usize,

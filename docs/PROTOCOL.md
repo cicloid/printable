@@ -935,7 +935,7 @@ different CRC, no authentication.
 |---|---|
 | [parzivail's BLE thermal printer notes](https://parzivail.github.io/ble-thermal-printer/) | Frame format, command table, the raw-scanline command, the flow-control notification, and the captured frames the CRC tests pin |
 | [nazarovmi/tinyprint-x6h](https://github.com/nazarovmi/tinyprint-x6h) | A working Python implementation: the CRC8 table, the `X6h-`/`x6h-` name prefixes, the blank lead row |
-| [NaitLee/kitty-printer](https://github.com/NaitLee/kitty-printer) | Web Bluetooth precedent for the same family; the energy commands (`SetEnergy` 0xAF / `ApplyEnergy` 0xBE in its `common/cat-protocol.ts`) and their "strength" presets — 12000 low, 24000 medium (its default), 48000 high |
+| [NaitLee/kitty-printer](https://github.com/NaitLee/kitty-printer) | Web Bluetooth precedent for the same family; the speed command (`setSpeed` 0xBD in its `common/cat-protocol.ts`) and its presets (`SPEED_RANGE` in `common/constants.ts` — 8 quick, 16 fast, 32 normal, its `DEF_SPEED`); the energy commands (`SetEnergy` 0xAF / `ApplyEnergy` 0xBE) and their "strength" presets — 12000 low, 24000 medium (its default), 48000 high |
 
 None of these sources is vendored here; claims attributed to them are
 secondhand, exactly as §10 treats the LX references. The captured frames quoted
@@ -1005,20 +1005,47 @@ Check vectors, all lifted from captured frames rather than computed:
 
 ### The command subset this project uses
 
-The family has many more commands (quality, dpi, speed, device info, an
-LZO-compressed scanline…). This project sends exactly four and parses exactly
+The family has many more commands (quality, dpi, device info, an
+LZO-compressed scanline…). This project sends exactly five and parses exactly
 one, and this document deliberately describes only those — the rest are
 unverified here and belong to the sources.
 
 | Command | Direction | Payload | Meaning |
 |---|---|---|---|
-| `0xAF` | host → printer | u16 LE | Set thermal printhead energy (darkness) |
+| `0xBD` | host → printer | u8 | Set feed speed, as a divisor — smaller is faster |
+| `0xAF` | host → printer | u16 LE | Set thermal printhead energy |
 | `0xBE` | host → printer | 1 byte, always `0x01` | Apply (latch) the energy just set |
 | `0xA2` | host → printer | 48 bytes | One uncompressed 1bpp scanline |
 | `0xA1` | host → printer | u16 LE | Feed that many pixel rows of blank paper |
 | `0xAE` | printer → host | 1 byte | Device status: `0x10` = buffer full, `0x00` = ready |
 
-#### `0xAF` / `0xBE` — printhead energy, the darkness knob
+#### `0xBD` — feed speed, the dominant darkness knob
+
+From kitty-printer (`setSpeed` in its `common/cat-protocol.ts`); parzivail
+documents it as "Set Feed Speed — U8, speed divisor (smaller is faster)".
+kitty-printer's presets (`SPEED_RANGE` in its `common/constants.ts`) are
+8 (quick), 16 (fast) and 32 (normal — its `DEF_SPEED`).
+
+**On the validated unit (an X6h), speed is the dominant darkness control**:
+a physical side-by-side via the kitty-printer web app showed slower feed
+prints markedly darker, while the energy setting had only a minor effect
+(mainly banding). That observation is why `--density` drives this command —
+energy alone produced no visible density change on hardware.
+
+The mapping from the `--density` 1–7 knob (`density_to_speed` in
+`protocol_x6/job.rs`):
+
+```
+divisor = 8 + 4 × (density − 1)        density clamped to 1–7
+```
+
+so density 1 = 8 (fastest, lightest), 3 (the default) = 16 and 7 = 32
+(slowest, darkest) — kitty-printer's quick/fast/normal presets at density 1,
+3 and 7. The divisor never exceeds 32, the largest reference-validated value.
+The frame is sent once per job, as the first setup frame before `0xAF` —
+kitty-printer's prepare order (`setSpeed` → `setEnergy` → `applyEnergy`).
+
+#### `0xAF` / `0xBE` — printhead energy
 
 Both from kitty-printer (`SetEnergy` / `ApplyEnergy` in its
 `common/cat-protocol.ts`); parzivail documents `0xAF` the same way ("Energy —
@@ -1026,11 +1053,10 @@ LE U16, thermal printhead energy") and lists `0xBE`. kitty-printer's
 "strength" presets are 12000 (low), 24000 (medium — its `DEF_ENERGY`) and
 48000 (high), and it sends `0xBE` with payload `0x01` immediately after every
 `0xAF`; this project does the same, since the energy may not latch without
-the apply. Without the pair the printhead runs at its internal default, which
-comes out light.
+the apply. On the validated unit energy is the *secondary* darkness input —
+see the `0xBD` section above — mainly affecting banding.
 
-The user-facing knob is the same `--density` 1–7 the LX-D02 uses
-(`density_to_energy` in `protocol_x6/job.rs`):
+`--density` maps to energy too (`density_to_energy` in `protocol_x6/job.rs`):
 
 ```
 energy = 12000 + 6000 × (density − 1)        density clamped to 1–7
@@ -1038,8 +1064,8 @@ energy = 12000 + 6000 × (density − 1)        density clamped to 1–7
 
 so density 1 = 12000, 3 (the default) = 24000 and 7 = 48000 — exactly the
 kitty-printer presets at the endpoints and the default density. The pair is sent once,
-at the start of every job, before the blank lead row. The maximum, 48000,
-fits a u16 with room to spare.
+at the start of every job, after `0xBD` and before the blank lead row. The
+maximum, 48000, fits a u16 with room to spare.
 
 #### `0xA2` — raw scanline, and the bit order
 
@@ -1099,6 +1125,7 @@ No hello, no auth, no start/end bracketing. The whole session is:
 
 ```
 connect, discover 0xAE30, subscribe 0xAE02
+0xBD set speed               … from --density, see the 0xBD section
 0xAF set energy              … from --density, see the 0xAF/0xBE section
 0xBE apply energy
 0xA2 blank lead row
@@ -1113,9 +1140,9 @@ The 500 ms settle (`SETTLE_MS` in `protocol_x6/job.rs`) exists because the
 printer sends no completion event: without it the transport would tear the
 link down while the printer is still draining its buffer. **The value is a
 guess, to be tuned against hardware.** The inter-packet delay applies between
-scanlines only — the two energy frames are written back to back with no delay
+scanlines only — the three setup frames are written back to back with no delay
 before the lead row, and there is none before the feed command either.
-Neither energy frame counts toward `packets_sent`, which counts scanlines
+No setup frame counts toward `packets_sent`, which counts scanlines
 alone.
 
 The transport reuses the LX-D02 path's deadlines — `NOTIFICATION_TIMEOUT`,

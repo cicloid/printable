@@ -6,7 +6,8 @@
 //! write, sleep, or wait), and feeds raw 0xAE02 notification bytes back in.
 //! The X6 flow is much simpler — no auth, no completion notification — so
 //! the constructor takes only a bitmap, a density and a feed length. The
-//! density maps to the X6's printhead-energy commands in core.
+//! density maps to the X6's feed-speed and printhead-energy commands in
+//! core.
 
 use printa_ble_core::protocol_x6::job::X6PrintJob;
 use printa_ble_core::protocol_x6::notifications;
@@ -24,9 +25,10 @@ pub struct WasmX6Job {
 
 #[wasm_bindgen]
 impl WasmX6Job {
-    /// Start a job that sets the printhead energy from `density` (1-7,
-    /// same knob as the LX-D02's), prints `bitmap`, then feeds `feed_px`
-    /// rows of blank paper via the 0xA1 feed command (0 skips the feed).
+    /// Start a job that sets the feed speed and printhead energy from
+    /// `density` (1-7, same knob as the LX-D02's), prints `bitmap`, then
+    /// feeds `feed_px` rows of blank paper via the 0xA1 feed command
+    /// (0 skips the feed).
     ///
     /// Unlike the LX-D02 job there is no auth challenge.
     #[wasm_bindgen(constructor)]
@@ -104,10 +106,11 @@ mod tests {
         WasmX6Job::new(&bitmap, 3, 64).unwrap()
     }
 
-    /// Pull sends until the job has streamed its energy setup pair and the
-    /// blank lead row, leaving it mid-scanline where flow control applies.
+    /// Pull sends until the job has streamed its speed/energy setup frames
+    /// and the blank lead row, leaving it mid-scanline where flow control
+    /// applies.
     fn past_setup_and_lead(job: &mut WasmX6Job) {
-        for _ in 0..3 {
+        for _ in 0..4 {
             assert!(matches!(job.next_action_inner(), ActionMsg::Send { .. }));
         }
     }
@@ -145,16 +148,18 @@ mod tests {
         let actions = drain(&mut job);
         let sends = sent_bytes(&actions);
 
-        // Energy setup pair, blank artifact-guard lead row + 2 bitmap
-        // rows, then the feed.
-        assert_eq!(sends.len(), 6);
-        assert_eq!(&sends[0][..3], [0x51, 0x78, 0xAF]);
-        assert_eq!(&sends[0][6..8], [0xC0, 0x5D]); // density 3 = 24000 LE
-        assert_eq!(&sends[1][..3], [0x51, 0x78, 0xBE]);
-        for (i, send) in sends[2..5].iter().enumerate() {
+        // Speed and energy setup frames, blank artifact-guard lead row + 2
+        // bitmap rows, then the feed.
+        assert_eq!(sends.len(), 7);
+        assert_eq!(&sends[0][..3], [0x51, 0x78, 0xBD]);
+        assert_eq!(sends[0][6], 16); // density 3 = divisor 16
+        assert_eq!(&sends[1][..3], [0x51, 0x78, 0xAF]);
+        assert_eq!(&sends[1][6..8], [0xC0, 0x5D]); // density 3 = 24000 LE
+        assert_eq!(&sends[2][..3], [0x51, 0x78, 0xBE]);
+        for (i, send) in sends[3..6].iter().enumerate() {
             assert_eq!(&send[..3], [0x51, 0x78, 0xA2], "scanline {i}");
         }
-        assert_eq!(&sends[5][..3], [0x51, 0x78, 0xA1]);
+        assert_eq!(&sends[6][..3], [0x51, 0x78, 0xA1]);
 
         // ... then a settle wait, then done.
         let n = actions.len();

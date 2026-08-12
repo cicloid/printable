@@ -1,11 +1,12 @@
 //! Sans-IO X6 print job state machine.
 //!
 //! Far simpler than the LX-D02 flow: no hello, no auth, no completion
-//! notification. Send 0xAF SetEnergy then 0xBE ApplyEnergy (the darkness
-//! knob — see [`density_to_energy`]), stream one 0xA2 scanline frame per
-//! bitmap row (plus one blank lead row — the printer prints artifacts if
-//! the first row has ink), pause on BufferFull / resume on Ready, then
-//! feed and settle.
+//! notification. Send 0xBD SetSpeed (the dominant darkness knob on the
+//! validated hardware — see [`density_to_speed`]), then 0xAF SetEnergy and
+//! 0xBE ApplyEnergy (see [`density_to_energy`]), stream one 0xA2 scanline
+//! frame per bitmap row (plus one blank lead row — the printer prints
+//! artifacts if the first row has ink), pause on BufferFull / resume on
+//! Ready, then feed and settle.
 
 use crate::protocol::job::{Action, JobStats};
 use crate::protocol_x6::notifications::X6Notification;
@@ -29,8 +30,22 @@ pub fn density_to_energy(density: u8) -> u16 {
     12000 + 6000 * (u16::from(density.clamp(1, 7)) - 1)
 }
 
+/// Map the density knob (1-7, clamped) to an X6 feed-speed divisor for the
+/// 0xBD SetSpeed command — smaller is faster, and on the validated X6h unit
+/// speed is the *dominant* darkness control (slower = darker), with energy
+/// mainly affecting banding.
+///
+/// `divisor = 8 + 4 × (density − 1)`, so density 1, 3 and 7 land exactly on
+/// kitty-printer's presets (`SPEED_RANGE` in `common/constants.ts`):
+/// 1 = 8 (quick), 3 = 16 (fast), 7 = 32 (normal, its `DEF_SPEED`). 32 is
+/// the largest reference-validated value and the divisor never exceeds it.
+pub fn density_to_speed(density: u8) -> u8 {
+    8 + 4 * (density.clamp(1, 7) - 1)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
+    SendSpeed,
     SendEnergy,
     SendApplyEnergy,
     Streaming,
@@ -49,6 +64,7 @@ pub struct X6PrintJob {
     rows: Vec<[u8; BYTES_PER_ROW]>,
     state: State,
     send_idx: usize,
+    speed: u8,
     energy: u16,
     feed_px: u16,
     inter_packet_delay_ms: u64,
@@ -57,9 +73,9 @@ pub struct X6PrintJob {
 }
 
 impl X6PrintJob {
-    /// A job that sets the printhead energy from `density` (1-7, clamped —
-    /// see [`density_to_energy`]), prints `bitmap`, then feeds `feed_px`
-    /// rows of blank paper.
+    /// A job that sets the feed speed and printhead energy from `density`
+    /// (1-7, clamped — see [`density_to_speed`] and [`density_to_energy`]),
+    /// prints `bitmap`, then feeds `feed_px` rows of blank paper.
     ///
     /// Unlike the LX-D02 job this cannot fail to construct: there is no
     /// packet-index limit, no auth challenge, and an out-of-range density
@@ -70,8 +86,9 @@ impl X6PrintJob {
         rows.extend((0..bitmap.height()).map(|y| *bitmap.row(y)));
         Self {
             rows,
-            state: State::SendEnergy,
+            state: State::SendSpeed,
             send_idx: 0,
+            speed: density_to_speed(density),
             energy: density_to_energy(density),
             feed_px,
             inter_packet_delay_ms,
@@ -87,6 +104,10 @@ impl X6PrintJob {
             return Action::WaitMs(ms);
         }
         match self.state {
+            State::SendSpeed => {
+                self.state = State::SendEnergy;
+                Action::Send(packets::set_speed(self.speed))
+            }
             State::SendEnergy => {
                 self.state = State::SendApplyEnergy;
                 Action::Send(packets::set_energy(self.energy))
@@ -128,7 +149,7 @@ impl X6PrintJob {
 
     /// Feed a parsed notification from 0xAE02 into the state machine.
     /// Notifications that make no sense in the current state are ignored —
-    /// including a `BufferFull` during the two energy setup frames, on
+    /// including a `BufferFull` during the setup frames, on
     /// purpose: nothing has been streamed yet, so there is nothing to pause,
     /// and a genuinely full buffer will raise `BufferFull` again once
     /// scanlines flow.
@@ -147,7 +168,7 @@ impl X6PrintJob {
     }
 
     /// Counters for what the job has done so far. `packets_sent` counts
-    /// scanlines only — not the energy setup frames or the feed.
+    /// scanlines only — not the setup frames or the feed.
     /// `retransmits` and `cooldowns` are always 0 — the X6 protocol has no
     /// such events.
     pub fn stats(&self) -> JobStats {
@@ -184,24 +205,38 @@ mod tests {
         assert_eq!(density_to_energy(9), 48000); // clamped down
     }
 
+    /// Density 1, 3 and 7 land on kitty-printer's speed presets: quick 8,
+    /// fast 16, normal 32 (its DEF_SPEED). The divisor never exceeds 32,
+    /// the largest reference-validated value.
     #[test]
-    fn happy_path_streams_energy_blank_lead_then_rows_then_feed() {
+    fn density_to_speed_maps_and_clamps() {
+        assert_eq!(density_to_speed(1), 8);
+        assert_eq!(density_to_speed(3), 16);
+        assert_eq!(density_to_speed(7), 32);
+        assert_eq!(density_to_speed(0), 8); // clamped up
+        assert_eq!(density_to_speed(9), 32); // clamped down
+    }
+
+    #[test]
+    fn happy_path_streams_setup_blank_lead_then_rows_then_feed() {
         let mut bitmap = Bitmap::new(2);
         bitmap.set(0, 0, true); // MSB-first 0x80 -> wire 0x01
         let mut job = X6PrintJob::new(&bitmap, 3, 64, 0);
 
         let sent = drain_sends(&mut job);
-        // set energy, apply energy, blank artifact-guard line, 2 bitmap
-        // rows, feed
-        assert_eq!(sent.len(), 6);
-        assert_eq!(&sent[0][..3], &[0x51, 0x78, 0xAF]);
-        assert_eq!(&sent[0][6..8], &[0xC0, 0x5D]); // 24000 LE, density 3
-        assert_eq!(&sent[1][..3], &[0x51, 0x78, 0xBE]);
-        assert_eq!(&sent[2][..3], &[0x51, 0x78, 0xA2]);
-        assert!(sent[2][6..54].iter().all(|&b| b == 0)); // lead row is blank
-        assert_eq!(sent[3][6], 0x01); // bit-reversed pixel
-        assert_eq!(&sent[5][..3], &[0x51, 0x78, 0xA1]); // trailing feed
-        assert_eq!(&sent[5][6..8], &[64, 0]); // 64 px LE
+        // set speed, set energy, apply energy, blank artifact-guard line,
+        // 2 bitmap rows, feed
+        assert_eq!(sent.len(), 7);
+        assert_eq!(&sent[0][..3], &[0x51, 0x78, 0xBD]); // speed first, kitty's order
+        assert_eq!(sent[0][6], 16); // divisor 16, density 3
+        assert_eq!(&sent[1][..3], &[0x51, 0x78, 0xAF]);
+        assert_eq!(&sent[1][6..8], &[0xC0, 0x5D]); // 24000 LE, density 3
+        assert_eq!(&sent[2][..3], &[0x51, 0x78, 0xBE]);
+        assert_eq!(&sent[3][..3], &[0x51, 0x78, 0xA2]);
+        assert!(sent[3][6..54].iter().all(|&b| b == 0)); // lead row is blank
+        assert_eq!(sent[4][6], 0x01); // bit-reversed pixel
+        assert_eq!(&sent[6][..3], &[0x51, 0x78, 0xA1]); // trailing feed
+        assert_eq!(&sent[6][6..8], &[64, 0]); // 64 px LE
         assert!(matches!(job.next_action(), Action::Done));
     }
 
@@ -209,6 +244,7 @@ mod tests {
     fn buffer_full_pauses_until_ready() {
         let bitmap = Bitmap::new(4);
         let mut job = X6PrintJob::new(&bitmap, 3, 0, 0);
+        let _ = job.next_action(); // set speed
         let _ = job.next_action(); // set energy
         let _ = job.next_action(); // apply energy
         let _ = job.next_action(); // lead row
@@ -233,6 +269,7 @@ mod tests {
         job.on_notification(X6Notification::Ready);
         assert_eq!(job.stats(), JobStats::default());
         // still runs from the start
+        let _ = job.next_action(); // set speed
         let _ = job.next_action(); // set energy
         let _ = job.next_action(); // apply energy
         match job.next_action() {
@@ -245,7 +282,8 @@ mod tests {
     fn inter_packet_delay_between_scanlines_only() {
         let bitmap = Bitmap::new(2);
         let mut job = X6PrintJob::new(&bitmap, 3, 64, 15);
-        // no delay after the two energy setup frames
+        // no delay after the setup frames
+        assert!(matches!(job.next_action(), Action::Send(_))); // set speed
         assert!(matches!(job.next_action(), Action::Send(_))); // set energy
         assert!(matches!(job.next_action(), Action::Send(_))); // apply energy
         assert!(matches!(job.next_action(), Action::Send(_))); // lead
@@ -265,6 +303,7 @@ mod tests {
     fn settle_wait_before_done() {
         let bitmap = Bitmap::new(1);
         let mut job = X6PrintJob::new(&bitmap, 3, 64, 0);
+        let _ = job.next_action(); // set speed
         let _ = job.next_action(); // set energy
         let _ = job.next_action(); // apply energy
         let _ = job.next_action(); // lead row
@@ -279,9 +318,9 @@ mod tests {
         let bitmap = Bitmap::new(1);
         let mut job = X6PrintJob::new(&bitmap, 3, 0, 0);
         let sent = drain_sends(&mut job);
-        assert_eq!(sent.len(), 4); // energy, apply, lead + row — no 0xA1
+        assert_eq!(sent.len(), 5); // speed, energy, apply, lead + row — no 0xA1
         assert!(sent.iter().all(|p| p[2] != 0xA1));
-        assert!(sent[2..].iter().all(|p| p[2] == 0xA2));
+        assert!(sent[3..].iter().all(|p| p[2] == 0xA2));
     }
 
     #[test]

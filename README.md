@@ -75,7 +75,7 @@ Shared by `print` and `qr`:
 |---|---|
 | `--device <NAME>` | Device name or identifier substring (default: first supported printer found) |
 | `--model <lx-d02\|x6>` | Printer model to target (default: detect from the device name) |
-| `--density <1-7>` | Print density (default: 3; drives printhead energy on an X6) |
+| `--density <1-7>` | Print density (default: 3; drives feed speed and printhead energy on an X6) |
 | `--feed <LINES>` | Blank feed lines after printing (default: 40) |
 | `--preview <PATH>` | Render to a PNG file instead of printing |
 | `--copies <1-20>` | Number of copies to print (default: 1) |

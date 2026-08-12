@@ -4,6 +4,11 @@ A complete description of the wire protocol spoken by LX-D02 and LX-D2 Bluetooth
 Low Energy thermal printers, written for someone implementing it from scratch in
 any language.
 
+Sections 1–10 and the appendices cover the LX-D02 / LX-D2 protocol. **§11 covers
+the X6 / X6h "cat printer" family**, a second, entirely unrelated protocol this
+project also speaks. The two share nothing — not the framing, not the CRC, not
+the GATT profile.
+
 Everything here is reverse-engineered. Nothing is vendor documentation. Where the
 code in this repository, the reference implementations, and observed behavior
 disagree — or where a field's meaning is simply unknown — this document says so.
@@ -19,6 +24,11 @@ checked against the implementation in this repository:
 | Printer → host frames | `crates/printa-ble-core/src/protocol/notifications.rs` |
 | Session state machine | `crates/printa-ble-core/src/protocol/job.rs` |
 | Bitmap packing | `crates/printa-ble-core/src/raster/bitmap.rs` |
+| X6 CRC8 | `crates/printa-ble-core/src/protocol_x6/crc.rs` |
+| X6 framing | `crates/printa-ble-core/src/protocol_x6/packets.rs` |
+| X6 printer → host frames | `crates/printa-ble-core/src/protocol_x6/notifications.rs` |
+| X6 session state machine | `crates/printa-ble-core/src/protocol_x6/job.rs` |
+| Model facts (UUIDs, name prefixes) | `crates/printa-ble-core/src/model.rs` |
 | BLE transport (native) | `crates/printa-ble/src/ble.rs` |
 | BLE transport (browser) | `web/app.js` |
 
@@ -54,10 +64,15 @@ and `0xFFE2`.
 The widely cloned "cat printer" family (GB01/GB02/GT01, MX05/MX06, and the
 `cat-printer` software ecosystem) uses BLE service `0xAE30`/`0xAE01`-family
 characteristics and a completely different framing (`0x51 0x78 …` commands with a
-CRC8 table and run-length-compressed raster). **None of that applies here.** The
-LX-D02 uses service `0xFFE6`, `5A`/`55` framing, an authentication handshake, and
-uncompressed raster. Cat-printer software cannot drive an LX-D02, and this protocol
-cannot drive a cat printer. Do not mix the two bodies of documentation.
+CRC8 table and run-length-compressed raster). **None of that applies to the
+LX-D02.** The LX-D02 uses service `0xFFE6`, `5A`/`55` framing, an authentication
+handshake, and uncompressed raster. Cat-printer software cannot drive an LX-D02,
+and this protocol cannot drive a cat printer. Do not mix the two bodies of
+documentation.
+
+This project *does* also drive one member of that family — the X6 / X6h — but
+through a completely separate protocol module (`protocol_x6/`), documented in
+§11. Nothing in sections 2–10 applies to it.
 
 ---
 
@@ -900,7 +915,225 @@ read their source.
 
 ---
 
-## Appendix A: quick byte reference
+## 11. X6 / X6h family
+
+A second, unrelated protocol: the X6 / X6h belongs to the "cat printer" family
+that §1 warns against confusing with the LX-D02. This project drives it through
+its own sans-IO module, `crates/printa-ble-core/src/protocol_x6/`, and nothing
+in sections 2–10 applies here — different GATT profile, different framing,
+different CRC, no authentication.
+
+> **Not hardware-validated.** Unlike everything above, the X6 implementation
+> has **not yet been confirmed against a physical printer**. Every byte value
+> below matches this repository's code and the reverse-engineering sources, but
+> no print has been observed coming out of real hardware. Treat the whole
+> section accordingly until this notice is removed.
+
+### Sources
+
+| Source | Contribution |
+|---|---|
+| [parzivail's BLE thermal printer notes](https://parzivail.github.io/ble-thermal-printer/) | Frame format, command table, the raw-scanline command, the flow-control notification, and the captured frames the CRC tests pin |
+| [nazarovmi/tinyprint-x6h](https://github.com/nazarovmi/tinyprint-x6h) | A working Python implementation: the CRC8 table, the `X6h-`/`x6h-` name prefixes, the blank lead row |
+| [NaitLee/kitty-printer](https://github.com/NaitLee/kitty-printer) | Web Bluetooth precedent for the same family |
+
+None of these sources is vendored here; claims attributed to them are
+secondhand, exactly as §10 treats the LX references. The captured frames quoted
+below are pinned in `protocol_x6/`'s unit tests.
+
+### Devices and discovery
+
+| Property | Value | Confidence |
+|---|---|---|
+| Models | X6, X6h | This is what the sources describe and this project targets |
+| Advertised BLE name | starts with `X6h-` or `x6h-` | From tinyprint-x6h; this project matches exactly these two prefixes |
+| Print head width | 384 dots | Same rendering pipeline as the LX-D02 |
+| Colors | 1 bit, black on thermal paper | This implementation; the hardware also has a 4bpp grayscale mode (below) |
+
+**`X6H-` (capital H) is deliberately not matched.** parzivail notes it is a
+distinct model, so `model.rs` folds case only on the prefix's first letter:
+`X6h-` and `x6h-` are claimed, `X6H-` is not.
+
+### GATT profile
+
+| Role | 16-bit UUID | Properties used |
+|---|---|---|
+| Service | `0xAE30` | primary service |
+| Write (host → printer) | `0xAE01` | **write without response** |
+| Notify (printer → host) | `0xAE02` | notify (subscribe via CCCD) |
+
+The 128-bit forms are the standard SIG base-UUID expansion, as in §2. A
+scanline frame is 56 bytes, so a single ATT write needs an MTU of at least 59 —
+an inference from packet size, as with the LX-D02's 103.
+
+### Framing
+
+Every frame, in both directions, has the same layout:
+
+```
+51 78 <cmd> <dir> <len:u16 little-endian> <payload…> <crc8(payload)> FF
+```
+
+| Offset | Size | Field |
+|---|---|---|
+| 0..2 | 2 | `0x51 0x78` magic |
+| 2 | 1 | command byte |
+| 3 | 1 | direction: `0x00` host → printer, `0x01` printer → host |
+| 4..6 | 2 | payload length, **little-endian** (the LX-D02's integers are big-endian; this family's are not) |
+| 6..6+len | len | payload |
+| 6+len | 1 | CRC8 over the **payload only** — not the header |
+| 7+len | 1 | `0xFF` trailer |
+
+Worked example, from parzivail (pinned in `packets.rs`' tests): command `0xA4`
+with payload `[0x35]` frames as `51 78 A4 00 01 00 35 8B FF`. (This project
+never sends `0xA4`; the frame is quoted only as a layout check.)
+
+### CRC8
+
+| Parameter | Value |
+|---|---|
+| Width | 8 bits |
+| Polynomial | `0x07` |
+| Initial value | `0x00` |
+| Input/output reflected | no |
+| XOR out | none |
+| Scope | payload bytes only |
+
+Check vectors, all lifted from captured frames rather than computed:
+`crc8([0x35]) = 0x8B`, `crc8([0x10]) = 0x70`, `crc8([0x00]) = 0x00`,
+`crc8([0x40, 0x01]) = 0x5C`, `crc8([]) = 0x00`.
+
+### The command subset this project uses
+
+The family has many more commands (quality, energy, device info, an
+LZO-compressed scanline…). This project sends exactly two and parses exactly
+one, and this document deliberately describes only those — the rest are
+unverified here and belong to the sources.
+
+| Command | Direction | Payload | Meaning |
+|---|---|---|---|
+| `0xA2` | host → printer | 48 bytes | One uncompressed 1bpp scanline |
+| `0xA1` | host → printer | u16 LE | Feed that many pixel rows of blank paper |
+| `0xAE` | printer → host | 1 byte | Device status: `0x10` = buffer full, `0x00` = ready |
+
+#### `0xA2` — raw scanline, and the bit order
+
+One frame per print line: 48 bytes of pixels, 384 dots, no packet index, no
+compression, no per-frame acknowledgement.
+
+**The bit order is the inverse of the LX-D02's.** This project's `Bitmap` is
+MSB-first (bit `0x80` of byte 0 is pixel x = 0, as in §8); the X6 wants the
+**leftmost pixel in the least-significant bit**. Every payload byte is
+therefore bit-reversed on the way out (`u8::reverse_bits` in `packets.rs`): a
+row whose first byte is `0x80` goes on the wire as `0x01`. Bit sense is
+unchanged — 1 = black. Getting this wrong produces horizontally mirrored
+8-pixel groups, which reads as noise.
+
+#### The blank lead row
+
+The first `0xA2` frame of every job is 48 zero bytes, prepended by
+`X6PrintJob::new` before the bitmap's own rows. Per parzivail the printer
+prints artifacts if the first row carries ink (tinyprint-x6h prepends a blank
+line too). The lead row is real paper — one extra blank line per job — and is
+counted in `packets_sent` but **not** in any user-facing line count.
+
+#### `0xA1` — feed is a command here
+
+The exact opposite of §8's "there is no feed command": on the X6 the trailing
+feed is *not* blank raster lines but a single `0xA1` frame whose u16 LE payload
+is a pixel count. Consequences: the feed costs one frame instead of wire time
+proportional to its length, a feed of 0 sends nothing at all, and one feed
+command tops out at 65 535 px (this project's print path saturates a larger
+request to that maximum rather than failing the job — see `feed_px` in
+`print_service.rs`).
+
+#### `0xAE` — device status, the only flow control
+
+Frames arrive on `0xAE02`. The parser accepts only direction `0x01`, command
+`0xAE`, length 1, and two payload values (both captured verbatim by parzivail):
+
+```
+51 78 AE 01 01 00 10 70 FF      buffer full → stop sending scanlines
+51 78 AE 01 01 00 00 00 FF      ready       → sending may resume
+```
+
+Everything else — battery frames, device info, the variants some models prefix
+with `0x12`, unknown payload values — parses to nothing and is ignored, not
+treated as an error: the family has many undocumented variants. (The received
+CRC byte is not verified; the frame shape and payload value are the filter.)
+A `Ready` with no pause open is ignored; a repeated `BufferFull` does not
+restart the pause.
+
+There is **no paper signal, no battery report, no completion notification, and
+no resend mechanism** in the subset this project understands. `printable
+status` and the server's `/status` fail against an X6 for exactly this reason.
+
+### Print session flow
+
+No hello, no auth, no start/end bracketing. The whole session is:
+
+```
+connect, discover 0xAE30, subscribe 0xAE02
+0xA2 blank lead row
+0xA2 per bitmap row          … 15 ms apart (INTER_PACKET_DELAY_MS, same
+                               value the LX-D02 path uses); pause on
+                               buffer-full, resume on ready
+0xA1 feed                    … skipped when the feed is 0
+wait 500 ms                  … then disconnect
+```
+
+The 500 ms settle (`SETTLE_MS` in `protocol_x6/job.rs`) exists because the
+printer sends no completion event: without it the transport would tear the
+link down while the printer is still draining its buffer. **The value is a
+guess, to be tuned against hardware.** The inter-packet delay applies between
+scanlines only — not before the feed command.
+
+The transport reuses the LX-D02 path's deadlines — `NOTIFICATION_TIMEOUT`,
+`STALL_TIMEOUT`, and the connect/disconnect deadlines of §9's table;
+`HELLO_TIMEOUT` alone has no X6 role, there being no hello — and the same
+`JobStats` counters: `holds` counts buffer-full pauses; `retransmits` and
+`cooldowns` are always 0 — the protocol has no such events.
+
+### No liveness probe — a weaker "connected"
+
+The LX-D02's hello reply is what lets this project claim a connection means a
+live printer (§4, "Proof of life"). **The X6 protocol has no known equivalent**,
+and this implementation deliberately does not invent one from the undocumented
+commands. `initialize` returns as soon as the notify subscription is up, so
+"connected" means only that.
+
+The §2 macOS caveat therefore bites in full: CoreBluetooth (and Web Bluetooth
+in Chrome) answers connects and service discovery for a previously-seen
+peripheral from its cached GATT database, so **a switched-off X6 can appear to
+connect successfully**. The failure then surfaces as a print job that stalls in
+silence — ended by the notification timeout — rather than as a connect error.
+
+### The 4bpp mode is future work, and the sources disagree
+
+The hardware also has a 16-level grayscale mode (4 bits per pixel). It is
+**not implemented here**, in part because the two sources contradict each other
+on the nibble order: parzivail documents the **lower** nibble as the leftmost
+column, while tinyprint-x6h packs the **first pixel into the upper nibble**
+(`(p0 >> 4) << 4 | (p1 >> 4)` in its packer). The discrepancy is unresolved —
+do not implement 4bpp from either source without hardware confirmation.
+
+### Quick byte reference
+
+```
+HOST → PRINTER (0xAE01, write without response)
+
+  51 78 A2 00 30 00 <48 bytes> <crc8> FF     scanline, LSB = leftmost pixel
+  51 78 A1 00 02 00 <px lo> <px hi> <crc8> FF   feed <px> rows (u16 LE)
+
+PRINTER → HOST (0xAE02, notify)
+
+  51 78 AE 01 01 00 10 70 FF                 buffer full → pause
+  51 78 AE 01 01 00 00 00 FF                 ready → resume
+```
+
+---
+
+## Appendix A: quick byte reference (LX-D02)
 
 ```
 HOST → PRINTER (0xFFE1, write without response)
@@ -925,7 +1158,7 @@ PRINTER → HOST (0xFFE2, notify)
   5A 0B 01                                   auth OK (anything else = rejected)
 ```
 
-## Appendix B: minimal implementation checklist
+## Appendix B: minimal implementation checklist (LX-D02)
 
 1. CRC16-XMODEM passing the `"123456789"` → `0x31C3` check.
 2. Auth vector from §6 reproducing `40 05 98 3D BC CA F6 25 B2 0B`.

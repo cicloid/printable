@@ -260,6 +260,7 @@ function onNotify(e) {
   const v = e.target.value;
   const bytes = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
   // Unsolicited status frame (5A 02): battery percentage at byte 2.
+  // LX only — the X6 protocol has no battery frame, so the chip never gains one.
   if (bytes.length >= 3 && bytes[0] === 0x5a && bytes[1] === 0x02) {
     batteryPct = bytes[2];
     updateChip();

@@ -1,6 +1,6 @@
 # AirPrint and CUPS
 
-Expose the LX-D02 as an AirPrint / IPP Everywhere printer, so it shows up in
+Expose the printer as an AirPrint / IPP Everywhere printer, so it shows up in
 the macOS print dialog, in `lp`, and on iOS — without a driver, a PPD, or a
 CUPS backend.
 
@@ -26,6 +26,13 @@ lp -d printable somefile.txt
 >
 > Every job then renders to `/tmp/job.png` instead of the printer. Open it and
 > confirm the layout before switching to a real print.
+
+`AIRPRINT_ARGS` passes any `printable ipp-command` flag through to every job,
+which is also how you pin a printer: `AIRPRINT_ARGS="--device LX-D02"` targets
+a device, and `AIRPRINT_ARGS="--model x6"` restricts the bridge to the X6 /
+X6h family (whose BLE support is **not yet hardware-validated** — see
+[CLI.md](CLI.md#printer-models); note the X6 reports no paper status, so the
+`media-empty` state below never fires for it).
 
 ## Why not a CUPS backend
 
@@ -56,7 +63,7 @@ no elevated privileges.
  printable ipp-command  inflate → decode URF → fit → dither → 384 px bitmap
         │
         ▼
- LX-D02 over BLE
+ printer over BLE (LX-D02, or an X6 via AIRPRINT_ARGS="--model x6")
 ```
 
 `ippeveprinter` is a complete IPP Everywhere server included with CUPS. Stage 1

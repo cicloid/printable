@@ -1,6 +1,8 @@
 # printa-ble API Reference
 
-`printable serve` exposes a REST API and a web UI for an LX-D02 / LX-D2 thermal printer over the LAN. Preview endpoints render to PNG without touching the printer; print endpoints run the same rendering through the BLE print pipeline.
+`printable serve` exposes a REST API and a web UI for a supported BLE thermal printer — an LX-D02 / LX-D2, or an X6 / X6h (**not yet hardware-validated**) — over the LAN. Preview endpoints render to PNG without touching the printer; print endpoints run the same rendering through the BLE print pipeline.
+
+The printer model is server configuration, not request data: `printable serve --model x6` restricts the server to that family, exactly like `--device` pins a device, and no HTTP route takes a model. Without the flag the model is detected from the device name (see [CLI.md](CLI.md#printer-models)).
 
 ## Base URL
 
@@ -68,7 +70,7 @@ Options are validated before rendering and before the printer is touched, so an 
 { "error": "density must be between 1 and 7" }
 ```
 
-`feed` appends blank rows after the content so the paper clears the tear bar; they count toward `printed_lines`. `copies` runs one full print job per copy over a single BLE connection.
+`feed` appends blank rows after the content so the paper clears the tear bar; on an LX-D02 they ride along as blank raster rows and count toward `printed_lines`, while an X6 receives the feed as a printer command instead and does **not** count it. `density` is honored by the LX-D02 and accepted-but-ignored on an X6, whose quality commands are not implemented. `copies` runs one full print job per copy over a single BLE connection.
 
 Unknown fields are ignored. A value of the wrong JSON type, or an integer outside its numeric type (`"density": 300` for a `u8`), is rejected by the deserializer with `422` and a plain-text body — see [Errors](#errors).
 
@@ -114,7 +116,7 @@ curl http://localhost:8000/health
 
 ### GET /status
 
-Connect over BLE, wait for one status frame, disconnect.
+Connect over BLE, wait for one status frame, disconnect. **LX-D02 only**: the X6 sends no status frames at all, so against one the connect itself succeeds but the route answers `503` immediately with `{"error": "status notifications are not supported on this printer model"}` instead of sitting out the 5-second wait.
 
 ```bash
 curl http://localhost:8000/status
@@ -153,7 +155,7 @@ While a print job is running, `/status` returns immediately with a single field 
 | Status | Cause |
 |---|---|
 | `200` | Status read, or a print is in progress |
-| `503` | No printer found within the 10 s scan, or no status frame within 5 s |
+| `503` | No printer found within the 10 s scan, no status frame within 5 s, or the printer is an X6 (no status support) |
 
 The device is saved to the config file on a successful connection, exactly as the CLI does.
 
@@ -270,13 +272,13 @@ Print endpoints render exactly like their preview counterparts, then take the pr
 
 | Field | Type | Notes |
 |---|---|---|
-| `printed_lines` | integer | Total rows sent: (content rows + `feed`) × `copies` |
+| `printed_lines` | integer | (content rows + `feed`) × `copies` on an LX-D02. On an X6 it is content rows × `copies`: the feed is a command, not rows, and the protocol's blank lead row is not counted either |
 | `copies` | integer | Echo of the requested copy count |
 | `elapsed_ms` | integer | Wall clock from the start of the connect to the last copy finishing — connect, hello, auth, streaming and all |
-| `packets_sent` | integer | Raster packets written, summed over every copy |
-| `holds` | integer | Times the printer paused the stream (`5A 08`) |
-| `cooldowns` | integer | Times the printer asked for a thermal back-off (`5A 07`) |
-| `retransmits` | integer | Times the printer asked for a resend from a given packet index (`5A 05`) |
+| `packets_sent` | integer | Raster packets written, summed over every copy (on an X6: one scanline per row, plus one blank lead row per copy) |
+| `holds` | integer | Times the printer paused the stream — `5A 08` on an LX-D02, a buffer-full notification on an X6 |
+| `cooldowns` | integer | Times the printer asked for a thermal back-off (`5A 07`); always 0 on an X6, whose protocol has no such event |
+| `retransmits` | integer | Times the printer asked for a resend from a given packet index (`5A 05`); always 0 on an X6 |
 
 The last five are the same counters the server writes to its log, repeated here for clients that never see it. They are what distinguishes a slow print from a stuck one: an `elapsed_ms` far larger than `packets_sent` × 15 ms means the difference was spent paused, and `holds` and `cooldowns` say so. Zero across the board is a clean job. The counters come out of the sans-IO core as plain values (`JobStats`); the server only formats them.
 
@@ -414,7 +416,7 @@ Errors raised by the handlers use a JSON envelope:
 | `400` | Invalid input | Out-of-range option, empty `content`, `size` over 128, unknown `dither`, missing `file` field, undecodable image, non-`http(s)` URL, QR data too long, job over 65 535 raster packets |
 | `404` | No such route | Also the `url` routes in a build without the feature |
 | `405` | Wrong method | e.g. `GET /print/text`. **Empty body** — no JSON, no text; the `allow` header carries the answer |
-| `409` | Printer is out of paper | Detected before the job starts or from a mid-job status frame |
+| `409` | Printer is out of paper | Detected before the job starts or from a mid-job status frame (LX-D02 only — the X6 has no paper signal) |
 | `413` | Body over 20 MiB on a JSON route | Plain text, not JSON. The multipart routes report the same condition as `400` — see below |
 | `415` | Wrong `Content-Type` | Plain text, not JSON |
 | `422` | Body does not match the schema | Plain text, not JSON |

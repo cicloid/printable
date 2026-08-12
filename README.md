@@ -1,8 +1,17 @@
 # printa-ble
 
-A Rust CLI for printing to LX-D02 / LX-D2 Bluetooth thermal printers (the "FunnyPrint" app family) on macOS. These are 58 mm, 203 dpi, 384 px-wide printers made by Shenzhen Xiqi Technology.
+A Rust CLI for printing to small Bluetooth thermal printers on macOS: the LX-D02 / LX-D2 (the "FunnyPrint" app family — 58 mm, 203 dpi, made by Shenzhen Xiqi Technology) and the X6 / X6h "cat printer" family. Both print 384 px-wide raster.
 
-The name **printa-ble** derives from *printa* (the ancestor project) plus *BLE* (Bluetooth Low Energy, how it talks to the printer) — and reads as "printable". It currently supports the LX-D02 / LX-D2 family. The command itself is `printable`.
+The name **printa-ble** derives from *printa* (the ancestor project) plus *BLE* (Bluetooth Low Energy, how it talks to the printer) — and reads as "printable". The command itself is `printable`.
+
+## Supported printers
+
+| Family | `--model` | Validation |
+|---|---|---|
+| LX-D02 / LX-D2 | `lx-d02` | **Hardware-validated** |
+| X6 / X6h ("cat printer") | `x6` | **Not yet hardware-validated** — every byte matches the reverse-engineering sources, but no print from a physical X6 has been confirmed |
+
+The model is detected from the advertised device name (`LX*` vs `X6h-*`/`x6h-*`) and remembered in the config file; `--model <lx-d02|x6>` (case-insensitive, on every command that touches the printer) forces it. The X6 speaks an entirely different wire protocol: no density control, no paper or battery status, no liveness probe, and its trailing feed is a printer command rather than blank lines — [docs/CLI.md](docs/CLI.md#printer-models) has the practical differences and [docs/PROTOCOL.md](docs/PROTOCOL.md) §11 the bytes.
 
 ## Status
 
@@ -21,7 +30,7 @@ This README is the tour. The reference documents go deeper:
 | [docs/MARKDOWN.md](docs/MARKDOWN.md) | The markdown dialect — what renders, what doesn't, and the gotchas |
 | [docs/AIRPRINT.md](docs/AIRPRINT.md) | Exposing the printer over AirPrint / IPP Everywhere, and to CUPS |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the three crates fit together, and why the core is sans-IO |
-| [docs/PROTOCOL.md](docs/PROTOCOL.md) | The reverse-engineered LX-D02 wire protocol, byte by byte |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) | The reverse-engineered wire protocols, byte by byte — LX-D02, plus the X6 / X6h family in §11 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, the test workflow, and the architectural rules |
 | [SECURITY.md](SECURITY.md) | Trust model and how to report a vulnerability |
 
@@ -58,14 +67,15 @@ printable print --url https://example.com    # render a web page via headless Ch
 
 ### Options
 
-Five options are shared by `print` and `qr`; the rest belong to `print` alone. `printable <COMMAND> --help` is authoritative, and [docs/CLI.md](docs/CLI.md) has the full reference.
+Six options are shared by `print` and `qr`; the rest belong to `print` alone. `printable <COMMAND> --help` is authoritative, and [docs/CLI.md](docs/CLI.md) has the full reference.
 
 Shared by `print` and `qr`:
 
 | Option | Description |
 |---|---|
-| `--device <NAME>` | Device name or identifier substring (default: first device named `LX*`) |
-| `--density <1-7>` | Print density (default: 3) |
+| `--device <NAME>` | Device name or identifier substring (default: first supported printer found) |
+| `--model <lx-d02\|x6>` | Printer model to target (default: detect from the device name) |
+| `--density <1-7>` | Print density (default: 3; no effect on an X6) |
 | `--feed <LINES>` | Blank feed lines after printing (default: 40) |
 | `--preview <PATH>` | Render to a PNG file instead of printing |
 | `--copies <1-20>` | Number of copies to print (default: 1) |
@@ -86,7 +96,7 @@ Shared by `print` and `qr`:
 
 ### QR codes
 
-`printable qr <DATA>` prints a QR code encoding a URL or arbitrary text, centered at the printer's full width. `--caption <TEXT>` prints a caption below the code. `qr` takes only the five shared options above — there is no `--size`, no `--dither`, and no `--url`, because the version, error correction, and scale are all chosen automatically.
+`printable qr <DATA>` prints a QR code encoding a URL or arbitrary text, centered at the printer's full width. `--caption <TEXT>` prints a caption below the code. `qr` takes only the six shared options above — there is no `--size`, no `--dither`, and no `--url`, because the version, error correction, and scale are all chosen automatically.
 
 ### Markdown
 
@@ -280,7 +290,7 @@ Logs go to stderr, never stdout — scripts read the preview path and the scan t
 printable serve
 ```
 
-starts an HTTP print server (REST API + web UI) on `0.0.0.0:8000`. `--port` and `--bind` change the listen address, `--device` pins the printer just like the other commands, and `--no-remote-images` stops the server fetching http(s) images referenced by markdown. Open `http://<mac-ip>:8000` from any device on the LAN — the built-in web UI is phone-friendly and shows a live preview before printing.
+starts an HTTP print server (REST API + web UI) on `0.0.0.0:8000`. `--port` and `--bind` change the listen address, `--device` and `--model` pin the printer just like the other commands, and `--no-remote-images` stops the server fetching http(s) images referenced by markdown. Open `http://<mac-ip>:8000` from any device on the LAN — the built-in web UI is phone-friendly and shows a live preview before printing.
 
 ### Endpoints
 
@@ -388,7 +398,7 @@ One asymmetry with the CLI: `printable print --url … --dither atkinson` honour
 
 ## Web app (Web Bluetooth)
 
-A static web page that prints directly from the browser — no server, no install. Rendering (text, markdown, QR, images) runs entirely client-side via `printa-ble-core` compiled to WebAssembly, and the page talks to the printer over Web Bluetooth.
+A static web page that prints directly from the browser — no server, no install. Rendering (text, markdown, QR, images) runs entirely client-side via `printa-ble-core` compiled to WebAssembly, and the page talks to the printer over Web Bluetooth. Both printer families work: the page detects the model from the GATT service the device exposes and drives the matching protocol.
 
 Markdown images are fetched by the browser, so only `http(s)` URLs work and only when the host allows cross-origin reads — a server without CORS headers is unreachable from the page. Anything that cannot be fetched renders as an `[image: alt]` placeholder and the page reports how many were skipped.
 
@@ -432,11 +442,11 @@ Try it with `AIRPRINT_ARGS="--preview /tmp/job.png"` first: every job then rende
 
 ## Configuration
 
-After each successful connection, printa-ble saves the printer's identifier and name to a config file — `~/Library/Application Support/printa-ble/config.toml` on macOS (the platform config directory elsewhere) — and prefers that printer on later runs. If it is not seen, printa-ble falls back to a device advertising the saved name, or failing that any `LX*` device. `--device` overrides the saved printer, and the newly connected device is saved in its place. Delete the file to forget the saved printer.
+After each successful connection, printa-ble saves the printer's identifier, name, and model to a config file — `~/Library/Application Support/printa-ble/config.toml` on macOS (the platform config directory elsewhere) — and prefers that printer on later runs. If it is not seen, printa-ble falls back to a device advertising the saved name, or failing that any supported printer of the saved model. `--device` overrides the saved printer, and the newly connected device is saved in its place. Delete the file to forget the saved printer.
 
 ## Architecture
 
-The workspace has three crates. `printa-ble-core` is a sans-IO crate containing the protocol (packet building, CRC, auth, print-job state machine) and the rendering pipeline (text layout, dithering, raster chunking, PNG preview); it has no Bluetooth dependencies. `printa-ble` is the CLI (installed as the `printable` command), which drives `printa-ble-core` over BLE using [btleplug](https://github.com/deviceplug/btleplug). `printa-ble-web` compiles `printa-ble-core` to WebAssembly for the static Web Bluetooth page in `web/`.
+The workspace has three crates. `printa-ble-core` is a sans-IO crate containing both printer protocols (packet building, CRC, the LX-D02 auth, and a print-job state machine per model) and the rendering pipeline (text layout, dithering, raster chunking, PNG preview); it has no Bluetooth dependencies. `printa-ble` is the CLI (installed as the `printable` command), which drives `printa-ble-core` over BLE using [btleplug](https://github.com/deviceplug/btleplug). `printa-ble-web` compiles `printa-ble-core` to WebAssembly for the static Web Bluetooth page in `web/`.
 
 ## Credits
 
@@ -445,6 +455,12 @@ This project builds on protocol work from three reference implementations:
 - [rusq/thermoprint](https://github.com/rusq/thermoprint) — Go; protocol reverse-engineering and the print-job state machine
 - [ValdikSS/printer-driver-funnyprint](https://github.com/ValdikSS/printer-driver-funnyprint) — Python/CUPS; the de-facto protocol documentation
 - [paradon/lxprint](https://github.com/paradon/lxprint) — TypeScript/Web Bluetooth; correct auth implementation (and the [joaquimorg/lxprint](https://github.com/joaquimorg/lxprint) Vue fork)
+
+X6 / X6h support follows three further sources:
+
+- [parzivail's BLE thermal printer notes](https://parzivail.github.io/ble-thermal-printer/) — framing, commands, raster encoding, and flow control for the X6h
+- [nazarovmi/tinyprint-x6h](https://github.com/nazarovmi/tinyprint-x6h) — Python; the CRC8 table, the device-name prefixes, and the blank lead row
+- [NaitLee/kitty-printer](https://github.com/NaitLee/kitty-printer) — Web Bluetooth precedent for the same printer family
 
 The `wagara` bands are drawn from the geometry of motifs that are centuries old and long out of copyright, with one exception: **`sayagata`** is a specific historical linkage of 卍 forms rather than a lattice with a closed-form rule, so its cell is transcribed from [`Sayagata (line).svg`](https://commons.wikimedia.org/wiki/File:Sayagata_(line).svg) on Wikimedia Commons — a public-domain (CC0) tile by Fred the Oyster. The transcription lives in the `SAYAGATA_U` / `SAYAGATA_V` tables in `crates/printa-ble-core/src/raster/wagara.rs`.
 

@@ -6,7 +6,7 @@ use printa_ble_core::model::PrinterModel;
 #[derive(Parser)]
 #[command(
     name = "printable",
-    about = "Print to LX-D02/LX-D2 BLE thermal printers",
+    about = "Print to BLE thermal printers (LX-D02/LX-D2, X6/X6h)",
     version
 )]
 pub struct Cli {

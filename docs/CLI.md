@@ -1,6 +1,6 @@
 # printable CLI Reference
 
-`printable` prints to LX-D02 / LX-D2 BLE thermal printers: 58 mm paper, 203 dpi, 384 px wide.
+`printable` prints to two families of BLE thermal printer, both with 384 px-wide print heads: the LX-D02 / LX-D2 (58 mm paper, 203 dpi, hardware-validated) and the X6 / X6h "cat printer" family (**new, and not yet hardware-validated** — see [Printer models](#printer-models)).
 
 ```
 printable <COMMAND> [OPTIONS]
@@ -8,8 +8,8 @@ printable <COMMAND> [OPTIONS]
 
 | Command | Purpose |
 |---|---|
-| [`scan`](#scan) | List nearby LX printers |
-| [`status`](#status) | Show battery, paper, density |
+| [`scan`](#scan) | List nearby supported printers |
+| [`status`](#status) | Show battery, paper, density (LX-D02 only) |
 | [`print`](#print) | Print text, a file, or a web page |
 | [`qr`](#qr) | Print a QR code |
 | [`serve`](#serve) | Run the HTTP print server |
@@ -19,6 +19,30 @@ Global flags: `-h, --help` (per command too), `-V, --version`, and `-v` for [ver
 ---
 
 ## Global behavior
+
+### Printer models
+
+Two printer families are supported, sharing the rendering pipeline (both have 384 px print heads) but speaking completely different wire protocols:
+
+| Family | `--model` value | Advertised name | Status |
+|---|---|---|---|
+| LX-D02 / LX-D2 | `lx-d02` | starts with `LX` | Hardware-validated |
+| X6 / X6h "cat printer" | `x6` | starts with `X6h-` or `x6h-` | **Not yet hardware-validated** |
+
+`X6H-` (capital H) is a different model and is deliberately not matched.
+
+Every command that talks to the printer takes `--model <lx-d02|x6>`. The value is case-insensitive (`--model X6` works); anything else is a usage error naming the two choices. Without the flag the model is detected from the advertised device name, and a successful connection remembers it in the config file, so later runs reconnect with the right protocol automatically.
+
+The flag is a **restriction**, not just a hint: while `--model` is set, a device of the other family — or of no recognizable family — never matches, even under a `--device` filter that would otherwise hit it. Without the flag, reconnecting to the saved device is restricted to the saved model: the point of the saved device is "the same printer as last time", and that includes what kind of printer it was. A `--device` filter alone may still match a device whose name no model claims; such a device is driven as an LX-D02, which is what this tool did before models existed.
+
+What the X6 does differently:
+
+- **`--density` has no effect.** The X6 quality/energy commands are not implemented; the flag is accepted and ignored.
+- **`--feed` is a printer command,** not blank raster lines. The feed does not count toward `Printed <N> lines.`, and a value beyond 65 535 saturates at that maximum. (`--preview` renders before any model is known, so preview output always shows the feed as blank rows.)
+- **No status.** The X6 reports no paper, battery, or density. [`status`](#status) fails immediately against one, the pre-print paper check is skipped, and running out of paper mid-job cannot be detected.
+- **No liveness probe.** The hello handshake of [Connecting means the printer answered](#connecting-means-the-printer-answered) is LX-only; on an X6, "connected" proves only that the notification subscription is up. On macOS a switched-off X6 can therefore appear to connect (CoreBluetooth answers from its cached GATT database), and the failure surfaces as a print job that stalls in silence — ended by the 10 s notification timeout — rather than as a connect error.
+
+[docs/PROTOCOL.md](PROTOCOL.md) §11 documents the X6 wire protocol and the sources it was reconstructed from.
 
 ### Verbosity and logging
 
@@ -50,16 +74,20 @@ Every command that talks to the printer resolves a device the same way. `scan` i
 | 1 | `--device <STR>` | Advertised name **or** platform id contains `<STR>` | Immediately, first match |
 | 2 | Saved device id (config file) | Exact platform id | Immediately |
 | 2a | Saved device *name* | Advertised name equals the saved name | Only at the scan deadline, preferred over 2b |
-| 2b | Any `LX*` | Advertised name starts with `LX` | Only at the scan deadline |
-| 3 | No flag, no saved device | Advertised name starts with `LX` | Immediately, first match |
+| 2b | Any supported printer | Advertised name identifies a supported model | Only at the scan deadline |
+| 3 | No flag, no saved device | Advertised name identifies a supported model | Immediately, first match |
+
+When a model restriction is in effect — an explicit `--model`, or the saved device's remembered model on a reconnect (see [Printer models](#printer-models)) — every rank matches only devices of that model.
 
 The scan runs up to **10 seconds**, polling every 300 ms. An exact match short-circuits it; the ranked fallbacks are used only if no exact match appears before the deadline. If nothing matches at all, the command fails with `no supported printer found. Is the printer on and in range?` and exit code 2.
 
-After every successful connection the device's id and name are written to the config file, so the next run reconnects to the same printer without a flag. `--device` overrides the saved printer *and* replaces it.
+After every successful connection the device's id, name, and model are written to the config file, so the next run reconnects to the same printer without a flag. `--device` overrides the saved printer *and* replaces it.
 
 ### Connecting means the printer answered
 
 Finding a device is not the same as finding a *live* printer. On macOS, CoreBluetooth caches the GATT database of any peripheral it has paired with before, so connecting and discovering the characteristics both succeed against a printer that is switched off. A connection is therefore only reported once the printer has answered a `5A 01` hello frame of its own accord — the first thing in the flow that only the hardware itself can produce.
+
+This guarantee is **LX-D02 only**. The X6 protocol has no known liveness probe, so an X6 "connection" means only that the subscription is up, and a switched-off X6 fails later and worse — see [Printer models](#printer-models).
 
 A device that is present but silent fails with its own message and its own error type:
 
@@ -77,11 +105,11 @@ None of these come from the protocol; they are this implementation's choices.
 |---|---|---|
 | Scan | 10 s | No matching device ever advertises |
 | `CONNECT_TIMEOUT` | 15 s | CoreBluetooth's own connect has no deadline and will wait forever for a peripheral that is not there |
-| `HELLO_TIMEOUT` | 4 s | A device that connects but never answers (the liveness probe above) |
+| `HELLO_TIMEOUT` | 4 s | A device that connects but never answers (the liveness probe above; LX-D02 only — the X6 has no hello) |
 | `NOTIFICATION_TIMEOUT` | 10 s | Total BLE silence mid-job — the link dropped |
 | `STALL_TIMEOUT` | 60 s | A printer that keeps talking without taking data |
 | `DISCONNECT_TIMEOUT` | 3 s | A teardown that never gets its confirmation callback |
-| Status wait | 5 s (`status`), 3 s (pre-print) | No unsolicited status frame arrives |
+| Status wait | 5 s (`status`), 3 s (pre-print) | No unsolicited status frame arrives (LX-D02 only) |
 
 `NOTIFICATION_TIMEOUT` and `STALL_TIMEOUT` are complementary, and both are needed. The notification deadline measures radio silence and is re-armed by *any* frame, including the periodic unsolicited status heartbeats — so a printer that pauses the stream for thermal reasons and never resumes keeps the deadline alive indefinitely, and the job (and any HTTP client behind it) would wait forever. The stall deadline measures something the printer cannot fake: whether raster data is actually moving. A minute is deliberately generous, since a genuine thermal cooldown resumes in seconds. When it fires after real flow control, the error suggests lowering `--density`:
 
@@ -102,9 +130,10 @@ paused for thermal flow control; the print head may be overheating — try a low
 [device]
 id = "c0076683-6d1d-5981-7fd2-4292d76b7bd9"
 name = "LX-D02"
+model = "lx-d02"
 ```
 
-The file holds nothing else. A missing file is the normal first run and is silent. An unreadable or corrupt file prints a warning and is treated as empty. Delete the file to forget the saved printer. A failed save warns but never fails the command.
+The file holds nothing else. `model` (`"lx-d02"` or `"x6"`) restricts reconnects to the same printer family; a config written before the field existed still loads, and an unrecognized value is ignored with a warning, falling back to name detection. A missing file is the normal first run and is silent. An unreadable or corrupt file prints a warning and is treated as empty. Delete the file to forget the saved printer. A failed save warns but never fails the command.
 
 ### macOS Bluetooth permission
 
@@ -140,7 +169,7 @@ Diagnostics go to stderr, results to stdout. Scripts can read stdout safely.
 
 ## scan
 
-List every nearby device advertising a name that starts with `LX`.
+List every nearby device advertising a supported printer name (`LX*`, `X6h-*`, `x6h-*`).
 
 ```
 printable scan [--timeout <SECONDS>]
@@ -152,13 +181,14 @@ printable scan [--timeout <SECONDS>]
 
 ```console
 $ printable scan
-NAME                 ID
-LX-D02               c0076683-6d1d-5981-7fd2-4292d76b7bd9
+NAME                 MODEL    ID
+LX-D02               lx-d02   c0076683-6d1d-5981-7fd2-4292d76b7bd9
+X6h-1D4A             x6       8f2e11a0-42cb-59d3-88a7-05c1f2a6c3ee
 ```
 
-The `ID` column is the platform peripheral identifier — a CoreBluetooth UUID on macOS, a MAC address elsewhere. Pass it (or any substring of it) to `--device`.
+The `MODEL` column is the protocol family the name identifies (see [Printer models](#printer-models)). The `ID` column is the platform peripheral identifier — a CoreBluetooth UUID on macOS, a MAC address elsewhere. Pass it (or any substring of it) to `--device`.
 
-With no printers in range, `scan` writes `No LX printers found. Is the printer on?` to stderr and exits **2**.
+With no printers in range, `scan` writes `No supported printers found. Is the printer on?` to stderr and exits **2**.
 
 ```sh
 printable scan --timeout 15     # slow to advertise, or a crowded 2.4 GHz band
@@ -168,15 +198,16 @@ printable scan --timeout 15     # slow to advertise, or a crowded 2.4 GHz band
 
 ## status
 
-Connect, read one status frame, disconnect.
+Connect, read one status frame, disconnect. **LX-D02 only** — the X6 sends no status frames at all, so against one the command fails immediately with `status notifications are not supported on this printer model` (exit 1) rather than sitting out the wait.
 
 ```
-printable status [--device <DEVICE>]
+printable status [--device <DEVICE>] [--model <MODEL>]
 ```
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--device` | string | saved device, else first `LX*` | Name or id substring |
+| `--device` | string | saved device, else first supported printer | Name or id substring |
+| `--model` | `lx-d02` \| `x6` | detect from the name | Case-insensitive; see [Printer models](#printer-models) |
 
 ```console
 $ printable status
@@ -262,7 +293,8 @@ A `--file` document's image references resolve against **that document's own dir
 
 | Flag | Type | Default | Range | Applies to |
 |---|---|---|---|---|
-| `--device <STR>` | string | saved, else first `LX*` | — | All |
+| `--device <STR>` | string | saved, else first supported printer | — | All |
+| `--model <MODEL>` | enum | detect from the name | `lx-d02` \| `x6`, case-insensitive | All |
 | `-f, --file <PATH>` | path | — | `-` means stdin | — |
 | `-m, --markdown` | flag | off | — | Text input and `.txt`; rejected for images and `--url` |
 | `--url <URL>` | string | — | `http://` or `https://` only | — |
@@ -291,7 +323,7 @@ Font size in pixels for plain text only. Line height is 1.3 × size. `\r\n` and 
 
 #### `--feed`
 
-Blank rows appended after the content, so the paper advances past the tear bar. The rows count toward the printed line total and appear in `--preview` output. `40` clears the head on an LX-D02.
+Blank rows appended after the content, so the paper advances past the tear bar. On an LX-D02 the rows ride along as blank raster lines and count toward the printed line total; on an X6 the feed is a printer command instead, does not count toward `Printed <N> lines.`, and saturates at 65 535. Either way the feed appears in `--preview` output. `40` clears the head on an LX-D02.
 
 #### `--preview`
 
@@ -299,7 +331,7 @@ Renders to a PNG at `<PATH>` and exits without touching the printer or Bluetooth
 
 #### `--copies`
 
-One BLE connection, one full print job (fresh authentication) per copy. Each copy reports `Printed copy <i>/<N>.`; a single copy reports `Printed <lines> lines.` instead.
+One BLE connection, one full print job (fresh authentication, on the LX-D02) per copy. Each copy reports `Printed copy <i>/<N>.`; a single copy reports `Printed <lines> lines.` instead.
 
 ### Examples
 
@@ -318,6 +350,7 @@ printable print -f flyer.md --copies 3 --feed 60
 printable print "draft" --preview /tmp/out.png
 printable print "invoice" --device LX-D02
 printable print "invoice" --device c0076683      # id substring
+printable print "meow" --model x6                # restrict to the X6 family
 ```
 
 ### Failure modes
@@ -350,7 +383,8 @@ printable qr <DATA> [OPTIONS]
 |---|---|---|---|
 | `<DATA>` | string | required | Anything a QR code can hold |
 | `--caption <TEXT>` | string | — | Rendered below the code at 24 px, left-aligned |
-| `--device <STR>` | string | saved, else first `LX*` | — |
+| `--device <STR>` | string | saved, else first supported printer | — |
+| `--model <MODEL>` | enum | detect from the name | `lx-d02` \| `x6`, case-insensitive |
 | `--density <N>` | integer | `3` | 1–7 |
 | `--feed <N>` | integer | `40` | ≥ 0 |
 | `--preview <PATH>` | path | — | — |
@@ -391,7 +425,8 @@ printable serve [OPTIONS]
 |---|---|---|---|
 | `--port <PORT>` | integer | `8000` | 0–65535; `0` picks a free port |
 | `--bind <ADDR>` | string | `0.0.0.0` | `0.0.0.0` = every interface (LAN printing); `127.0.0.1` = this machine only |
-| `--device <STR>` | string | saved, else first `LX*` | Pins the printer for every request |
+| `--device <STR>` | string | saved, else first supported printer | Pins the printer for every request |
+| `--model <MODEL>` | enum | detect from the name | Pins the protocol family, like `--device`; no HTTP route takes a model |
 | `--no-remote-images` | flag | off | Never fetch `http(s)` images referenced by markdown |
 
 ```console
@@ -520,11 +555,11 @@ curl -X POST http://192.168.1.42:8000/print/text \
 ### No printer found (exit 2)
 
 1. Power the printer on and check it is not already connected to a phone — BLE links are exclusive.
-2. `found <name> but it did not respond` is a *different* fault from nothing being found, even though both exit 2: the device is right there and connected, but nothing answered. On macOS that is almost always a printer that is switched off, because CoreBluetooth answers connect and discovery out of its cache. Turn it on.
+2. `found <name> but it did not respond` is a *different* fault from nothing being found, even though both exit 2: the device is right there and connected, but nothing answered. On macOS that is almost always a printer that is switched off, because CoreBluetooth answers connect and discovery out of its cache. Turn it on. (That message is LX-D02 only — an off X6 "connects" successfully and fails later, as a print job that stalls in silence. Same fix: turn it on.)
 3. Run `printable scan --timeout 15`. If the printer appears there but commands still fail, pass its id: `printable print "x" --device <ID>`.
 4. If `scan` finds nothing, confirm Bluetooth is on. `no Bluetooth adapter found — is Bluetooth turned on?` means the adapter itself is missing or disabled.
 5. Connect attempts scan for 10 seconds. A printer that advertises slowly may need a power cycle rather than a longer wait.
-6. **A stale saved device costs a full 10 seconds on every command.** The resolver takes an exact id match immediately, but a saved id that no longer exists never matches — so it collects ranked fallbacks (a device with the saved *name*, then any `LX*`) and only uses one when the scan deadline expires. Every command pays the whole 10 seconds even with the printer sitting right there under a new identifier. Delete the config file, or pass `--device`, to skip it. Run with `-vv` to see which candidate won.
+6. **A stale saved device costs a full 10 seconds on every command.** The resolver takes an exact id match immediately, but a saved id that no longer exists never matches — so it collects ranked fallbacks (a device with the saved *name*, then any supported printer of the saved model) and only uses one when the scan deadline expires. Every command pays the whole 10 seconds even with the printer sitting right there under a new identifier. Delete the config file, or pass `--device`, to skip it. Run with `-vv` to see which candidate won.
 
 ### Bluetooth permission denied
 
@@ -537,13 +572,15 @@ System Settings > Privacy & Security > Bluetooth
 
 Permission is granted per terminal application. Toggle your terminal off and on again in that pane and restart it. If the app is not listed at all, the prompt was never triggered — run `printable scan` once and answer it.
 
-### `not an LX printer?`
+### `not a lx-d02 printer?`
 
 ```
-<name> has no 0xFFE1 write characteristic — not an LX printer?
+<name> has no 0xFFE1 write characteristic — not a lx-d02 printer?
 ```
 
-`--device` matched something that is not an LX printer. Substring matching also matches ids, so a short filter like `--device 0` can catch anything. Use the full name or id from `printable scan`.
+(or `no 0xAE01 write characteristic — not a x6 printer?`)
+
+`--device` matched something that is not the kind of printer the resolved model expects. Substring matching also matches ids, so a short filter like `--device 0` can catch anything. Use the full name or id from `printable scan` — its `MODEL` column also tells you what to pass to `--model` if the family was guessed wrong.
 
 ### Chrome not found
 
@@ -563,7 +600,8 @@ If Chrome is installed but the render fails, try the page in a normal browser fi
 | `printer went silent (no BLE notification at all for 10s)` (exit 4) | Nothing arrived on the link for 10 seconds. Usually the link dropped — move closer, then retry. |
 | `printer stalled for … without resuming` (exit 4) | The printer is still sending frames but has taken no data for 60 seconds. When the job spent time paused for flow control, the message says so and suggests a lower `--density`; when it never paused at all, the head is not the problem and the message does not blame it. |
 | Job pauses, then resumes | Normal flow control. The printer asks for a hold when its buffer fills or the head is hot. Run with `-v` to watch the pauses and resumes as they happen. |
-| `printer is out of paper` (exit 3) | Checked before the job starts and again on every status frame during it. |
+| An X6 job goes silent right after connecting | The printer is probably switched off: the X6 has no liveness probe, so a cached connect succeeds against a dead printer and the job dies on the 10 s notification timeout instead. |
+| `printer is out of paper` (exit 3) | Checked before the job starts and again on every status frame during it. LX-D02 only — the X6 has no paper signal, so it prints into thin air until the job ends. |
 | `warning: printer battery is low` | Printing continues, but density drops on a flat battery. Charge it before a long job. |
 | Faint or streaky output | Raise `--density` (up to 7). Long dark jobs trigger thermal cooldown pauses. |
 | `cannot print this job: print too large` | Over 131 070 rows. Split the document. |

@@ -9,11 +9,18 @@ import init, {
   render_qr,
   render_image,
   WasmJob,
+  WasmX6Job,
+  lx_service_uuid,
+  lx_write_uuid,
+  lx_notify_uuid,
+  x6_service_uuid,
+  x6_write_uuid,
+  x6_notify_uuid,
 } from "./pkg/printa_ble_web.js";
 
-const SERVICE = 0xffe6;
-const WRITE = 0xffe1;
-const NOTIFY = 0xffe2;
+// GATT UUIDs come from core's PrinterModel (the single source of truth);
+// assigned after init() below, before any button is enabled.
+let LX_SERVICE, LX_WRITE, LX_NOTIFY, X6_SERVICE, X6_WRITE, X6_NOTIFY;
 
 const DEFAULT_TEXT_SIZE = 24.0; // matches the CLI/server default
 const WATCHDOG_MS = 10_000;
@@ -34,6 +41,7 @@ const bluetoothSupported = !!navigator.bluetooth;
 
 // --- Connection state ---
 let device = null;
+let model = null; // "lx" or "x6", set by the service probe in connect()
 let writeChar = null;
 let notifyChar = null;
 let connected = false;
@@ -200,14 +208,23 @@ async function connect() {
   $("connect").disabled = true;
   try {
     device = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: "LX" }],
-      optionalServices: [SERVICE],
+      filters: [{ namePrefix: "LX" }, { namePrefix: "X6h-" }, { namePrefix: "x6h-" }],
+      optionalServices: [LX_SERVICE, X6_SERVICE],
     });
     device.addEventListener("gattserverdisconnected", onDisconnect);
     const server = await device.gatt.connect();
-    const svc = await server.getPrimaryService(SERVICE);
-    writeChar = await svc.getCharacteristic(WRITE);
-    notifyChar = await svc.getCharacteristic(NOTIFY);
+    // The exposed primary service IS the model detection: the two families
+    // expose disjoint services, so probe LX first and fall back to X6.
+    let svc;
+    try {
+      svc = await server.getPrimaryService(LX_SERVICE);
+      model = "lx";
+    } catch {
+      svc = await server.getPrimaryService(X6_SERVICE);
+      model = "x6";
+    }
+    writeChar = await svc.getCharacteristic(model === "lx" ? LX_WRITE : X6_WRITE);
+    notifyChar = await svc.getCharacteristic(model === "lx" ? LX_NOTIFY : X6_NOTIFY);
     await notifyChar.startNotifications();
     notifyChar.addEventListener("characteristicvaluechanged", onNotify);
     connected = true;
@@ -215,6 +232,7 @@ async function connect() {
   } catch (e) {
     connected = false;
     device = null;
+    model = null;
     updateChip();
     $("connect").disabled = false;
     throw e;
@@ -225,6 +243,7 @@ function onDisconnect() {
   const wasPrinting = job !== null;
   connected = false;
   device = null;
+  model = null;
   writeChar = null;
   notifyChar = null;
   batteryPct = null;
@@ -331,8 +350,14 @@ function runJob(bitmap, density) {
   return new Promise((resolve, reject) => {
     let j;
     try {
-      const challenge = crypto.getRandomValues(new Uint8Array(10));
-      j = new WasmJob(bitmap, density, challenge);
+      if (model === "x6") {
+        // No density (the X6 protocol has none — the slider has no effect)
+        // and no auth. Feed rides as a pixel-count command, not blank lines.
+        j = new WasmX6Job(bitmap, optFeed());
+      } else {
+        const challenge = crypto.getRandomValues(new Uint8Array(10));
+        j = new WasmJob(bitmap, density, challenge);
+      }
     } catch (e) {
       reject(new Error(errMsg(e)));
       return;
@@ -355,8 +380,10 @@ async function doPrint() {
       return;
     }
     if (!connected) await connect();
-    // Feed is part of the bitmap, so it repeats per copy (same as the CLI).
-    bitmap.extend_blank(optFeed());
+    // On the LX the feed is part of the bitmap, so it repeats per copy (same
+    // as the CLI). On the X6 it is a printer command instead — runJob passes
+    // it to the job, so it must not also be baked in here.
+    if (model !== "x6") bitmap.extend_blank(optFeed());
     const density = optDensity();
     const copies = optCopies();
     const lines = bitmap.height();
@@ -393,6 +420,13 @@ try {
   toast("failed to load WASM: " + errMsg(e), true);
   throw e;
 }
+
+LX_SERVICE = lx_service_uuid();
+LX_WRITE = lx_write_uuid();
+LX_NOTIFY = lx_notify_uuid();
+X6_SERVICE = x6_service_uuid();
+X6_WRITE = x6_write_uuid();
+X6_NOTIFY = x6_notify_uuid();
 
 $("preview-btn").disabled = false;
 $("print-btn").disabled = !bluetoothSupported;

@@ -14,8 +14,8 @@ use wasm_bindgen::prelude::*;
 use crate::WasmBitmap;
 
 /// Pause between raster packet sends; the value used by the CLI for real
-/// hardware.
-const INTER_PACKET_DELAY_MS: u64 = 15;
+/// hardware. Shared with the X6 wrapper in [`crate::x6job`].
+pub(crate) const INTER_PACKET_DELAY_MS: u64 = 15;
 
 /// One step of the print job, serialized for JS as a tagged object:
 /// `{kind:"send", bytes:Uint8Array} | {kind:"waitMs", ms} |

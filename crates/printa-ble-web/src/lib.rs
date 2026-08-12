@@ -7,10 +7,12 @@
 
 use std::collections::HashMap;
 
+use printa_ble_core::model::PrinterModel;
 use printa_ble_core::raster::{self, Bitmap, Dither};
 use wasm_bindgen::prelude::*;
 
 pub mod job;
+pub mod x6job;
 
 /// Largest accepted font size in pixels, mirroring the server bound.
 const MAX_TEXT_SIZE: f32 = 128.0;
@@ -50,6 +52,47 @@ impl WasmBitmap {
     fn new(inner: Bitmap) -> Self {
         Self { inner }
     }
+}
+
+// 16-bit GATT UUIDs per printer model, exported so the page's JS sources them
+// from core's `PrinterModel` (the single source of truth) instead of
+// hardcoding. wasm-bindgen cannot export associated functions on a plain
+// enum, hence six flat helpers.
+
+/// LX-D02 primary service UUID (16-bit).
+#[wasm_bindgen]
+pub fn lx_service_uuid() -> u16 {
+    PrinterModel::LxD02.service_uuid16()
+}
+
+/// LX-D02 write characteristic UUID (16-bit).
+#[wasm_bindgen]
+pub fn lx_write_uuid() -> u16 {
+    PrinterModel::LxD02.write_char_uuid16()
+}
+
+/// LX-D02 notify characteristic UUID (16-bit).
+#[wasm_bindgen]
+pub fn lx_notify_uuid() -> u16 {
+    PrinterModel::LxD02.notify_char_uuid16()
+}
+
+/// X6 primary service UUID (16-bit).
+#[wasm_bindgen]
+pub fn x6_service_uuid() -> u16 {
+    PrinterModel::X6.service_uuid16()
+}
+
+/// X6 write characteristic UUID (16-bit).
+#[wasm_bindgen]
+pub fn x6_write_uuid() -> u16 {
+    PrinterModel::X6.write_char_uuid16()
+}
+
+/// X6 notify characteristic UUID (16-bit).
+#[wasm_bindgen]
+pub fn x6_notify_uuid() -> u16 {
+    PrinterModel::X6.notify_char_uuid16()
 }
 
 /// Render plain text at `size` px. Size must be finite, > 0 and ≤ 128.
@@ -181,6 +224,16 @@ mod tests {
             .write_to(&mut bytes, image::ImageFormat::Png)
             .unwrap();
         bytes.into_inner()
+    }
+
+    #[test]
+    fn uuid_helpers_match_the_models() {
+        assert_eq!(lx_service_uuid(), 0xFFE6);
+        assert_eq!(lx_write_uuid(), 0xFFE1);
+        assert_eq!(lx_notify_uuid(), 0xFFE2);
+        assert_eq!(x6_service_uuid(), 0xAE30);
+        assert_eq!(x6_write_uuid(), 0xAE01);
+        assert_eq!(x6_notify_uuid(), 0xAE02);
     }
 
     #[test]

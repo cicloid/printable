@@ -217,6 +217,14 @@ mod tests {
     use super::*;
     use printa_ble_core::raster::bitmap_to_png;
 
+    /// Pinned so a cleanup cannot silently drop the User-Agent: hosts with
+    /// robot policies (Wikimedia) reject anonymous fetches with HTTP 403.
+    #[test]
+    fn fetch_client_identifies_itself() {
+        assert!(USER_AGENT.starts_with("printable/"));
+        assert!(USER_AGENT.len() > "printable/".len());
+    }
+
     /// A real, decodable 384-wide PNG.
     fn png_bytes() -> Vec<u8> {
         let mut bitmap = Bitmap::new(20);

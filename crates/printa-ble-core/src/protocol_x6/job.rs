@@ -22,7 +22,7 @@ const SETTLE_MS: u64 = 500;
 /// printhead energy for the 0xAF SetEnergy command.
 ///
 /// `energy = 12000 + 6000 × (density − 1)`, with `density` clamped to
-/// 1-7. The endpoints and midpoint land exactly on kitty-printer's
+/// 1-7. The endpoints and the default (3) land exactly on kitty-printer's
 /// "strength" presets: density 1 = 12000 (low), 3 = 24000 (medium, its
 /// `DEF_ENERGY`), 7 = 48000 (high).
 pub fn density_to_energy(density: u8) -> u16 {
@@ -127,7 +127,11 @@ impl X6PrintJob {
     }
 
     /// Feed a parsed notification from 0xAE02 into the state machine.
-    /// Notifications that make no sense in the current state are ignored.
+    /// Notifications that make no sense in the current state are ignored —
+    /// including a `BufferFull` during the two energy setup frames, on
+    /// purpose: nothing has been streamed yet, so there is nothing to pause,
+    /// and a genuinely full buffer will raise `BufferFull` again once
+    /// scanlines flow.
     pub fn on_notification(&mut self, n: X6Notification) {
         match (self.state, n) {
             (State::Streaming, X6Notification::BufferFull) => {
@@ -169,7 +173,7 @@ mod tests {
         sent
     }
 
-    /// Endpoints and midpoint are kitty-printer's strength presets:
+    /// Endpoints and the default density are kitty-printer's strength presets:
     /// low 12000, medium 24000 (its DEF_ENERGY), high 48000.
     #[test]
     fn density_to_energy_maps_and_clamps() {

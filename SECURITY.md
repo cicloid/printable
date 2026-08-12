@@ -67,7 +67,10 @@ Two features cause the server to fetch caller-supplied URLs.
 `http(s)` URL the document references. An unauthenticated caller can therefore
 make the server issue GET requests to hosts *it* can reach and *they* cannot —
 internal services, admin interfaces, cloud instance-metadata endpoints. There is
-no allowlist and no private-IP filter.
+no allowlist and no private-IP filter. These requests identify themselves with
+a `printable/<version>` User-Agent (some hosts, Wikimedia among them, reject
+anonymous requests), so a fetched host learns what software asked and its
+version.
 
 **URL printing.** `/print/url` and `/preview/url` render a caller-supplied page
 through headless Google Chrome. That is the same exposure plus a full browser

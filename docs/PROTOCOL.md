@@ -1037,7 +1037,7 @@ energy = 12000 + 6000 × (density − 1)        density clamped to 1–7
 ```
 
 so density 1 = 12000, 3 (the default) = 24000 and 7 = 48000 — exactly the
-kitty-printer presets at the endpoints and midpoint. The pair is sent once,
+kitty-printer presets at the endpoints and the default density. The pair is sent once,
 at the start of every job, before the blank lead row. The maximum, 48000,
 fits a u16 with room to spare.
 

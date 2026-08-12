@@ -165,8 +165,15 @@ fn is_http(dest: &str) -> bool {
     lower.starts_with("http://") || lower.starts_with("https://")
 }
 
+/// Identify ourselves on image fetches. Some hosts (Wikimedia among them)
+/// reject requests with no User-Agent outright, per their robot policy.
+const USER_AGENT: &str = concat!("printable/", env!("CARGO_PKG_VERSION"));
+
 fn build_client() -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder().timeout(HTTP_TIMEOUT).build()
+    reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .user_agent(USER_AGENT)
+        .build()
 }
 
 /// Relative references resolve against the document's directory; absolute ones

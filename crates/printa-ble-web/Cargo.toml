@@ -3,6 +3,11 @@ name = "printa-ble-web"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "WASM build of printa-ble-core: render and print to Bluetooth thermal printers from the browser via Web Bluetooth"
+keywords = ["thermal-printer", "bluetooth", "wasm", "web-bluetooth", "cat-printer"]
+categories = ["wasm", "hardware-support"]
+readme = "../../README.md"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -15,7 +20,7 @@ default = ["cjk"]
 cjk = ["printa-ble-core/cjk"]
 
 [dependencies]
-printa-ble-core = { path = "../printa-ble-core", default-features = false }
+printa-ble-core = { version = "0.1.0", path = "../printa-ble-core", default-features = false }
 wasm-bindgen = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6"

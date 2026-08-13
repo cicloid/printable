@@ -5,3 +5,4 @@ members = ["crates/printa-ble-core", "crates/printa-ble", "crates/printa-ble-web
 [workspace.package]
 edition = "2021"
 license = "MIT"
+repository = "https://github.com/cicloid/printable"

@@ -29,8 +29,13 @@ are **untested** here — see [Where to Start](#where-to-start).
 ### Clone and Build
 
 ```bash
-git clone https://github.com/cicloid/printa-ble.git
-cd printa-ble
+git clone https://github.com/cicloid/printable.git
+cd printable
+
+# Optional but recommended: pre-commit hook mirroring the CI gate
+# (fmt + clippy, plus the wasm32 sans-IO check when core changed;
+# skip once with `git commit --no-verify`)
+git config core.hooksPath .githooks
 
 # Build the whole workspace
 cargo build

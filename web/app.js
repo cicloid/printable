@@ -16,11 +16,12 @@ import init, {
   x6_service_uuid,
   x6_write_uuid,
   x6_notify_uuid,
+  x6_adv_service_uuid,
 } from "./pkg/printa_ble_web.js";
 
 // GATT UUIDs come from core's PrinterModel (the single source of truth);
 // assigned after init() below, before any button is enabled.
-let LX_SERVICE, LX_WRITE, LX_NOTIFY, X6_SERVICE, X6_WRITE, X6_NOTIFY;
+let LX_SERVICE, LX_WRITE, LX_NOTIFY, X6_SERVICE, X6_WRITE, X6_NOTIFY, X6_ADV_SERVICE;
 
 const DEFAULT_TEXT_SIZE = 24.0; // matches the CLI/server default
 const WATCHDOG_MS = 10_000;
@@ -208,7 +209,20 @@ async function connect() {
   $("connect").disabled = true;
   try {
     device = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: "LX" }, { namePrefix: "X6h-" }, { namePrefix: "x6h-" }],
+      // 0xAF30 is the cat-family *advertisement* service (arbitrary device
+      // names); the GATT connection still uses the X6 service (0xAE30), which
+      // optionalServices below grants. Some firmwares put the connect service
+      // 0xAE30 in the advertisement instead — either marks the family, so
+      // both are filters here (mirrors advertises_cat in the native
+      // transport). Name prefixes stay for printers that advertise neither.
+      filters: [
+        { namePrefix: "LX" },
+        { namePrefix: "X6h-" },
+        { namePrefix: "x6h-" },
+        { namePrefix: "SC05-" },
+        { services: [X6_ADV_SERVICE] },
+        { services: [X6_SERVICE] },
+      ],
       optionalServices: [LX_SERVICE, X6_SERVICE],
     });
     device.addEventListener("gattserverdisconnected", onDisconnect);
@@ -431,6 +445,7 @@ LX_NOTIFY = lx_notify_uuid();
 X6_SERVICE = x6_service_uuid();
 X6_WRITE = x6_write_uuid();
 X6_NOTIFY = x6_notify_uuid();
+X6_ADV_SERVICE = x6_adv_service_uuid();
 
 $("preview-btn").disabled = false;
 $("print-btn").disabled = !bluetoothSupported;

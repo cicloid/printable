@@ -1,6 +1,6 @@
 # printable CLI Reference
 
-`printable` prints to two families of BLE thermal printer, both with 384 px-wide print heads: the LX-D02 / LX-D2 (58 mm paper, 203 dpi, hardware-validated) and the X6 / X6h "cat printer" family (**new, and not yet hardware-validated** — see [Printer models](#printer-models)).
+`printable` prints to two families of BLE thermal printer, both with 384 px-wide print heads: the LX-D02 / LX-D2 (58 mm paper, 203 dpi, hardware-validated) and the X6 / X6h "cat printer" family (hardware-validated — see [Printer models](#printer-models)).
 
 ```
 printable <COMMAND> [OPTIONS]
@@ -24,16 +24,18 @@ Global flags: `-h, --help` (per command too), `-V, --version`, and `-v` for [ver
 
 Two printer families are supported, sharing the rendering pipeline (both have 384 px print heads) but speaking completely different wire protocols:
 
-| Family | `--model` value | Advertised name | Status |
+| Family | `--model` value | Detected by | Status |
 |---|---|---|---|
-| LX-D02 / LX-D2 | `lx-d02` | starts with `LX` | Hardware-validated |
-| X6 / X6h "cat printer" | `x6` | starts with `X6h-` or `x6h-` | **Not yet hardware-validated** |
+| LX-D02 / LX-D2 | `lx-d02` | Name starts with `LX` | Hardware-validated |
+| X6 / X6h "cat printer" family | `x6` | Name starts with `X6h-`, `x6h-`, or `SC05-`, **or** the advertisement carries the cat-family service `0xAF30` (some firmwares advertise the connect service `0xAE30` instead — either counts) | Hardware-validated (X6h, and an `SC05-` cat-face unit first found by service detection) |
 
 `X6H-` (capital H) is a different model and is deliberately not matched.
 
-Every command that talks to the printer takes `--model <lx-d02|x6>`. The value is case-insensitive (`--model X6` works); anything else is a usage error naming the two choices. Without the flag the model is detected from the advertised device name, and a successful connection remembers it in the config file, so later runs reconnect with the right protocol automatically.
+The name decides first; the advertisement service is the fallback that catches the rest of the cat-protocol family, which ships under arbitrary names (GB01-style units among them). Any printer detected either way is driven as an `x6`; the fallback is hardware-validated — a cat-family unit whose name no model claims was discovered by its advertisement service alone and printed correctly.
 
-The flag is a **restriction**, not just a hint: while `--model` is set, a device of the other family — or of no recognizable family — never matches, even under a `--device` filter that would otherwise hit it. Without the flag, reconnecting to the saved device is restricted to the saved model: the point of the saved device is "the same printer as last time", and that includes what kind of printer it was. A `--device` filter alone may still match a device whose name no model claims; such a device is driven as an LX-D02, which is what this tool did before models existed. That LX-D02 is an assumption, not a detection, so it is not saved: the device is remembered with no model, and later flagless runs match it by its saved id and name rather than being restricted to a model its name can never satisfy.
+Every command that talks to the printer takes `--model <lx-d02|x6>`. The value is case-insensitive (`--model X6` works); anything else is a usage error naming the two choices. Without the flag the model is detected from the advertisement — the name, else the cat-family service — and a successful connection remembers it in the config file, so later runs reconnect with the right protocol automatically. A device detected only by its service is remembered as `x6` like any other, so flagless reconnects keep working.
+
+The flag is a **restriction**, not just a hint: while `--model` is set, a device of the other family — or of no recognizable family — never matches, even under a `--device` filter that would otherwise hit it. Without the flag, reconnecting to the saved device is restricted to the saved model: the point of the saved device is "the same printer as last time", and that includes what kind of printer it was. A `--device` filter alone may still match a device neither its name nor its advertised service claims; such a device is driven as an LX-D02, which is what this tool did before models existed. That LX-D02 is an assumption, not a detection, so it is not saved: the device is remembered with no model, and later flagless runs match it by its saved id and name rather than being restricted to a model the device can never match.
 
 What the X6 does differently:
 
@@ -74,8 +76,8 @@ Every command that talks to the printer resolves a device the same way. `scan` i
 | 1 | `--device <STR>` | Advertised name **or** platform id contains `<STR>` | Immediately, first match |
 | 2 | Saved device id (config file) | Exact platform id | Immediately |
 | 2a | Saved device *name* | Advertised name equals the saved name | Only at the scan deadline, preferred over 2b |
-| 2b | Any supported printer | Advertised name identifies a supported model | Only at the scan deadline |
-| 3 | No flag, no saved device | Advertised name identifies a supported model | Immediately, first match |
+| 2b | Any supported printer | Advertised name — or the cat-family service — identifies a supported model | Only at the scan deadline |
+| 3 | No flag, no saved device | Advertised name — or the cat-family service — identifies a supported model | Immediately, first match |
 
 When a model restriction is in effect — an explicit `--model`, or the saved device's remembered model on a reconnect (see [Printer models](#printer-models)) — every rank matches only devices of that model.
 
@@ -133,7 +135,7 @@ name = "LX-D02"
 model = "lx-d02"
 ```
 
-The file holds nothing else. `model` (`"lx-d02"` or `"x6"`) restricts reconnects to the same printer family; a config written before the field existed still loads, and an unrecognized value is ignored with a warning, falling back to name detection. A missing file is the normal first run and is silent. An unreadable or corrupt file prints a warning and is treated as empty. Delete the file to forget the saved printer. A failed save warns but never fails the command.
+The file holds nothing else. `model` (`"lx-d02"` or `"x6"`) restricts reconnects to the same printer family; a config written before the field existed still loads, and an unrecognized value is ignored with a warning, falling back to detection from the advertisement. A missing file is the normal first run and is silent. An unreadable or corrupt file prints a warning and is treated as empty. Delete the file to forget the saved printer. A failed save warns but never fails the command.
 
 ### macOS Bluetooth permission
 
@@ -169,15 +171,16 @@ Diagnostics go to stderr, results to stdout. Scripts can read stdout safely.
 
 ## scan
 
-List every nearby device advertising a supported printer name (`LX*`, `X6h-*`, `x6h-*`).
+List every nearby device a supported model claims — by advertised name (`LX*`, `X6h-*`, `x6h-*`, `SC05-*`) or by the cat-family advertisement service (see [Printer models](#printer-models)).
 
 ```
-printable scan [--timeout <SECONDS>]
+printable scan [--timeout <SECONDS>] [--all]
 ```
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--timeout` | integer seconds | `5` | Scans for the full duration before printing results |
+| `--all` | flag | off | List **every** BLE device seen, not just supported printers |
 
 ```console
 $ printable scan
@@ -186,13 +189,30 @@ LX-D02               lx-d02   c0076683-6d1d-5981-7fd2-4292d76b7bd9
 X6h-1D4A             x6       8f2e11a0-42cb-59d3-88a7-05c1f2a6c3ee
 ```
 
-The `MODEL` column is the protocol family the name identifies (see [Printer models](#printer-models)). The `ID` column is the platform peripheral identifier — a CoreBluetooth UUID on macOS, a MAC address elsewhere. Pass it (or any substring of it) to `--device`.
+The `MODEL` column is the protocol family detection identified — from the name, or from the cat-family service, so an arbitrary-named cat printer shows up here as `x6` (see [Printer models](#printer-models)). The `ID` column is the platform peripheral identifier — a CoreBluetooth UUID on macOS, a MAC address elsewhere. Pass it (or any substring of it) to `--device`.
 
 With no printers in range, `scan` writes `No supported printers found. Is the printer on?` to stderr and exits **2**.
 
 ```sh
 printable scan --timeout 15     # slow to advertise, or a crowded 2.4 GHz band
 ```
+
+### `--all`
+
+The diagnostic for a printer whose name you don't know: list every BLE advertiser seen — nameless ones included — with its advertised services, so the printer can be picked out by what it advertises rather than what it is called. A cat-family printer shows `0xAF30` (or `0xAE30`) under `SERVICES` and `x6` under `MODEL`.
+
+```console
+$ printable scan --all
+NAME                     MODEL    ID                                     SERVICES
+BC02-6E4F                x6       17d3aa90-55f1-5c2e-b0a4-3e9d21c07f88   0xAF30
+X6h-1D4A                 x6       8f2e11a0-42cb-59d3-88a7-05c1f2a6c3ee   0xAF30
+Living Room Speaker      -        3c1b9f22-8a41-5f00-9a3d-77f0be12aa41   6e400001-b5a3-f393-e0a9-e50e24dcca9e
+(no name)                -        5d90c3f7-1e2a-5b6c-8d4e-9f0a1b2c3d4e   -
+```
+
+Recognized printers sort first (named ones before nameless ones — a nameless `0xAF30` advertiser is still recognized and lands in this band), then named devices no model claims, with unrecognized nameless advertisers last; ties break alphabetically, then by id. A service on the Bluetooth base UUID prints as the 16-bit alias a datasheet would quote (`0xAF30`); anything else keeps its full form. A device advertising no services at all shows `-`.
+
+With nothing seen at all, `scan --all` writes `No BLE devices seen. Is Bluetooth on?` to stderr and exits **2** — same code as an empty plain scan.
 
 ---
 
@@ -207,7 +227,7 @@ printable status [--device <DEVICE>] [--model <MODEL>]
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--device` | string | saved device, else first supported printer | Name or id substring |
-| `--model` | `lx-d02` \| `x6` | detect from the name | Case-insensitive; see [Printer models](#printer-models) |
+| `--model` | `lx-d02` \| `x6` | detect from the advertisement | Case-insensitive; see [Printer models](#printer-models) |
 
 ```console
 $ printable status
@@ -294,7 +314,7 @@ A `--file` document's image references resolve against **that document's own dir
 | Flag | Type | Default | Range | Applies to |
 |---|---|---|---|---|
 | `--device <STR>` | string | saved, else first supported printer | — | All |
-| `--model <MODEL>` | enum | detect from the name | `lx-d02` \| `x6`, case-insensitive | All |
+| `--model <MODEL>` | enum | detect from the advertisement | `lx-d02` \| `x6`, case-insensitive | All |
 | `-f, --file <PATH>` | path | — | `-` means stdin | — |
 | `-m, --markdown` | flag | off | — | Text input and `.txt`; rejected for images and `--url` |
 | `--url <URL>` | string | — | `http://` or `https://` only | — |
@@ -384,7 +404,7 @@ printable qr <DATA> [OPTIONS]
 | `<DATA>` | string | required | Anything a QR code can hold |
 | `--caption <TEXT>` | string | — | Rendered below the code at 24 px, left-aligned |
 | `--device <STR>` | string | saved, else first supported printer | — |
-| `--model <MODEL>` | enum | detect from the name | `lx-d02` \| `x6`, case-insensitive |
+| `--model <MODEL>` | enum | detect from the advertisement | `lx-d02` \| `x6`, case-insensitive |
 | `--density <N>` | integer | `3` | 1–7 (maps to speed and energy on an X6 — see [Printer models](#printer-models)) |
 | `--feed <N>` | integer | `40` | ≥ 0 |
 | `--preview <PATH>` | path | — | — |
@@ -426,7 +446,7 @@ printable serve [OPTIONS]
 | `--port <PORT>` | integer | `8000` | 0–65535; `0` picks a free port |
 | `--bind <ADDR>` | string | `0.0.0.0` | `0.0.0.0` = every interface (LAN printing); `127.0.0.1` = this machine only |
 | `--device <STR>` | string | saved, else first supported printer | Pins the printer for every request |
-| `--model <MODEL>` | enum | detect from the name | Pins the protocol family, like `--device`; no HTTP route takes a model |
+| `--model <MODEL>` | enum | detect from the advertisement | Pins the protocol family, like `--device`; no HTTP route takes a model |
 | `--no-remote-images` | flag | off | Never fetch `http(s)` images referenced by markdown |
 
 ```console
@@ -556,7 +576,7 @@ curl -X POST http://192.168.1.42:8000/print/text \
 
 1. Power the printer on and check it is not already connected to a phone — BLE links are exclusive.
 2. `found <name> but it did not respond` is a *different* fault from nothing being found, even though both exit 2: the device is right there and connected, but nothing answered. On macOS that is almost always a printer that is switched off, because CoreBluetooth answers connect and discovery out of its cache. Turn it on. (That message is LX-D02 only — an off X6 "connects" successfully and fails later, as a print job that stalls in silence. Same fix: turn it on.)
-3. Run `printable scan --timeout 15`. If the printer appears there but commands still fail, pass its id: `printable print "x" --device <ID>`.
+3. Run `printable scan --timeout 15`. If the printer appears there but commands still fail, pass its id: `printable print "x" --device <ID>`. If it never appears, `printable scan --all` lists every advertiser with its services — a cat-family printer is the row showing `0xAF30`.
 4. If `scan` finds nothing, confirm Bluetooth is on. `no Bluetooth adapter found — is Bluetooth turned on?` means the adapter itself is missing or disabled.
 5. Connect attempts scan for 10 seconds. A printer that advertises slowly may need a power cycle rather than a longer wait.
 6. **A stale saved device costs a full 10 seconds on every command.** The resolver takes an exact id match immediately, but a saved id that no longer exists never matches — so it collects ranked fallbacks (a device with the saved *name*, then any supported printer of the saved model) and only uses one when the scan deadline expires. Every command pays the whole 10 seconds even with the printer sitting right there under a new identifier. Delete the config file, or pass `--device`, to skip it. Run with `-vv` to see which candidate won.

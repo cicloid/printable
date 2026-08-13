@@ -25,6 +25,10 @@ pub enum Command {
         /// Seconds to scan
         #[arg(long, default_value_t = 5)]
         timeout: u64,
+        /// List every BLE device seen, not just supported printers — for
+        /// identifying a printer that advertises under an unrecognized name
+        #[arg(long)]
+        all: bool,
     },
     /// Show printer status (battery, paper, density)
     Status(DeviceArgs),
@@ -329,6 +333,29 @@ mod tests {
     fn verbose_defaults_to_zero() {
         let cli = Cli::try_parse_from(["printable", "print", "hi"]).unwrap();
         assert_eq!(cli.verbose, 0);
+    }
+
+    /// `scan` alone keeps its original behavior; `--all` is opt-in and
+    /// composes with `--timeout`.
+    #[test]
+    fn scan_all_flag_defaults_off() {
+        match Cli::try_parse_from(["printable", "scan"]).unwrap().command {
+            Command::Scan { all, timeout } => {
+                assert!(!all);
+                assert_eq!(timeout, 5);
+            }
+            _ => panic!("expected a scan command"),
+        }
+        match Cli::try_parse_from(["printable", "scan", "--all", "--timeout", "10"])
+            .unwrap()
+            .command
+        {
+            Command::Scan { all, timeout } => {
+                assert!(all);
+                assert_eq!(timeout, 10);
+            }
+            _ => panic!("expected a scan command"),
+        }
     }
 
     fn print_args(argv: &[&str]) -> PrintArgs {

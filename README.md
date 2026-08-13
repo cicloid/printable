@@ -9,9 +9,9 @@ The name **printa-ble** derives from *printa* (the ancestor project) plus *BLE* 
 | Family | `--model` | Validation |
 |---|---|---|
 | LX-D02 / LX-D2 | `lx-d02` | **Hardware-validated** |
-| X6 / X6h ("cat printer") | `x6` | **Not yet hardware-validated** — every byte matches the reverse-engineering sources, but no print from a physical X6 has been confirmed |
+| X6 / X6h ("cat printer") | `x6` | **Hardware-validated** on an X6h and a service-detected cat-family unit |
 
-The model is detected from the advertised device name (`LX*` vs `X6h-*`/`x6h-*`) and remembered in the config file; `--model <lx-d02|x6>` (case-insensitive, on every command that touches the printer) forces it. The X6 speaks an entirely different wire protocol: no density control, no paper or battery status, no liveness probe, and its trailing feed is a printer command rather than blank lines — [docs/CLI.md](docs/CLI.md#printer-models) has the practical differences and [docs/PROTOCOL.md](docs/PROTOCOL.md) §11 the bytes.
+The model is detected from the advertised device name (`LX*` vs `X6h-*`/`x6h-*`/`SC05-*`) and remembered in the config file; `--model <lx-d02|x6>` (case-insensitive, on every command that touches the printer) forces it. Cat-family printers shipping under other names are detected too, by the `0xAF30` service their advertisements carry, and driven as `x6` — validated on one such unit. The X6 speaks an entirely different wire protocol: no density control, no paper or battery status, no liveness probe, and its trailing feed is a printer command rather than blank lines — [docs/CLI.md](docs/CLI.md#printer-models) has the practical differences and [docs/PROTOCOL.md](docs/PROTOCOL.md) §11 the bytes.
 
 ## Status
 

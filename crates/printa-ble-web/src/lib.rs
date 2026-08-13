@@ -57,7 +57,7 @@ impl WasmBitmap {
 // 16-bit GATT UUIDs per printer model, exported so the page's JS sources them
 // from core's `PrinterModel` (the single source of truth) instead of
 // hardcoding. wasm-bindgen cannot export associated functions on a plain
-// enum, hence six flat helpers.
+// enum, hence seven flat helpers.
 
 /// LX-D02 primary service UUID (16-bit).
 #[wasm_bindgen]
@@ -93,6 +93,13 @@ pub fn x6_write_uuid() -> u16 {
 #[wasm_bindgen]
 pub fn x6_notify_uuid() -> u16 {
     PrinterModel::X6.notify_char_uuid16()
+}
+
+/// X6 *advertisement* service UUID (16-bit). Cat-family printers advertise
+/// this; the GATT connection still uses `x6_service_uuid()`.
+#[wasm_bindgen]
+pub fn x6_adv_service_uuid() -> u16 {
+    PrinterModel::X6_ADV_SERVICE_UUID16
 }
 
 /// Render plain text at `size` px. Size must be finite, > 0 and ≤ 128.
@@ -234,6 +241,7 @@ mod tests {
         assert_eq!(x6_service_uuid(), 0xAE30);
         assert_eq!(x6_write_uuid(), 0xAE01);
         assert_eq!(x6_notify_uuid(), 0xAE02);
+        assert_eq!(x6_adv_service_uuid(), 0xAF30);
     }
 
     #[test]

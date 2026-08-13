@@ -1,8 +1,8 @@
 # printa-ble API Reference
 
-`printable serve` exposes a REST API and a web UI for a supported BLE thermal printer — an LX-D02 / LX-D2, or an X6 / X6h (**not yet hardware-validated**) — over the LAN. Preview endpoints render to PNG without touching the printer; print endpoints run the same rendering through the BLE print pipeline.
+`printable serve` exposes a REST API and a web UI for a supported BLE thermal printer — an LX-D02 / LX-D2, or an X6 / X6h — over the LAN. Preview endpoints render to PNG without touching the printer; print endpoints run the same rendering through the BLE print pipeline.
 
-The printer model is server configuration, not request data: `printable serve --model x6` restricts the server to that family, exactly like `--device` pins a device, and no HTTP route takes a model. Without the flag the model is detected from the device name (see [CLI.md](CLI.md#printer-models)).
+The printer model is server configuration, not request data: `printable serve --model x6` restricts the server to that family, exactly like `--device` pins a device, and no HTTP route takes a model. Without the flag the model is detected from the device's advertisement — its name, else the cat-family service (see [CLI.md](CLI.md#printer-models)).
 
 ## Base URL
 

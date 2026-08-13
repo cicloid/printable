@@ -30,9 +30,8 @@ lp -d printable somefile.txt
 `AIRPRINT_ARGS` passes any `printable ipp-command` flag through to every job,
 which is also how you pin a printer: `AIRPRINT_ARGS="--device LX-D02"` targets
 a device, and `AIRPRINT_ARGS="--model x6"` restricts the bridge to the X6 /
-X6h family (whose BLE support is **not yet hardware-validated** — see
-[CLI.md](CLI.md#printer-models); note the X6 reports no paper status, so the
-`media-empty` state below never fires for it).
+X6h family (note the X6 reports no paper status, so the `media-empty` state
+below never fires for it).
 
 ## Why not a CUPS backend
 

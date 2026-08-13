@@ -101,11 +101,16 @@ notifications.
 The LX-D02 uses the same style of module with the service shifted to `0xFFE6`. Two
 consequences:
 
-1. **There is no distinctive service UUID in the advertisement.** You cannot filter
-   on the service to find these printers. Discovery is by advertised local name
-   prefix `LX`, then confirm by discovering `0xFFE1` and `0xFFE2` after connecting.
-   `web/app.js` requests `filters: [{ namePrefix: "LX" }], optionalServices: [0xffe6]`;
-   `ble.rs` scans without a filter and matches `name.starts_with("LX")`.
+1. **There is no distinctive service UUID in the LX advertisement.** You cannot
+   filter on the service to find *these* printers — unlike the cat family, which
+   is found by exactly that (§11). Discovery is by advertised local name prefix
+   `LX`, then confirm by discovering `0xFFE1` and `0xFFE2` after connecting.
+   `web/app.js` requests `filters: [{ namePrefix: "LX" }, { namePrefix: "X6h-" },
+   { namePrefix: "x6h-" }, { namePrefix: "SC05-" }, { services: [0xaf30] },
+   { services: [0xae30] }], optionalServices: [0xffe6, 0xae30]` — the `LX` name
+   prefix is the only filter that can catch an LX, the rest being all
+   cat-family; `ble.rs` scans without a filter and matches
+   `name.starts_with("LX")`.
 2. **The module is a dumb pipe.** All structure — framing, indices, auth — is
    implemented by the printer's MCU behind the UART, not by GATT.
 
@@ -923,11 +928,12 @@ its own sans-IO module, `crates/printa-ble-core/src/protocol_x6/`, and nothing
 in sections 2–10 applies here — different GATT profile, different framing,
 different CRC, no authentication.
 
-> **Not hardware-validated.** Unlike everything above, the X6 implementation
-> has **not yet been confirmed against a physical printer**. Every byte value
-> below matches this repository's code and the reverse-engineering sources, but
-> no print has been observed coming out of real hardware. Treat the whole
-> section accordingly until this notice is removed.
+> **Hardware-validated (2026-08-13).** The maintainer has printed full
+> documents (text, QR, barcode, CJK, dithered images) from this implementation
+> on a physical X6h and on a service-detected cat-family unit. Byte values
+> below still cite the reverse-engineering sources for provenance; commands
+> the driver does not send (grayscale, compression, the wider kitty setup
+> sequence) remain secondhand.
 
 ### Sources
 
@@ -946,13 +952,25 @@ below are pinned in `protocol_x6/`'s unit tests.
 | Property | Value | Confidence |
 |---|---|---|
 | Models | X6, X6h | This is what the sources describe and this project targets |
-| Advertised BLE name | starts with `X6h-` or `x6h-` | From tinyprint-x6h; this project matches exactly these two prefixes |
+| Advertised BLE name | starts with `X6h-` or `x6h-`, or `SC05-` | `X6h-`/`x6h-` from tinyprint-x6h; `SC05-` observed on the maintainer's validated cat-face unit (`SC05-025B`) |
+| Advertisement service | `0xAF30` (base-UUID expansion, as in §2) | Marks the family in advertisement frames; some firmwares put the connect service `0xAE30` there instead, and this project accepts either. Confirmed against hardware: a cat-family unit was discovered by this service alone and printed |
 | Print head width | 384 dots | Same rendering pipeline as the LX-D02 |
 | Colors | 1 bit, black on thermal paper | This implementation; the hardware also has a 4bpp grayscale mode (below) |
 
 **`X6H-` (capital H) is deliberately not matched.** parzivail notes it is a
 distinct model, so `model.rs` folds case only on the prefix's first letter:
-`X6h-` and `x6h-` are claimed, `X6H-` is not.
+`X6h-` and `x6h-` are claimed, `X6H-` is not. `SC05-` is claimed only in its
+observed spelling.
+
+**Family detection is name-first, service-fallback.** A name a model claims
+decides on its own; when none does, an advertisement carrying `0xAF30` (or
+`0xAE30`) marks the device as cat-family, and it is discovered and driven as
+an `x6` — the wider family ships under arbitrary names (GB01-style units among
+them), and the advertisement service is the stable signal. The constant lives
+in core as `PrinterModel::X6_ADV_SERVICE_UUID16`; the advertisement service is
+discovery-only, and the GATT connection always targets `0xAE30` (below). The
+fallback is hardware-validated: a cat-family unit whose name no model claims
+was discovered by its advertisement service alone and printed correctly.
 
 ### GATT profile
 

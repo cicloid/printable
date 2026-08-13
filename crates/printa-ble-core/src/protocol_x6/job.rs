@@ -149,10 +149,9 @@ impl X6PrintJob {
 
     /// Feed a parsed notification from 0xAE02 into the state machine.
     /// Notifications that make no sense in the current state are ignored —
-    /// including a `BufferFull` during the setup frames, on
-    /// purpose: nothing has been streamed yet, so there is nothing to pause,
-    /// and a genuinely full buffer will raise `BufferFull` again once
-    /// scanlines flow.
+    /// including a `BufferFull` during the setup frames, on purpose: nothing
+    /// has been streamed yet, so there is nothing to pause, and a genuinely
+    /// full buffer will raise `BufferFull` again once scanlines flow.
     pub fn on_notification(&mut self, n: X6Notification) {
         match (self.state, n) {
             (State::Streaming, X6Notification::BufferFull) => {

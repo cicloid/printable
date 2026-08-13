@@ -73,7 +73,7 @@ fn exit_code(e: &anyhow::Error) -> i32 {
 
 async fn run(cli: Cli) -> anyhow::Result<i32> {
     match cli.command {
-        Command::Scan { timeout } => cmd_scan(timeout).await,
+        Command::Scan { timeout, all } => cmd_scan(timeout, all).await,
         Command::Status(device) => cmd_status(device).await.map(|()| 0),
         Command::Print(args) => cmd_print(args).await.map(|()| 0),
         Command::Qr(args) => cmd_qr(args).await.map(|()| 0),
@@ -89,8 +89,12 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
     }
 }
 
-async fn cmd_scan(timeout: u64) -> anyhow::Result<i32> {
-    let found = ble::scan(Duration::from_secs(timeout)).await?;
+async fn cmd_scan(timeout: u64, all: bool) -> anyhow::Result<i32> {
+    let timeout = Duration::from_secs(timeout);
+    if all {
+        return cmd_scan_all(timeout).await;
+    }
+    let found = ble::scan(timeout).await?;
     if found.is_empty() {
         eprintln!("No supported printers found. Is the printer on?");
         // Same exit code as a failed connect: no printer found.
@@ -99,6 +103,34 @@ async fn cmd_scan(timeout: u64) -> anyhow::Result<i32> {
     println!("{:<20} {:<8} ID", "NAME", "MODEL");
     for (name, id, model) in &found {
         println!("{name:<20} {model:<8} {id}");
+    }
+    Ok(0)
+}
+
+/// The `scan --all` diagnostic: every advertiser seen, recognized printers
+/// first, so a printer shipping under an arbitrary name can be picked out by
+/// its advertised services (a cat-family printer shows `0xAF30`).
+async fn cmd_scan_all(timeout: Duration) -> anyhow::Result<i32> {
+    let seen = ble::scan_all(timeout).await?;
+    if seen.is_empty() {
+        eprintln!("No BLE devices seen. Is Bluetooth on?");
+        // Same exit code as an empty plain scan: nothing usable found.
+        return Ok(2);
+    }
+    println!("{:<24} {:<8} {:<38} SERVICES", "NAME", "MODEL", "ID");
+    for d in &seen {
+        let name = d.name.as_deref().unwrap_or("(no name)");
+        let model = d.model.map_or_else(|| "-".to_string(), |m| m.to_string());
+        let services = if d.services.is_empty() {
+            "-".to_string()
+        } else {
+            d.services
+                .iter()
+                .map(|u| ble::format_service_uuid(u))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        println!("{name:<24} {model:<8} {:<38} {services}", d.id);
     }
     Ok(0)
 }

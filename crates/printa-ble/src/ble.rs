@@ -462,8 +462,9 @@ async fn start_scan(adapter: &Adapter) -> Result<()> {
 ///    wins, but fallbacks are kept in case the saved device never shows up
 ///    before the scan deadline: a device whose local name equals the saved
 ///    name is preferred over any other supported printer's name.
-/// 3. `AnySupported` — no flag, no saved device: first device whose name
-///    identifies a printer model this workspace can drive.
+/// 3. `AnySupported` — no flag, no saved device: first device whose name (or
+///    cat-family advertisement service) identifies a printer model this
+///    workspace can drive.
 enum Target<'a> {
     Filter(&'a str),
     SavedId { id: &'a str, name: &'a str },
@@ -482,19 +483,31 @@ enum MatchKind {
 /// Preference order among fallback candidates (higher wins).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum FallbackRank {
-    /// Any device whose name identifies a supported printer model.
+    /// Any device detected as a supported printer model (by name or by the
+    /// cat-family advertisement service).
     AnySupported,
     /// Local name equals the saved device's name.
     SavedName,
+}
+
+/// The one model-detection rule, shared by the matcher and [`scan_all`]:
+/// the name decides first; when no model claims it, `advertises_cat` — the
+/// device advertised the cat-family service (see
+/// [`PrinterModel::X6_ADV_SERVICE_UUID16`]) — detects an X6, because that
+/// family ships under arbitrary names.
+fn detect_model(name: &str, advertises_cat: bool) -> Option<PrinterModel> {
+    PrinterModel::from_device_name(name).or_else(|| advertises_cat.then_some(PrinterModel::X6))
 }
 
 /// Match an advertised name and platform id against `target`, restricted to
 /// `restrict` when a specific model was requested. Pure, so the resolution
 /// ladder is testable without a radio; [`match_target`] is the async shim.
 ///
-/// Returns how well the device matched and the model its name identifies —
-/// `None` for a [`Target::Filter`] hit on a name no model claims, because an
-/// explicit `--device` string may point at anything.
+/// Detection is [`detect_model`]'s rule: name first, cat-service fallback.
+///
+/// Returns how well the device matched and the model detected that way —
+/// `None` for a [`Target::Filter`] hit on a device neither signal claims,
+/// because an explicit `--device` string may point at anything.
 ///
 /// The restriction is absolute: a device of a different model (or of no
 /// recognizable model) never matches while `restrict` is set, even under a
@@ -504,8 +517,9 @@ fn match_advertised(
     id: &str,
     target: &Target<'_>,
     restrict: Option<PrinterModel>,
+    advertises_cat: bool,
 ) -> Option<(MatchKind, Option<PrinterModel>)> {
-    let detected = PrinterModel::from_device_name(name);
+    let detected = detect_model(name, advertises_cat);
     if restrict.is_some() && detected != restrict {
         return None;
     }
@@ -532,16 +546,30 @@ fn match_advertised(
 }
 
 /// Match a peripheral against `target`, returning its advertised name and
-/// the model that name identifies, if any.
+/// the model its advertisement (name, else cat service) identifies, if any.
+/// A local name is still mandatory: a nameless 0xAF30 advertiser never
+/// matches.
 async fn match_target(
     p: &Peripheral,
     target: &Target<'_>,
     restrict: Option<PrinterModel>,
 ) -> Option<(MatchKind, String, Option<PrinterModel>)> {
     let props = p.properties().await.ok()??;
+    let advertises_cat = advertises_cat(&props);
     let name = props.local_name?;
-    let (kind, model) = match_advertised(&name, &p.id().to_string(), target, restrict)?;
+    let (kind, model) =
+        match_advertised(&name, &p.id().to_string(), target, restrict, advertises_cat)?;
     Some((kind, name, model))
+}
+
+/// Did the advertisement carry a cat-family service? Cat printers advertise
+/// 0xAF30; some firmwares put the connect service 0xAE30 in the
+/// advertisement instead. Either marks the family.
+fn advertises_cat(props: &btleplug::api::PeripheralProperties) -> bool {
+    props.services.iter().any(|u| {
+        *u == uuid_from_u16(PrinterModel::X6_ADV_SERVICE_UUID16)
+            || *u == uuid_from_u16(PrinterModel::X6.service_uuid16())
+    })
 }
 
 /// Scan for `timeout`, returning (name, id, model) of every supported
@@ -557,8 +585,8 @@ pub async fn scan(timeout: Duration) -> Result<Vec<(String, String, PrinterModel
     for p in adapter.peripherals().await? {
         seen += 1;
         match match_target(&p, &Target::AnySupported, None).await {
-            // `AnySupported` only matches names a model claims, so the model
-            // is always present here.
+            // `AnySupported` only matches devices a model claims, so the
+            // model is always present here.
             Some((_, name, Some(model))) => {
                 debug!("match: {name} ({}) [{model}]", p.id());
                 found.push((name, p.id().to_string(), model));
@@ -571,9 +599,94 @@ pub async fn scan(timeout: Duration) -> Result<Vec<(String, String, PrinterModel
     Ok(found)
 }
 
+/// A peripheral seen during a diagnostic scan: every advertiser, not just
+/// recognized printers, so a printer shipping under an arbitrary name can
+/// be identified by what it advertises.
+pub struct SeenDevice {
+    pub name: Option<String>,
+    pub id: String,
+    /// Advertised service UUIDs, as canonical strings ([`format_service_uuid`]
+    /// renders one compactly).
+    pub services: Vec<String>,
+    /// The model the advertisement identifies, by the same rule the
+    /// connect-time matcher uses ([`detect_model`]).
+    pub model: Option<PrinterModel>,
+}
+
+/// Scan for `timeout`, returning every peripheral seen — the diagnostic
+/// behind `scan --all`. Unlike [`scan`], a device needs no local name to be
+/// listed (a nameless cat-service advertiser is exactly what the diagnostic
+/// is for). Recognized printers sort first, nameless devices last.
+pub async fn scan_all(timeout: Duration) -> Result<Vec<SeenDevice>> {
+    let adapter = default_adapter().await?;
+    start_scan(&adapter).await?;
+    info!("scanning for {}s", timeout.as_secs());
+    tokio::time::sleep(timeout).await;
+
+    let mut devices = Vec::new();
+    let mut seen = 0usize;
+    for p in adapter.peripherals().await? {
+        seen += 1;
+        let Ok(Some(props)) = p.properties().await else {
+            trace!("skipping {} (no advertisement properties)", p.id());
+            continue;
+        };
+        let model = detect_model(
+            props.local_name.as_deref().unwrap_or(""),
+            advertises_cat(&props),
+        );
+        devices.push(SeenDevice {
+            name: props.local_name,
+            id: p.id().to_string(),
+            services: props.services.iter().map(|u| u.to_string()).collect(),
+            model,
+        });
+    }
+    let _ = adapter.stop_scan().await;
+    info!(
+        "scan saw {seen} devices, {} listed, {} recognized",
+        devices.len(),
+        devices.iter().filter(|d| d.model.is_some()).count()
+    );
+    sort_seen(&mut devices);
+    Ok(devices)
+}
+
+/// Order a diagnostic scan for reading: recognized printers first, nameless
+/// advertisers last, alphabetical (then by id) inside each band.
+fn sort_seen(devices: &mut [SeenDevice]) {
+    devices.sort_by(|a, b| {
+        (a.model.is_none(), a.name.is_none(), &a.name, &a.id).cmp(&(
+            b.model.is_none(),
+            b.name.is_none(),
+            &b.name,
+            &b.id,
+        ))
+    });
+}
+
+/// The Bluetooth base UUID minus its first group: a canonical
+/// `0000xxxx-0000-1000-8000-00805f9b34fb` service is the 16-bit alias `xxxx`.
+const BASE_UUID_TAIL: &str = "-0000-1000-8000-00805f9b34fb";
+
+/// Render an advertised service UUID for the scan table: a base-UUID service
+/// collapses to the 16-bit alias a datasheet quotes (`0xAF30`); anything
+/// else keeps its full form. Case-insensitive on the tail, so an uppercase
+/// rendering of the base UUID still collapses.
+pub fn format_service_uuid(uuid: &str) -> String {
+    let on_base = uuid
+        .get(8..)
+        .is_some_and(|tail| tail.eq_ignore_ascii_case(BASE_UUID_TAIL));
+    if uuid.starts_with("0000") && on_base {
+        format!("0x{}", uuid[4..8].to_uppercase())
+    } else {
+        uuid.to_string()
+    }
+}
+
 /// A discovered peripheral that satisfied the target, carrying the model
-/// its advertised name identifies (`None`: an explicit `--device` filter
-/// hit a name no model claims).
+/// its advertisement identifies (`None`: an explicit `--device` filter hit
+/// a device no model claims).
 struct Candidate {
     peripheral: Peripheral,
     name: String,
@@ -665,12 +778,16 @@ pub struct Printer {
     /// disconnect so it does not park on the stream forever.
     forwarder: tokio::task::JoinHandle<()>,
     name: String,
-    /// The model this connection is driven as (LX-D02 when the advertised
-    /// name identified none — see `connect_resolved`).
+    /// The model this connection is driven as (LX-D02 when neither the name
+    /// nor the advertised service identified one — see `connect_resolved`).
     model: PrinterModel,
-    /// The model the matched advertised name actually identified — `None`
-    /// for a name no model claims, where `model` above is only an
-    /// assumption. What `remember_device` may record; the assumption is not.
+    /// The model detection actually identified — by name or by the
+    /// cat-family advertisement service — `None` when neither claims the
+    /// device, where `model` above is only an assumption. What
+    /// `remember_device` may record; the assumption is not. A
+    /// service-detected device's reconnect depends on the advertisement's
+    /// service list being present on a poll; a transient miss just retries
+    /// until the scan deadline.
     detected: Option<PrinterModel>,
 }
 
@@ -682,7 +799,7 @@ pub struct Printer {
 /// Resolution order (see [`Target`]): `explicit` filter > `saved` device id
 /// (falling back to a device with the saved name, else any supported
 /// printer, if the saved id is not seen before the deadline) > first device
-/// advertising a supported printer name.
+/// whose advertisement (name or cat service) identifies a supported printer.
 ///
 /// `model` is an explicit model request (the `--model` flag); see
 /// [`resolve_restriction`] for how it combines with the saved device's
@@ -745,10 +862,11 @@ pub async fn connect_resolved(
         name,
         model: detected,
     } = found;
-    // A device only an explicit `--device` filter could have matched, under
-    // a name no model claims: drive it as an LX-D02, which is what this
-    // code did unconditionally before models existed. The assumption stays
-    // separate from `detected` so it is never saved as fact.
+    // A device only an explicit `--device` filter could have matched, one
+    // neither its name nor its advertised service claims: drive it as an
+    // LX-D02, which is what this code did unconditionally before models
+    // existed. The assumption stays separate from `detected` so it is never
+    // saved as fact.
     let model = detected.unwrap_or_else(|| {
         debug!(
             "{name} matches no known model; assuming {}",
@@ -1000,17 +1118,18 @@ impl Printer {
         self.peripheral.id().to_string()
     }
 
-    /// The model this connection is being driven as. For a device whose
-    /// advertised name no model claims, this is the assumed LX-D02 — see
-    /// [`Printer::detected_model`] for the distinction.
+    /// The model this connection is being driven as. For a device neither
+    /// its name nor its advertised service claims, this is the assumed
+    /// LX-D02 — see [`Printer::detected_model`] for the distinction.
     pub fn model(&self) -> PrinterModel {
         self.model
     }
 
-    /// The model the advertised name actually identified, or `None` when no
-    /// model claims the name. This is what may be persisted: recording the
-    /// driven default instead would restrict future scans to a model the
-    /// name can never match.
+    /// The model detection actually identified — from the name, or from the
+    /// cat-family advertisement service (a remembered "x6" can originate
+    /// from the service alone) — or `None` when neither claims the device.
+    /// This is what may be persisted: recording the driven default instead
+    /// would restrict future scans to a model the device can never match.
     pub fn detected_model(&self) -> Option<PrinterModel> {
         self.detected
     }
@@ -1804,7 +1923,7 @@ mod tests {
     #[test]
     fn an_x6_device_matches_any_supported() {
         assert!(matches!(
-            match_advertised("X6h-A1B2", PID, &Target::AnySupported, None),
+            match_advertised("X6h-A1B2", PID, &Target::AnySupported, None, false),
             Some((MatchKind::Exact, Some(PrinterModel::X6)))
         ));
     }
@@ -1813,7 +1932,7 @@ mod tests {
     #[test]
     fn lx_devices_still_match_any_supported() {
         assert!(matches!(
-            match_advertised("LX-D02", PID, &Target::AnySupported, None),
+            match_advertised("LX-D02", PID, &Target::AnySupported, None, false),
             Some((MatchKind::Exact, Some(PrinterModel::LxD02)))
         ));
     }
@@ -1822,12 +1941,12 @@ mod tests {
     /// with no target and as a saved-device fallback candidate.
     #[test]
     fn an_unsupported_device_never_matches() {
-        assert!(match_advertised("GB01", PID, &Target::AnySupported, None).is_none());
+        assert!(match_advertised("GB01", PID, &Target::AnySupported, None, false).is_none());
         let target = Target::SavedId {
             id: "some-other-id",
             name: "LX-D02",
         };
-        assert!(match_advertised("GB01", PID, &target, None).is_none());
+        assert!(match_advertised("GB01", PID, &target, None, false).is_none());
     }
 
     /// An explicit `--device` string is taken literally — name or id
@@ -1835,20 +1954,20 @@ mod tests {
     #[test]
     fn filter_matches_by_name_or_id_substring() {
         assert!(matches!(
-            match_advertised("LX-D02", PID, &Target::Filter("LX"), None),
+            match_advertised("LX-D02", PID, &Target::Filter("LX"), None, false),
             Some((MatchKind::Exact, Some(PrinterModel::LxD02)))
         ));
         assert!(matches!(
-            match_advertised("X6h-A1B2", PID, &Target::Filter("A1B2"), None),
+            match_advertised("X6h-A1B2", PID, &Target::Filter("A1B2"), None, false),
             Some((MatchKind::Exact, Some(PrinterModel::X6)))
         ));
         // A hit on the platform id, under a name no model claims: still a
         // match, with no model to report.
         assert!(matches!(
-            match_advertised("Oddball", "aabbccdd", &Target::Filter("bbcc"), None),
+            match_advertised("Oddball", "aabbccdd", &Target::Filter("bbcc"), None, false),
             Some((MatchKind::Exact, None))
         ));
-        assert!(match_advertised("LX-D02", PID, &Target::Filter("GB"), None).is_none());
+        assert!(match_advertised("LX-D02", PID, &Target::Filter("GB"), None, false).is_none());
     }
 
     /// A requested model is a hard restriction: a device of another model
@@ -1856,12 +1975,122 @@ mod tests {
     #[test]
     fn model_restriction_excludes_other_models() {
         let x6 = Some(PrinterModel::X6);
-        assert!(match_advertised("LX-D02", PID, &Target::Filter("LX"), x6).is_none());
-        assert!(match_advertised("LX-D02", PID, &Target::AnySupported, x6).is_none());
+        assert!(match_advertised("LX-D02", PID, &Target::Filter("LX"), x6, false).is_none());
+        assert!(match_advertised("LX-D02", PID, &Target::AnySupported, x6, false).is_none());
 
         let lx = Some(PrinterModel::LxD02);
-        assert!(match_advertised("X6h-A1B2", PID, &Target::Filter("X6h"), lx).is_none());
-        assert!(match_advertised("X6h-A1B2", PID, &Target::AnySupported, lx).is_none());
+        assert!(match_advertised("X6h-A1B2", PID, &Target::Filter("X6h"), lx, false).is_none());
+        assert!(match_advertised("X6h-A1B2", PID, &Target::AnySupported, lx, false).is_none());
+    }
+
+    /// A cat-family printer advertising 0xAF30 under a name no model claims
+    /// is still detected as an X6 — some firmwares ship arbitrary names, and
+    /// the advertisement service is the reliable signal.
+    #[test]
+    fn a_cat_service_device_with_an_unclaimed_name_matches_any_supported() {
+        assert!(matches!(
+            match_advertised("BC02-XYZ", PID, &Target::AnySupported, None, true),
+            Some((MatchKind::Exact, Some(PrinterModel::X6)))
+        ));
+    }
+
+    /// Service detection feeds the same restriction ladder as name
+    /// detection: admitted as an X6, rejected as an LX-D02.
+    #[test]
+    fn service_detection_respects_the_model_restriction() {
+        assert!(matches!(
+            match_advertised(
+                "BC02-XYZ",
+                PID,
+                &Target::AnySupported,
+                Some(PrinterModel::X6),
+                true
+            ),
+            Some((MatchKind::Exact, Some(PrinterModel::X6)))
+        ));
+        assert!(match_advertised(
+            "BC02-XYZ",
+            PID,
+            &Target::AnySupported,
+            Some(PrinterModel::LxD02),
+            true
+        )
+        .is_none());
+    }
+
+    /// A claimed name outranks the advertised service: an `LX*` name stays
+    /// an LX-D02 even when the advertisement carries the cat service.
+    #[test]
+    fn name_detection_outranks_the_advertised_service() {
+        assert!(matches!(
+            match_advertised("LX-D02", PID, &Target::AnySupported, None, true),
+            Some((MatchKind::Exact, Some(PrinterModel::LxD02)))
+        ));
+        assert!(match_advertised(
+            "LX-D02",
+            PID,
+            &Target::AnySupported,
+            Some(PrinterModel::X6),
+            true
+        )
+        .is_none());
+    }
+
+    /// Without the service bit, an unclaimed name behaves exactly as before:
+    /// an explicit filter hit with no model to report.
+    #[test]
+    fn an_unclaimed_name_without_the_service_still_filters_with_no_model() {
+        assert!(matches!(
+            match_advertised("Oddball", "aabbccdd", &Target::Filter("bbcc"), None, false),
+            Some((MatchKind::Exact, None))
+        ));
+    }
+
+    /// The `--device BC02` path: a filter hit on a cat-service device now
+    /// carries `Some(X6)` — remembered by `remember_device` — where it used
+    /// to carry `None` and be driven as the assumed LX-D02. The restriction
+    /// ladder applies to it unchanged.
+    #[test]
+    fn a_cat_service_device_matches_an_explicit_filter_with_its_model() {
+        assert!(matches!(
+            match_advertised("BC02-XYZ", PID, &Target::Filter("BC"), None, true),
+            Some((MatchKind::Exact, Some(PrinterModel::X6)))
+        ));
+        assert!(matches!(
+            match_advertised(
+                "BC02-XYZ",
+                PID,
+                &Target::Filter("BC"),
+                Some(PrinterModel::X6),
+                true
+            ),
+            Some((MatchKind::Exact, Some(PrinterModel::X6)))
+        ));
+        assert!(match_advertised(
+            "BC02-XYZ",
+            PID,
+            &Target::Filter("BC"),
+            Some(PrinterModel::LxD02),
+            true
+        )
+        .is_none());
+    }
+
+    /// While waiting for a saved id, a cat-service device with an unclaimed
+    /// name now counts as a supported printer for the fallback ladder.
+    #[test]
+    fn a_cat_service_device_ranks_as_any_supported_under_a_saved_id() {
+        let target = Target::SavedId {
+            id: "id-never-seen",
+            name: "LX-D02",
+        };
+        assert!(matches!(
+            match_advertised("BC02-XYZ", "bc-id", &target, None, true),
+            Some((
+                MatchKind::Fallback(FallbackRank::AnySupported),
+                Some(PrinterModel::X6)
+            ))
+        ));
     }
 
     /// The restriction is absolute: even an exact saved-id hit does not
@@ -1874,7 +2103,7 @@ mod tests {
             id: PID,
             name: "LX-D02",
         };
-        assert!(match_advertised("LX-D02", PID, &target, Some(PrinterModel::X6)).is_none());
+        assert!(match_advertised("LX-D02", PID, &target, Some(PrinterModel::X6), false).is_none());
     }
 
     /// The restriction admits its own model unchanged.
@@ -1885,7 +2114,8 @@ mod tests {
                 "X6h-A1B2",
                 PID,
                 &Target::AnySupported,
-                Some(PrinterModel::X6)
+                Some(PrinterModel::X6),
+                false
             ),
             Some((MatchKind::Exact, Some(PrinterModel::X6)))
         ));
@@ -1894,7 +2124,8 @@ mod tests {
                 "LX-D02",
                 PID,
                 &Target::Filter("LX"),
-                Some(PrinterModel::LxD02)
+                Some(PrinterModel::LxD02),
+                false
             ),
             Some((MatchKind::Exact, Some(PrinterModel::LxD02)))
         ));
@@ -1978,7 +2209,7 @@ mod tests {
             name: "Oddball",
         };
         assert!(matches!(
-            match_advertised("Oddball", "aabbccdd", &target, None),
+            match_advertised("Oddball", "aabbccdd", &target, None, false),
             Some((MatchKind::Exact, None))
         ));
     }
@@ -1991,7 +2222,7 @@ mod tests {
             name: "LX-D02",
         };
         assert!(matches!(
-            match_advertised("LX-D02", PID, &target, None),
+            match_advertised("LX-D02", PID, &target, None, false),
             Some((MatchKind::Exact, Some(PrinterModel::LxD02)))
         ));
     }
@@ -2006,12 +2237,12 @@ mod tests {
             name: "LX-D02",
         };
         let Some((MatchKind::Fallback(named), _)) =
-            match_advertised("LX-D02", "another-id", &target, None)
+            match_advertised("LX-D02", "another-id", &target, None, false)
         else {
             panic!("a device named exactly the saved name must be a fallback");
         };
         let Some((MatchKind::Fallback(supported), Some(PrinterModel::X6))) =
-            match_advertised("X6h-A1B2", "x6-id", &target, None)
+            match_advertised("X6h-A1B2", "x6-id", &target, None, false)
         else {
             panic!("a supported device must be a fallback while the saved id is missing");
         };
@@ -2021,5 +2252,98 @@ mod tests {
             named > supported,
             "saved name must outrank merely-supported"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // The `scan --all` diagnostic: shared model detection, service
+    // rendering, and ordering.
+    // -----------------------------------------------------------------
+
+    /// The rule the matcher and the diagnostic share: the name decides
+    /// first, the cat-family advertisement service catches the arbitrary
+    /// names — including a device with no name at all.
+    #[test]
+    fn detect_model_prefers_the_name_and_falls_back_to_the_cat_service() {
+        assert_eq!(detect_model("LX-D02", false), Some(PrinterModel::LxD02));
+        assert_eq!(detect_model("LX-D02", true), Some(PrinterModel::LxD02));
+        assert_eq!(detect_model("X6h-A1B2", false), Some(PrinterModel::X6));
+        assert_eq!(detect_model("BC02-XYZ", true), Some(PrinterModel::X6));
+        assert_eq!(detect_model("BC02-XYZ", false), None);
+        assert_eq!(detect_model("", true), Some(PrinterModel::X6));
+        assert_eq!(detect_model("", false), None);
+    }
+
+    /// A base-UUID service collapses to the 16-bit alias a datasheet quotes,
+    /// via the canonical string btleplug's UUIDs render to.
+    #[test]
+    fn a_base_uuid_service_collapses_to_its_16_bit_alias() {
+        let cat = uuid_from_u16(PrinterModel::X6_ADV_SERVICE_UUID16).to_string();
+        assert_eq!(format_service_uuid(&cat), "0xAF30");
+        let lx = uuid_from_u16(PrinterModel::LxD02.service_uuid16()).to_string();
+        assert_eq!(format_service_uuid(&lx), "0xFFE6");
+    }
+
+    /// The alias is chars 4..8 of the canonical string — not the leading
+    /// zero group, not the second group.
+    #[test]
+    fn the_alias_reads_the_correct_hex_positions() {
+        assert_eq!(
+            format_service_uuid("0000abcd-0000-1000-8000-00805f9b34fb"),
+            "0xABCD"
+        );
+        // An uppercase rendering of the base UUID is the same service.
+        assert_eq!(
+            format_service_uuid("0000ABCD-0000-1000-8000-00805F9B34FB"),
+            "0xABCD"
+        );
+    }
+
+    /// A vendor UUID is not on the Bluetooth base, and abbreviating it
+    /// would invent an alias it does not have.
+    #[test]
+    fn a_non_base_uuid_stays_full() {
+        let nordic = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+        assert_eq!(format_service_uuid(nordic), nordic);
+        // The base tail under a non-zero first group is not the base UUID.
+        let near_miss = "1234af30-0000-1000-8000-00805f9b34fb";
+        assert_eq!(format_service_uuid(near_miss), near_miss);
+    }
+
+    fn seen(name: Option<&str>, id: &str, model: Option<PrinterModel>) -> SeenDevice {
+        SeenDevice {
+            name: name.map(str::to_string),
+            id: id.to_string(),
+            services: vec![],
+            model,
+        }
+    }
+
+    /// The diagnostic reads top-down: recognized printers first (named
+    /// before nameless), then named devices, nameless advertisers last.
+    #[test]
+    fn scan_all_orders_recognized_then_named_then_nameless() {
+        let mut devices = vec![
+            seen(None, "id-c", None),
+            seen(Some("Speaker"), "id-b", None),
+            seen(Some("BC02-XYZ"), "id-a", Some(PrinterModel::X6)),
+            seen(None, "id-d", Some(PrinterModel::X6)),
+        ];
+        sort_seen(&mut devices);
+        let order: Vec<_> = devices.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(order, ["id-a", "id-d", "id-b", "id-c"]);
+    }
+
+    /// Ties inside a band break alphabetically, then by id, so repeated
+    /// scans list the same neighborhood in the same order.
+    #[test]
+    fn scan_all_ordering_is_deterministic_within_a_band() {
+        let mut devices = vec![
+            seen(Some("Speaker"), "id-2", None),
+            seen(Some("Speaker"), "id-1", None),
+            seen(Some("Earbuds"), "id-3", None),
+        ];
+        sort_seen(&mut devices);
+        let order: Vec<_> = devices.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(order, ["id-3", "id-1", "id-2"]);
     }
 }

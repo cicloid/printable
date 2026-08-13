@@ -15,14 +15,24 @@ pub enum PrinterModel {
 }
 
 impl PrinterModel {
+    /// The 16-bit service UUID cat-family (X6) printers put in their BLE
+    /// *advertisement*. The GATT connection still uses 0xAE30
+    /// ([`Self::service_uuid16`]); this one only marks the family during a
+    /// scan, so devices with arbitrary names are still discoverable. Not a
+    /// per-model method: what the LX-D02 advertises is unknown.
+    pub const X6_ADV_SERVICE_UUID16: u16 = 0xAF30;
+
     /// Infer the model from a BLE advertised name, if it looks like a
     /// printer we support. `X6h-` matches case-insensitively on the prefix's
     /// first letter only: parzivail notes `X6H` (capital H) is a distinct
-    /// model, so it is deliberately not claimed here.
+    /// model, so it is deliberately not claimed here. `SC05-` is the
+    /// cat-face unit the maintainer validated (`SC05-025B`); only the
+    /// observed spelling is claimed.
     pub fn from_device_name(name: &str) -> Option<Self> {
         if name.starts_with("LX") {
             Some(Self::LxD02)
-        } else if name.starts_with("X6h-") || name.starts_with("x6h-") {
+        } else if name.starts_with("X6h-") || name.starts_with("x6h-") || name.starts_with("SC05-")
+        {
             Some(Self::X6)
         } else {
             None
@@ -97,9 +107,15 @@ mod tests {
             PrinterModel::from_device_name("x6h-A1B2"),
             Some(PrinterModel::X6)
         );
+        assert_eq!(
+            PrinterModel::from_device_name("SC05-025B"),
+            Some(PrinterModel::X6)
+        );
         assert_eq!(PrinterModel::from_device_name("GB01"), None);
         // "X6H-" (capital H) is a *different* model per parzivail; do not match it.
         assert_eq!(PrinterModel::from_device_name("X6H-A1B2"), None);
+        // Only the observed "SC05-" spelling is claimed, not lowercase variants.
+        assert_eq!(PrinterModel::from_device_name("sc05-025B"), None);
     }
 
     #[test]
@@ -110,6 +126,7 @@ mod tests {
         assert_eq!(PrinterModel::X6.service_uuid16(), 0xAE30);
         assert_eq!(PrinterModel::X6.write_char_uuid16(), 0xAE01);
         assert_eq!(PrinterModel::X6.notify_char_uuid16(), 0xAE02);
+        assert_eq!(PrinterModel::X6_ADV_SERVICE_UUID16, 0xAF30);
     }
 
     #[test]

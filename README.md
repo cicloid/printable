@@ -1,6 +1,8 @@
 # printa-ble
 
-A Rust CLI for printing to small Bluetooth thermal printers on macOS: the LX-D02 / LX-D2 (the "FunnyPrint" app family — 58 mm, 203 dpi, made by Shenzhen Xiqi Technology) and the X6 / X6h "cat printer" family. Both print 384 px-wide raster.
+Print text, markdown, images, and web pages on small Bluetooth thermal printers: the LX-D02 / LX-D2 (the "FunnyPrint" app family — 58 mm, 203 dpi, made by Shenzhen Xiqi Technology) and the X6 / X6h "cat printer" family. Both print 384 px-wide raster.
+
+One platform-independent, [sans-IO rendering and protocol core](docs/ARCHITECTURE.md) drives every surface: a macOS CLI, an HTTP server with a phone-friendly web UI, an [AirPrint bridge](docs/AIRPRINT.md), and a [browser app](https://42fu.com/printable/) that prints over Web Bluetooth with no install at all.
 
 ![Three supported printers with test prints: an LX-D02, an X6h printing the wagara showcase, and an SC05 cat-face unit — each mid-way through KITCHEN.md or WAGARA.md](docs/media/printers.jpg)
 

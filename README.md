@@ -2,39 +2,31 @@
 
 A Rust CLI for printing to small Bluetooth thermal printers on macOS: the LX-D02 / LX-D2 (the "FunnyPrint" app family — 58 mm, 203 dpi, made by Shenzhen Xiqi Technology) and the X6 / X6h "cat printer" family. Both print 384 px-wide raster.
 
-The name **printa-ble** derives from *printa* (the ancestor project) plus *BLE* (Bluetooth Low Energy, how it talks to the printer) — and reads as "printable". The command itself is `printable`.
+The name **printa-ble** derives from _printa_ (the ancestor project) plus _BLE_ (Bluetooth Low Energy, how it talks to the printer) — and reads as "printable". The command itself is `printable`.
 
 ## Supported printers
 
-| Family | `--model` | Validation |
-|---|---|---|
-| LX-D02 / LX-D2 | `lx-d02` | **Hardware-validated** |
-| X6 / X6h ("cat printer") | `x6` | **Hardware-validated** on an X6h and a service-detected cat-family unit |
+| Family                   | `--model` | Validation                                                              |
+| ------------------------ | --------- | ----------------------------------------------------------------------- |
+| LX-D02 / LX-D2           | `lx-d02`  | **Hardware-validated**                                                  |
+| X6 / X6h ("cat printer") | `x6`      | **Hardware-validated** on an X6h and a service-detected cat-family unit |
 
 The model is detected from the advertised device name (`LX*` vs `X6h-*`/`x6h-*`/`SC05-*`) and remembered in the config file; `--model <lx-d02|x6>` (case-insensitive, on every command that touches the printer) forces it. Cat-family printers shipping under other names are detected too, by the `0xAF30` service their advertisements carry, and driven as `x6` — validated on one such unit. The X6 speaks an entirely different wire protocol: no density control, no paper or battery status, no liveness probe, and its trailing feed is a printer command rather than blank lines — [docs/CLI.md](docs/CLI.md#printer-models) has the practical differences and [docs/PROTOCOL.md](docs/PROTOCOL.md) §11 the bytes.
-
-## Status
-
-All four phases of the [original design](docs/plans/2026-07-27-lxd2-design.md) are delivered: `scan`, `status`, and `print` (text, images, markdown, and web pages via `--url`) with PNG preview, QR codes via `qr`, multiple copies with `--copies`, a config file that remembers the last-connected printer, an HTTP print server with a phone-friendly web UI via `serve`, and a serverless Web Bluetooth page that prints straight from the browser.
-
-A [follow-up phase](docs/plans/2026-07-29-lxd2-phase5-implementation.md) extended the markdown renderer with tables, task-list checkboxes, strikethrough, embedded QR codes and barcodes, images, and a tear marker. Since then it has gained ten `wagara` pattern bands, Japanese text rendering via an embedded CJK fallback face, and `-m` on `print` for rendering markdown that did not arrive as a `.md` file — see [Markdown](#markdown).
 
 ## Documentation
 
 This README is the tour. The reference documents go deeper:
 
-| Document | What it covers |
-|---|---|
-| [docs/CLI.md](docs/CLI.md) | Every command, flag, exit code, failure message, and a recipe section |
-| [docs/API.md](docs/API.md) | The HTTP server: endpoints, request and response shapes, limits, errors, concurrency |
-| [docs/MARKDOWN.md](docs/MARKDOWN.md) | The markdown dialect — what renders, what doesn't, and the gotchas |
-| [docs/AIRPRINT.md](docs/AIRPRINT.md) | Exposing the printer over AirPrint / IPP Everywhere, and to CUPS |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the three crates fit together, and why the core is sans-IO |
-| [docs/PROTOCOL.md](docs/PROTOCOL.md) | The reverse-engineered wire protocols, byte by byte — LX-D02, plus the X6 / X6h family in §11 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, the test workflow, and the architectural rules |
-| [SECURITY.md](SECURITY.md) | Trust model and how to report a vulnerability |
-
-`docs/plans/` holds the original design and phase plans. They are historical records written before the project was renamed — read them for context, not as current behaviour.
+| Document                                     | What it covers                                                                                |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| [docs/CLI.md](docs/CLI.md)                   | Every command, flag, exit code, failure message, and a recipe section                         |
+| [docs/API.md](docs/API.md)                   | The HTTP server: endpoints, request and response shapes, limits, errors, concurrency          |
+| [docs/MARKDOWN.md](docs/MARKDOWN.md)         | The markdown dialect — what renders, what doesn't, and the gotchas                            |
+| [docs/AIRPRINT.md](docs/AIRPRINT.md)         | Exposing the printer over AirPrint / IPP Everywhere, and to CUPS                              |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the three crates fit together, and why the core is sans-IO                                |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md)         | The reverse-engineered wire protocols, byte by byte — LX-D02, plus the X6 / X6h family in §11 |
+| [CONTRIBUTING.md](CONTRIBUTING.md)           | Setup, the test workflow, and the architectural rules                                         |
+| [SECURITY.md](SECURITY.md)                   | Trust model and how to report a vulnerability                                                 |
 
 ## Install
 
@@ -71,24 +63,24 @@ Six options are shared by `print` and `qr`; the rest belong to `print` alone. `p
 
 Shared by `print` and `qr`:
 
-| Option | Description |
-|---|---|
-| `--device <NAME>` | Device name or identifier substring (default: first supported printer found) |
-| `--model <lx-d02\|x6>` | Printer model to target (default: detect from the device name) |
-| `--density <1-7>` | Print density (default: 3; drives feed speed and printhead energy on an X6) |
-| `--feed <LINES>` | Blank feed lines after printing (default: 40) |
-| `--preview <PATH>` | Render to a PNG file instead of printing |
-| `--copies <1-20>` | Number of copies to print (default: 1) |
+| Option                 | Description                                                                  |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| `--device <NAME>`      | Device name or identifier substring (default: first supported printer found) |
+| `--model <lx-d02\|x6>` | Printer model to target (default: detect from the device name)               |
+| `--density <1-7>`      | Print density (default: 3; drives feed speed and printhead energy on an X6)  |
+| `--feed <LINES>`       | Blank feed lines after printing (default: 40)                                |
+| `--preview <PATH>`     | Render to a PNG file instead of printing                                     |
+| `--copies <1-20>`      | Number of copies to print (default: 1)                                       |
 
 `print` only:
 
-| Option | Description |
-|---|---|
-| `-f, --file <PATH>` | File to print (`.png`/`.jpg`/`.jpeg`/`.txt`/`.md`/`.markdown`), or `-` to read stdin |
-| `-m, --markdown` | Render the input as markdown rather than plain text (see [Markdown](#markdown)) |
-| `--dither <floyd\|atkinson\|threshold>` | Dithering for images (default: floyd; `none` is an alias for `threshold`) |
-| `--size <PX>` | Font size for text in pixels (default: 24) |
-| `--url <URL>` | Web page to render (via headless Chrome) and print; conflicts with a text argument, `--file`, and `--markdown` |
+| Option                                  | Description                                                                                                    |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `-f, --file <PATH>`                     | File to print (`.png`/`.jpg`/`.jpeg`/`.txt`/`.md`/`.markdown`), or `-` to read stdin                           |
+| `-m, --markdown`                        | Render the input as markdown rather than plain text (see [Markdown](#markdown))                                |
+| `--dither <floyd\|atkinson\|threshold>` | Dithering for images (default: floyd; `none` is an alias for `threshold`)                                      |
+| `--size <PX>`                           | Font size for text in pixels (default: 24)                                                                     |
+| `--url <URL>`                           | Web page to render (via headless Chrome) and print; conflicts with a text argument, `--file`, and `--markdown` |
 
 `--dither` applies to a directly printed image (`-f photo.png`) **and** to `--url` renders. It does not apply to images embedded in a markdown document — those are always Floyd–Steinberg. `--size` applies to plain text only.
 
@@ -118,14 +110,14 @@ Relative image references need a directory to resolve against, and which one dep
 ````markdown
 # Receipt
 
-**Bold**, *italic*, ~~struck through~~.
+**Bold**, _italic_, ~~struck through~~.
 
 - [x] beans ground
 - [ ] water boiled
 
-| item  | qty |
-|-------|-----|
-| beans | 250 |
+| item   | qty |
+| ------ | --- |
+| beans  | 250 |
 | filter | 1   |
 
 ```qr
@@ -146,26 +138,26 @@ height: 40
 
 Thanks! Tear here:
 
-- - -
+---
 ````
 
 #### Supported
 
-| Feature | Notes |
-|---|---|
-| Headings | H1-H3 at decreasing sizes; deeper levels render like H3 |
-| Emphasis | `**bold**`, `*italic*`, `~~strikethrough~~` (a 2 px line through the text) — see the note below |
-| Lists | Bulleted and ordered, nested; `• ` / `N. ` prefixes |
-| Task lists | `- [x]` / `- [ ]` render as ASCII `[x]` / `[ ]` markers (the font has no ballot-box glyphs) |
-| Tables | Monospace text blocks; see below |
-| Code | Inline code (a passthrough — the font is monospace already) and fenced/indented blocks, exact line breaks preserved |
-| Blockquotes | Indented and italic |
-| Rules | `---` renders a solid full-width bar |
-| Tear marker | A thematic break written with interior spaces — `- - -` or `* * *` — renders a **dashed** line instead, marking where to tear the paper |
-| `qr` fence | A fenced code block tagged `qr` — the body is encoded as a QR code |
-| `barcode` fence | A fenced code block tagged `barcode` — the body is encoded as a Code128 barcode |
-| `wagara` fence | A fenced code block tagged `wagara` — draws a traditional Japanese pattern band, see below |
-| Images | `![alt](dest)` — resolved per surface, see below |
+| Feature         | Notes                                                                                                                                   |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Headings        | H1-H3 at decreasing sizes; deeper levels render like H3                                                                                 |
+| Emphasis        | `**bold**`, `*italic*`, `~~strikethrough~~` (a 2 px line through the text) — see the note below                                         |
+| Lists           | Bulleted and ordered, nested; `• ` / `N. ` prefixes                                                                                     |
+| Task lists      | `- [x]` / `- [ ]` render as ASCII `[x]` / `[ ]` markers (the font has no ballot-box glyphs)                                             |
+| Tables          | Monospace text blocks; see below                                                                                                        |
+| Code            | Inline code (a passthrough — the font is monospace already) and fenced/indented blocks, exact line breaks preserved                     |
+| Blockquotes     | Indented and italic                                                                                                                     |
+| Rules           | `---` renders a solid full-width bar                                                                                                    |
+| Tear marker     | A thematic break written with interior spaces — `- - -` or `* * *` — renders a **dashed** line instead, marking where to tear the paper |
+| `qr` fence      | A fenced code block tagged `qr` — the body is encoded as a QR code                                                                      |
+| `barcode` fence | A fenced code block tagged `barcode` — the body is encoded as a Code128 barcode                                                         |
+| `wagara` fence  | A fenced code block tagged `wagara` — draws a traditional Japanese pattern band, see below                                              |
+| Images          | `![alt](dest)` — resolved per surface, see below                                                                                        |
 
 Links render as their text; raw HTML is skipped.
 
@@ -202,29 +194,29 @@ scale: 2
 
 Ten patterns are drawn:
 
-| Pattern | Kanji | Motif | Aliases |
-|---|---|---|---|
-| `asanoha` | 麻の葉 | Hemp-leaf star lattice | |
-| `ichimatsu` | 市松 | Checkerboard | |
-| `kanoko` | 鹿の子 | Fawn spots — the ring-and-speck dapple a shibori tie-dye leaves | |
-| `kikkou` | 亀甲 | Tortoise-shell hexagons | `kikko` |
-| `sayagata` | 紗綾形 | Key fret — a linked lattice of 卍 forms | |
-| `seigaiha` | 青海波 | Overlapping fans, "blue sea waves" | |
-| `shippou` | 七宝 | Interlocking circles, "seven treasures" | `shippo` |
-| `tatewaku` | 立涌 | Rising steam — paired curves swelling and narrowing | `tachiwaki` |
-| `uroko` | 鱗 | Fish scales — solid triangles, alternating rows | |
-| `yagasuri` | 矢絣 | Arrow fletching | `yabane` |
+| Pattern     | Kanji  | Motif                                                           | Aliases     |
+| ----------- | ------ | --------------------------------------------------------------- | ----------- |
+| `asanoha`   | 麻の葉 | Hemp-leaf star lattice                                          |             |
+| `ichimatsu` | 市松   | Checkerboard                                                    |             |
+| `kanoko`    | 鹿の子 | Fawn spots — the ring-and-speck dapple a shibori tie-dye leaves |             |
+| `kikkou`    | 亀甲   | Tortoise-shell hexagons                                         | `kikko`     |
+| `sayagata`  | 紗綾形 | Key fret — a linked lattice of 卍 forms                         |             |
+| `seigaiha`  | 青海波 | Overlapping fans, "blue sea waves"                              |             |
+| `shippou`   | 七宝   | Interlocking circles, "seven treasures"                         | `shippo`    |
+| `tatewaku`  | 立涌   | Rising steam — paired curves swelling and narrowing             | `tachiwaki` |
+| `uroko`     | 鱗     | Fish scales — solid triangles, alternating rows                 |             |
+| `yagasuri`  | 矢絣   | Arrow fletching                                                 | `yabane`    |
 
 Names are matched case-insensitively. Every pattern tiles exactly across the 384 px roll, so a band runs edge to edge with no half-eaten motif.
 
-| Option | Range | Default | Effect |
-|---|---|---|---|
-| `height` | 16–400 | 56 | Band height in pixels |
-| `scale` | 1–4 | 1 | Motif size multiplier |
+| Option   | Range  | Default | Effect                |
+| -------- | ------ | ------- | --------------------- |
+| `height` | 16–400 | 56      | Band height in pixels |
+| `scale`  | 1–4    | 1       | Motif size multiplier |
 
 **Three of them are heavy.** `ichimatsu` and `uroko` are 50% solid ink by construction and `yagasuri` is close behind at 44%, against 14–37% for the line patterns — that is what the motifs are, not a bug. A thermal head lays down what it is told, so those three cost noticeably more heat, paper darkening and battery than the rest. Drop `--density` a step or two when you print them.
 
-**`height` does more for some patterns than others.** `ichimatsu`, `tatewaku`, `uroko` and `yagasuri` divide the band into a whole number of vertical repeats, so the repeat *count* follows `height`: at the 56 px default `uroko` gets three rows of scales and `tatewaku` and `yagasuri` get two, which reads more like a crop than a pattern. At 100–120 px they get four to six and look markedly better. The lattice patterns (`asanoha`, `kikkou`, `shippou`, `sayagata`, `kanoko`) centre a row on the band instead and change much less.
+**`height` does more for some patterns than others.** `ichimatsu`, `tatewaku`, `uroko` and `yagasuri` divide the band into a whole number of vertical repeats, so the repeat _count_ follows `height`: at the 56 px default `uroko` gets three rows of scales and `tatewaku` and `yagasuri` get two, which reads more like a crop than a pattern. At 100–120 px they get four to six and look markedly better. The lattice patterns (`asanoha`, `kikkou`, `shippou`, `sayagata`, `kanoko`) centre a row on the band instead and change much less.
 
 ````markdown
 ```wagara uroko
@@ -240,17 +232,17 @@ An unknown pattern name or a malformed option line prints its error message as c
 
 Image references are resolved by whichever surface is rendering, then handed to the renderer; the rendering core itself never performs I/O. What each surface will fetch differs on purpose:
 
-| Surface | Local paths | `http(s)` URLs |
-|---|---|---|
-| CLI (`printable print -f notes.md`) | Yes — relative to the document's own directory, or to the working directory when the markdown was piped or passed as an argument | Yes |
-| Server (`/print/markdown`, `/preview/markdown`) | **Never** | Yes, unless `--no-remote-images` |
-| Web app (Markdown tab) | No — a browser cannot read them | Yes, subject to CORS |
+| Surface                                         | Local paths                                                                                                                      | `http(s)` URLs                   |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| CLI (`printable print -f notes.md`)             | Yes — relative to the document's own directory, or to the working directory when the markdown was piped or passed as an argument | Yes                              |
+| Server (`/print/markdown`, `/preview/markdown`) | **Never**                                                                                                                        | Yes, unless `--no-remote-images` |
+| Web app (Markdown tab)                          | No — a browser cannot read them                                                                                                  | Yes, subject to CORS             |
 
 The server refusing local paths is a security boundary, not an omission: without it, anyone on the LAN could read files off the machine running the server by asking for `![x](/etc/hosts)`. Images are PNG or JPEG, scaled to the 384 px roll and dithered with Floyd–Steinberg (`--dither` applies to `-f photo.png` and `--url`, never to images inside a document); remote fetches are capped at 5 MB and 15 s each (CLI and server; the web app hands fetching to the browser and inherits its limits).
 
 Resolution is bounded per document: at most **32 images**, and — on the CLI and server — **30 seconds** for the whole pass. (The web app applies the same 32-image cap but no overall deadline; each fetch is bounded only by the browser.) References past those limits, and any that fail to fetch or decode, are simply left unresolved.
 
-An unresolved reference renders as an italic **`[image: alt text]`** placeholder (falling back to the destination when there is no alt text), so a broken image never fails a print. *This is a behavior change:* markdown images used to render nothing at all.
+An unresolved reference renders as an italic **`[image: alt text]`** placeholder (falling back to the destination when there is no alt text), so a broken image never fails a print. _This is a behavior change:_ markdown images used to render nothing at all.
 
 ### macOS Bluetooth permission
 
@@ -258,12 +250,12 @@ The first run triggers a Bluetooth permission prompt for your terminal app. If y
 
 ### Exit codes
 
-| Code | Meaning |
-|---|---|
-| 1 | General error (bad input, unreadable file, oversized job) |
-| 2 | No usable printer — none found, or one found that never answered |
-| 3 | Out of paper |
-| 4 | Print failed |
+| Code | Meaning                                                          |
+| ---- | ---------------------------------------------------------------- |
+| 1    | General error (bad input, unreadable file, oversized job)        |
+| 2    | No usable printer — none found, or one found that never answered |
+| 3    | Out of paper                                                     |
+| 4    | Print failed                                                     |
 
 Invalid command-line usage also exits 2 (clap's convention).
 
@@ -271,12 +263,12 @@ Invalid command-line usage also exits 2 (clap's convention).
 
 Every command takes a global `-v`, and `RUST_LOG` overrides it entirely.
 
-| Level | What it is for |
-|---|---|
-| *(none)* | This crate's warnings only. The default filter is `printable=warn` — crate-scoped, so no dependency can log on your behalf |
-| `-v` | Flow control and progress: connection, thermal pauses and resumes, retransmit requests, the server's request log and job summaries |
-| `-vv` | Parsed protocol frames, device resolution, image resolution timings |
-| `-vvv` | Raw hex on the wire, **plus dependency logs** — btleplug, chromiumoxide, the lot |
+| Level    | What it is for                                                                                                                     |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| _(none)_ | This crate's warnings only. The default filter is `printable=warn` — crate-scoped, so no dependency can log on your behalf         |
+| `-v`     | Flow control and progress: connection, thermal pauses and resumes, retransmit requests, the server's request log and job summaries |
+| `-vv`    | Parsed protocol frames, device resolution, image resolution timings                                                                |
+| `-vvv`   | Raw hex on the wire, **plus dependency logs** — btleplug, chromiumoxide, the lot                                                   |
 
 The crate-scoped default is deliberate: chromiumoxide reports websocket frames it fails to deserialize at ERROR, and recent Chrome sends several per screenshot, so a global floor made a perfectly successful `print --url` print two red lines about a connection error. Those messages are harmless; `-vvv` is the rung where you ask for them back.
 
@@ -294,21 +286,21 @@ starts an HTTP print server (REST API + web UI) on `0.0.0.0:8000`. `--port` and 
 
 ### Endpoints
 
-| Method | Path | Body | Result |
-|---|---|---|---|
-| GET | `/` | — | The web UI (a single self-contained HTML page) |
-| GET | `/health` | — | `{"status":"ok","version":…,"url_printing":…}` |
-| GET | `/status` | — | Battery, paper, density, charging, voltage as JSON (LX-D02 only — the X6 reports no status) |
-| POST | `/preview/text` | JSON `{"content", "size"?}` | PNG |
-| POST | `/preview/markdown` | JSON `{"content"}` | PNG |
-| POST | `/preview/qr` | JSON `{"data", "caption"?}` | PNG |
-| POST | `/preview/image` | multipart: `file`, `dither`? | PNG |
-| POST | `/preview/url` | JSON `{"url"}` | PNG |
-| POST | `/print/text` | JSON `{"content", "size"?, …}` | Print report (below) |
-| POST | `/print/markdown` | JSON `{"content", …}` | Print report |
-| POST | `/print/qr` | JSON `{"data", "caption"?, …}` | Print report |
-| POST | `/print/image` | multipart: `file`, `dither`?, `density`?, `feed`?, `copies`? | Print report |
-| POST | `/print/url` | JSON `{"url", …}` | Print report |
+| Method | Path                | Body                                                         | Result                                                                                      |
+| ------ | ------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| GET    | `/`                 | —                                                            | The web UI (a single self-contained HTML page)                                              |
+| GET    | `/health`           | —                                                            | `{"status":"ok","version":…,"url_printing":…}`                                              |
+| GET    | `/status`           | —                                                            | Battery, paper, density, charging, voltage as JSON (LX-D02 only — the X6 reports no status) |
+| POST   | `/preview/text`     | JSON `{"content", "size"?}`                                  | PNG                                                                                         |
+| POST   | `/preview/markdown` | JSON `{"content"}`                                           | PNG                                                                                         |
+| POST   | `/preview/qr`       | JSON `{"data", "caption"?}`                                  | PNG                                                                                         |
+| POST   | `/preview/image`    | multipart: `file`, `dither`?                                 | PNG                                                                                         |
+| POST   | `/preview/url`      | JSON `{"url"}`                                               | PNG                                                                                         |
+| POST   | `/print/text`       | JSON `{"content", "size"?, …}`                               | Print report (below)                                                                        |
+| POST   | `/print/markdown`   | JSON `{"content", …}`                                        | Print report                                                                                |
+| POST   | `/print/qr`         | JSON `{"data", "caption"?, …}`                               | Print report                                                                                |
+| POST   | `/print/image`      | multipart: `file`, `dither`?, `density`?, `feed`?, `copies`? | Print report                                                                                |
+| POST   | `/print/url`        | JSON `{"url", …}`                                            | Print report                                                                                |
 
 Every `/print/*` endpoint also accepts the optional print options `density` (1-7, default 3), `feed` (blank lines after printing, 0-2000, default 40), and `copies` (1-20, default 1) — flattened into the JSON body, or as text fields in the multipart body. `dither` is **not** one of them: it exists only on the two multipart image endpoints, where it takes `floyd`, `atkinson`, `threshold`, or `none`, like the CLI.
 
@@ -330,13 +322,13 @@ A successful print answers with the same counters the server logs, so a client t
 
 The server validates what the CLI leaves open, because it accepts input from anyone on the LAN:
 
-| Limit | Server | CLI |
-|---|---|---|
-| Request body | 20 MiB | — |
-| `feed` | 0–2000 | ≥ 0, no upper bound |
-| `size` | > 0 and ≤ 128 px | > 0, finite, no upper bound |
-| `density` | 1–7 | 1–7 |
-| `copies` | 1–20 | 1–20 |
+| Limit        | Server           | CLI                         |
+| ------------ | ---------------- | --------------------------- |
+| Request body | 20 MiB           | —                           |
+| `feed`       | 0–2000           | ≥ 0, no upper bound         |
+| `size`       | > 0 and ≤ 128 px | > 0, finite, no upper bound |
+| `density`    | 1–7              | 1–7                         |
+| `copies`     | 1–20             | 1–20                        |
 
 The two surfaces genuinely differ here: `printable print --feed 100000` is accepted and prints a very long blank tail, while `{"feed": 100000}` is a `400`.
 
@@ -362,18 +354,18 @@ curl -X POST http://localhost:8000/preview/image \
 
 Errors raised by the handlers come back as `{"error": "message"}` JSON:
 
-| Status | Meaning |
-|---|---|
-| 400 | Invalid input: out-of-range option, empty `content`, unknown `dither`, undecodable image, non-`http(s)` URL, QR data too long, job over 65 535 raster packets |
-| 404 | No such route (including the `url` routes in a build without the feature) |
-| 405 | Wrong method for the route (empty body; the `allow` header has the answer) |
-| 409 | Printer is out of paper |
-| 413 | Request body over 20 MiB on a JSON route — the multipart routes report the same ceiling as a 400 |
-| 415 | Missing or wrong `Content-Type` |
-| 422 | Body does not match the schema (missing or mistyped field) |
-| 500 | Print failed, or an internal render failure |
-| 502 | A URL failed to render |
-| 503 | No printer found, or the printer never answered |
+| Status | Meaning                                                                                                                                                       |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | Invalid input: out-of-range option, empty `content`, unknown `dither`, undecodable image, non-`http(s)` URL, QR data too long, job over 65 535 raster packets |
+| 404    | No such route (including the `url` routes in a build without the feature)                                                                                     |
+| 405    | Wrong method for the route (empty body; the `allow` header has the answer)                                                                                    |
+| 409    | Printer is out of paper                                                                                                                                       |
+| 413    | Request body over 20 MiB on a JSON route — the multipart routes report the same ceiling as a 400                                                              |
+| 415    | Missing or wrong `Content-Type`                                                                                                                               |
+| 422    | Body does not match the schema (missing or mistyped field)                                                                                                    |
+| 500    | Print failed, or an internal render failure                                                                                                                   |
+| 502    | A URL failed to render                                                                                                                                        |
+| 503    | No printer found, or the printer never answered                                                                                                               |
 
 **Not every non-2xx response is JSON.** Rejections produced by axum's own body extraction — malformed JSON, a missing field, the wrong `Content-Type`, an oversized body — happen before any handler runs and come back as **plain text**, not the `{"error": …}` envelope. That covers 413, 415, 422, and a malformed-JSON 400. Clients must not assume every error parses as JSON. [docs/API.md](docs/API.md#errors) has the exact bodies.
 
@@ -436,7 +428,7 @@ PRINTABLE=./target/release/printable scripts/airprint.sh
 lpadmin -p printable -E -v ipp://localhost:8631/ipp/print -m everywhere
 ```
 
-This wraps macOS's own `ippeveprinter` to provide the IPP server and the Bonjour advertisement, and hands each job to `printable ipp-command`. Because the printer advertises Apple Raster (`image/urf`) rather than PDF, the *client* rasterises the document — so there is no PDF renderer anywhere in this repository.
+This wraps macOS's own `ippeveprinter` to provide the IPP server and the Bonjour advertisement, and hands each job to `printable ipp-command`. Because the printer advertises Apple Raster (`image/urf`) rather than PDF, the _client_ rasterises the document — so there is no PDF renderer anywhere in this repository.
 
 Try it with `AIRPRINT_ARGS="--preview /tmp/job.png"` first: every job then renders to a PNG instead of consuming paper. Pages are cropped to their content before scaling, because a whole Letter page reduced onto 48 mm paper is unreadable — [docs/AIRPRINT.md](docs/AIRPRINT.md) explains that trade-off, the status reporting, what is verified and what is not.
 
@@ -462,7 +454,7 @@ X6 / X6h support follows three further sources:
 - [nazarovmi/tinyprint-x6h](https://github.com/nazarovmi/tinyprint-x6h) — Python; the CRC8 table, the device-name prefixes, and the blank lead row
 - [NaitLee/kitty-printer](https://github.com/NaitLee/kitty-printer) — Web Bluetooth precedent for the same printer family
 
-The `wagara` bands are drawn from the geometry of motifs that are centuries old and long out of copyright, with one exception: **`sayagata`** is a specific historical linkage of 卍 forms rather than a lattice with a closed-form rule, so its cell is transcribed from [`Sayagata (line).svg`](https://commons.wikimedia.org/wiki/File:Sayagata_(line).svg) on Wikimedia Commons — a public-domain (CC0) tile by Fred the Oyster. The transcription lives in the `SAYAGATA_U` / `SAYAGATA_V` tables in `crates/printa-ble-core/src/raster/wagara.rs`.
+The `wagara` bands are drawn from the geometry of motifs that are centuries old and long out of copyright, with one exception: **`sayagata`** is a specific historical linkage of 卍 forms rather than a lattice with a closed-form rule, so its cell is transcribed from [`Sayagata (line).svg`](<https://commons.wikimedia.org/wiki/File:Sayagata_(line).svg>) on Wikimedia Commons — a public-domain (CC0) tile by Fred the Oyster. The transcription lives in the `SAYAGATA_U` / `SAYAGATA_V` tables in `crates/printa-ble-core/src/raster/wagara.rs`.
 
 ## License
 

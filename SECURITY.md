@@ -5,15 +5,15 @@
 printa-ble is pre-1.0. Only the current `main` branch is supported; fixes land
 there and are not backported.
 
-| Version | Supported |
-| ------- | ------------------ |
+| Version        | Supported          |
+| -------------- | ------------------ |
 | `main` (0.1.x) | :white_check_mark: |
-| Older tags | :x: |
+| Older tags     | :x:                |
 
 ## Reporting a Vulnerability
 
 1. **Do NOT** open a public GitHub issue for a security vulnerability.
-2. Email the maintainer directly: **gustavo@42fu.com**.
+2. Email the maintainer directly: **security+printable@42fu.com**.
 3. Include:
    - A description of the vulnerability and what an attacker gains
    - Steps to reproduce, ideally a minimal request or input
@@ -23,8 +23,8 @@ there and are not backported.
 
 ### What to Expect
 
-- Acknowledgment within **48 hours**
-- A status update within **7 days**
+- Acknowledgment within **48-168 hours**
+- A status update within **7-21 days**
 - Fix timeline depends on severity
 
 This is a small hobby project maintained by one person. Please be patient, and
@@ -65,7 +65,7 @@ Two features cause the server to fetch caller-supplied URLs.
 
 **Markdown images.** `/print/markdown` and `/preview/markdown` fetch any
 `http(s)` URL the document references. An unauthenticated caller can therefore
-make the server issue GET requests to hosts *it* can reach and *they* cannot —
+make the server issue GET requests to hosts _it_ can reach and _they_ cannot —
 internal services, admin interfaces, cloud instance-metadata endpoints. There is
 no allowlist and no private-IP filter. These requests identify themselves with
 a `printable/<version>` User-Agent (some hosts, Wikimedia among them, reject
@@ -79,20 +79,20 @@ whatever the host can reach.
 
 **Mitigations:**
 
-| Mitigation | Effect |
-|---|---|
-| `printable serve --no-remote-images` | Removes markdown image fetching entirely. Runtime flag. |
-| Build with `--no-default-features` | Removes the `url` feature: `/print/url` and `/preview/url` return 404, and `/health` reports `"url_printing": false`. Compile-time, so it cannot be re-enabled by a request. |
-| `--bind 127.0.0.1` | Removes remote callers altogether. |
+| Mitigation                           | Effect                                                                                                                                                                       |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `printable serve --no-remote-images` | Removes markdown image fetching entirely. Runtime flag.                                                                                                                      |
+| Build with `--no-default-features`   | Removes the `url` feature: `/print/url` and `/preview/url` return 404, and `/health` reports `"url_printing": false`. Compile-time, so it cannot be re-enabled by a request. |
+| `--bind 127.0.0.1`                   | Removes remote callers altogether.                                                                                                                                           |
 
-**What does *not* leak.** The exfiltration channel is narrower than it first
+**What does _not_ leak.** The exfiltration channel is narrower than it first
 looks, and it is worth being precise:
 
 - A fetched response that is not a decodable PNG or JPEG **fails to decode and
   is dropped**. It never reaches the output. An unresolved reference renders as
   an italic `[image: alt]` placeholder, which tells the caller only that the
   fetch failed — not what came back.
-- A response that *is* a decodable image renders as a **1-bit, 384 px-wide,
+- A response that _is_ a decodable image renders as a **1-bit, 384 px-wide,
   dithered raster**. That is a lossy, low-fidelity channel, not a copy of the
   response body.
 - So an attacker can use the server as a **blind-ish port and host scanner**
@@ -101,7 +101,7 @@ looks, and it is worth being precise:
   cannot read internal JSON, HTML, or text through this path.
 
 URL printing via Chrome is a wider channel than the image path — a rendered page
-*is* a screenshot of the response — which is why it is a compile-time feature.
+_is_ a screenshot of the response — which is why it is a compile-time feature.
 
 ### Local Filesystem: The Server Never Reads Local Paths
 
@@ -125,18 +125,18 @@ The server applies these limits. They bound accidental damage and casual abuse;
 they are not a defense against a determined attacker who can already reach the
 port.
 
-| Limit | Value | Scope |
-|---|---|---|
-| Request body size | **20 MB** | Every route (`DefaultBodyLimit`) |
-| Image references per document | **32** | Markdown rendering; the rest render as placeholders |
-| Total image-resolution budget | **30 s** | Per document, CLI and server |
-| Per-image fetch size | **5 MB** | Rejected on `Content-Length` and again while streaming |
-| Per-image fetch timeout | **15 s** | Each remote fetch |
-| Concurrent print jobs | **1** | Serialized by a mutex; further requests queue |
-| Font size | **128 px** max | Text rendering |
-| Copies | **1–20** | Per job |
+| Limit                         | Value          | Scope                                                  |
+| ----------------------------- | -------------- | ------------------------------------------------------ |
+| Request body size             | **20 MB**      | Every route (`DefaultBodyLimit`)                       |
+| Image references per document | **32**         | Markdown rendering; the rest render as placeholders    |
+| Total image-resolution budget | **30 s**       | Per document, CLI and server                           |
+| Per-image fetch size          | **5 MB**       | Rejected on `Content-Length` and again while streaming |
+| Per-image fetch timeout       | **15 s**       | Each remote fetch                                      |
+| Concurrent print jobs         | **1**          | Serialized by a mutex; further requests queue          |
+| Font size                     | **128 px** max | Text rendering                                         |
+| Copies                        | **1–20**       | Per job                                                |
 
-Note the shapes of the gaps: there is no limit on *total* queued requests, no
+Note the shapes of the gaps: there is no limit on _total_ queued requests, no
 rate limit, and no cap on how long a queued print job waits. A caller who can
 reach the port can keep the printer busy indefinitely. On a trusted LAN this is
 a nuisance; anywhere else it is a denial of service.

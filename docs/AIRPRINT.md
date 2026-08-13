@@ -46,7 +46,7 @@ The obvious approach — a backend in `/usr/libexec/cups/backend/` speaking a
 - and it would only ever serve that one Mac. No iPhone, no iPad.
 
 AirPrint is not a CUPS feature. It is IPP over HTTP plus a Bonjour
-advertisement. Implement that once and macOS adds the printer *driverlessly*
+advertisement. Implement that once and macOS adds the printer _driverlessly_
 via IPP Everywhere, which is why the `lpadmin` line above needs no driver and
 no elevated privileges.
 
@@ -94,7 +94,7 @@ page data           per line: u8 repeat (line appears repeat + 1 times),
                       c  > 128 -> 257 - c literal pixels
 ```
 
-Note that a literal run encodes *at least two* pixels (`257 - 255`), so a
+Note that a literal run encodes _at least two_ pixels (`257 - 255`), so a
 single odd pixel is always written as a repeat of one.
 
 The `0x80` end-of-row marker was the subtlest part. A page of text never emits
@@ -142,7 +142,7 @@ The decoder picks its strategy from the page's own physical width:
   trimmed; on a continuous roll those are paper, not margin.
 - **A full sheet** — the client ignored it and sent US Letter. Scaling 5100 px
   onto 384 px is a 13x reduction that renders 12 pt text about 7 px tall, so
-  the page is cropped to its ink and *that* is scaled up. Readable, but
+  the page is cropped to its ink and _that_ is scaled up. Readable, but
   apparent type size then depends on how much content the page holds.
 
 Blank pages are skipped entirely, so a trailing empty page costs no paper.
@@ -173,13 +173,13 @@ client's print queue; anything else is only visible under `-vv`.
 
 `ipp-command` uses that to report what the transport is doing:
 
-| Situation | Reported as |
-|---|---|
-| Job decoded | `ATTR: job-impressions=N`, page geometry as `INFO:` |
-| Finished | `INFO: printed N lines in Ns (H holds, C cooldowns, R resends)` |
-| Out of paper | `STATE: media-empty` |
-| Printer off / not found | `STATE: offline-report` |
-| Any failure | `ERROR: <message>` |
+| Situation               | Reported as                                                     |
+| ----------------------- | --------------------------------------------------------------- |
+| Job decoded             | `ATTR: job-impressions=N`, page geometry as `INFO:`             |
+| Finished                | `INFO: printed N lines in Ns (H holds, C cooldowns, R resends)` |
+| Out of paper            | `STATE: media-empty`                                            |
+| Printer off / not found | `STATE: offline-report`                                         |
+| Any failure             | `ERROR: <message>`                                              |
 
 The holds and cooldowns matter: thermal flow control routinely pauses this
 printer for seconds at a time on dense pages, and without a status line that

@@ -15,6 +15,7 @@
 ### Task 1: Workspace scaffolding
 
 **Files:**
+
 - Create: `Cargo.toml` (workspace root)
 - Create: `crates/lxd2-core/Cargo.toml`, `crates/lxd2-core/src/lib.rs`
 - Create: `crates/lxd2/Cargo.toml`, `crates/lxd2/src/main.rs`
@@ -93,6 +94,7 @@ git add -A && git commit -m "Scaffold cargo workspace with lxd2-core and lxd2 cr
 ### Task 2: CRC16-XMODEM
 
 **Files:**
+
 - Create: `crates/lxd2-core/src/protocol/crc.rs`
 - Create: `crates/lxd2-core/src/protocol/mod.rs` (`pub mod crc;`)
 - Modify: `crates/lxd2-core/src/lib.rs` (`pub mod protocol;`)
@@ -158,6 +160,7 @@ git add -A && git commit -m "Add CRC16-XMODEM implementation"
 ### Task 3: Auth response computation
 
 **Files:**
+
 - Create: `crates/lxd2-core/src/protocol/auth.rs`
 - Modify: `crates/lxd2-core/src/protocol/mod.rs` (`pub mod auth;`)
 
@@ -233,6 +236,7 @@ pub fn auth_response(challenge: &[u8; 10], mac: &[u8; 6]) -> [u8; 10] {
 ### Task 4: Command packet builders
 
 **Files:**
+
 - Create: `crates/lxd2-core/src/protocol/packets.rs`
 - Modify: `crates/lxd2-core/src/protocol/mod.rs`
 
@@ -342,6 +346,7 @@ pub fn raster(index: u16, data: &[u8; RASTER_DATA_LEN]) -> [u8; 100] {
 ### Task 5: Notification parser
 
 **Files:**
+
 - Create: `crates/lxd2-core/src/protocol/notifications.rs`
 
 **Step 1: Write the failing tests**
@@ -492,6 +497,7 @@ pub fn parse(data: &[u8]) -> Option<Notification> {
 ### Task 6: Bitmap type and raster chunking
 
 **Files:**
+
 - Create: `crates/lxd2-core/src/raster/mod.rs` (`pub mod bitmap;`)
 - Create: `crates/lxd2-core/src/raster/bitmap.rs`
 - Modify: `crates/lxd2-core/src/lib.rs` (`pub mod raster;`)
@@ -596,6 +602,7 @@ impl Bitmap {
 ### Task 7: Print job state machine (sans-IO)
 
 **Files:**
+
 - Create: `crates/lxd2-core/src/protocol/job.rs`
 
 The FSM (modeled on rusq `fsm.go`). API:
@@ -616,6 +623,7 @@ a caller-supplied random challenge (keeps core deterministic/testable), and
 `inter_packet_delay_ms` (default 15).
 
 Behaviors under test:
+
 - happy path emits hello → challenge → auth → density → start → N rasters → (finish) → end → done
 - `LostPacket{i}` during streaming rewinds send index to `i.saturating_sub(1)`
 - `Hold` pauses; following `LostPacket` resumes
@@ -764,6 +772,7 @@ becomes `AwaitFinish` returning `WaitNotification`.
 ### Task 8: Image → bitmap (scale + dither)
 
 **Files:**
+
 - Create: `crates/lxd2-core/src/raster/dither.rs`
 - Modify: `crates/lxd2-core/Cargo.toml` — add `image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }`
 
@@ -828,6 +837,7 @@ diffusion over an `f32` buffer, threshold at 128; `prepare` = grayscale +
 ### Task 9: Text → bitmap
 
 **Files:**
+
 - Create: `crates/lxd2-core/src/raster/text.rs`
 - Create: `crates/lxd2-core/assets/` — download a font, e.g. JetBrains Mono
   Regular TTF (check license file in). Embed with `include_bytes!`.
@@ -877,6 +887,7 @@ Handle `\n` as hard breaks. **Step 4: Run** — PASS. **Step 5: Commit** —
 ### Task 10: Preview PNG output
 
 **Files:**
+
 - Create: `crates/lxd2-core/src/raster/preview.rs`
 
 API: `fn bitmap_to_png(b: &Bitmap) -> Vec<u8>` — 1-bit → 8-bit gray PNG
@@ -912,6 +923,7 @@ mod tests {
 ### Task 11: BLE transport + `scan` command
 
 **Files:**
+
 - Create: `crates/lxd2/src/ble.rs`
 - Create: `crates/lxd2/src/cli.rs`
 - Modify: `crates/lxd2/src/main.rs`
@@ -975,6 +987,7 @@ pub struct DeviceArgs {
 ```
 
 **Step 2: BLE layer (`ble.rs`)** — with btleplug:
+
 - `scan(timeout) -> Vec<(name, id)>`: start scan, filter peripherals whose
   local name starts with `LX`.
 - `connect(filter) -> Printer`: connect, discover services, locate `0xFFE6`
@@ -1003,6 +1016,7 @@ it in System Settings → Privacy & Security → Bluetooth.
 ### Task 12: `status` and `print` commands end-to-end
 
 **Files:**
+
 - Modify: `crates/lxd2/src/main.rs`
 
 **Step 1: Implement `status`** — connect, wait for `5A 02`, pretty-print:
@@ -1015,6 +1029,7 @@ Voltage:  4.00 V
 ```
 
 **Step 2: Implement `print` pipeline** — build bitmap from input:
+
 - `--file *.png/jpg` → `prepare` + `image_to_bitmap` (dither per `--dither`)
 - text (arg, stdin, or `--file *.txt`) → `render_text(text, 24.0)`
 - append `feed` blank rows

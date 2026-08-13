@@ -15,10 +15,12 @@
 ### Task 1: Extract shared print service (pure refactor)
 
 **Files:**
+
 - Create: `crates/lxd2/src/print_service.rs`
 - Modify: `crates/lxd2/src/main.rs` (shrinks), `crates/lxd2/src/cli.rs` (untouched or trivial)
 
 Move from `main.rs` into `print_service.rs`:
+
 ```rust
 #[derive(Debug, Clone, Copy)]
 pub struct PrintOptions {
@@ -35,6 +37,7 @@ pub async fn print_bitmap(
     opts: PrintOptions,
 ) -> anyhow::Result<usize>
 ```
+
 Also move `build_bitmap`-style helpers that the server will reuse: `pub fn bitmap_from_image_bytes(bytes: &[u8], dither: Dither) -> anyhow::Result<Bitmap>` (decode via `image::load_from_memory`, zero-width guard, prepare, dither) — refactor cmd_print's file/image path to call it. Preview stays in main.rs (CLI-only concern). `dispatch()` in main.rs becomes a thin wrapper: preview short-circuit else `print_service::print_bitmap`.
 
 **Verification:** pure refactor — `cargo test --workspace` still 69, clippy/fmt clean, `print --preview` byte-identical output (hash before/after), no behavior change. NO hardware.
@@ -44,10 +47,12 @@ Commit: `"Extract shared print service"`.
 ### Task 2: Headless Chrome URL rendering + CLI --url
 
 **Files:**
+
 - Create: `crates/lxd2/src/chrome.rs`
 - Modify: `crates/lxd2/Cargo.toml`, `cli.rs`, `main.rs`
 
 Cargo.toml:
+
 ```toml
 [features]
 default = ["url"]
@@ -58,10 +63,12 @@ chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-
 ```
 
 `chrome.rs` (whole module `#![cfg(feature = "url")]`… use `#[cfg(feature = "url")] mod chrome;` in main):
+
 ```rust
 /// Render a URL to a full-page PNG at 384 px width using system Chrome.
 pub async fn render_url_png(url: &str) -> anyhow::Result<Vec<u8>>
 ```
+
 - `BrowserConfig::builder().window_size(384, 800).arg("--hide-scrollbars")` — chromiumoxide auto-detects the Chrome binary; map launch failure to "Chrome not found — install Google Chrome or build without the `url` feature"
 - Spawn browser + handler task, `browser.new_page(url)`, wait for navigation, 500 ms settle sleep, screenshot with `CaptureScreenshotParams` full-page (`capture_beyond_viewport(true)`), PNG format
 - Always close the browser (also on error paths — use a scopeguard-style explicit close before `?` returns, or a helper that owns cleanup)
@@ -76,6 +83,7 @@ Commit: `"Add URL printing via headless Chrome"`.
 ### Task 3: Server skeleton — health, status, previews
 
 **Files:**
+
 - Create: `crates/lxd2/src/server.rs`
 - Modify: `Cargo.toml` (axum/tower/serde_json), `cli.rs` (Serve command), `main.rs`
 
@@ -84,6 +92,7 @@ Cargo.toml: `axum = { version = "0.8", features = ["multipart"] }`, `serde_json 
 CLI: `Serve { #[arg(long, default_value_t = 8000)] port: u16, #[arg(long, default_value = "0.0.0.0")] bind: String, #[command(flatten)] device: DeviceArgs }` — bind default 0.0.0.0 (LAN printing is the point; README documents the trust model: anyone on the LAN can print).
 
 `server.rs`:
+
 ```rust
 pub struct AppState {
     pub device: Option<String>,          // --device flag at serve time
@@ -94,6 +103,7 @@ pub async fn serve(bind: String, port: u16, device: Option<String>) -> anyhow::R
 ```
 
 Endpoints this task:
+
 - `GET /health` → `{"status":"ok","version":env!("CARGO_PKG_VERSION")}`
 - `GET /status` → connect + `wait_status` → JSON of the Status fields; 503 `{"error":...}` if no printer
 - `POST /preview/text` body `{"content": "...", "size": 24.0?}` → `image/png` bytes (bitmap_to_png of render_text)
@@ -105,6 +115,7 @@ Endpoints this task:
 Shared request structs with serde defaults (`density` 3, `feed` 40, `copies` 1, validated 1-7 / 1-20 → 400 out of range — write a small `validate()` helper, unit-tested).
 
 **Tests (tower oneshot, no BLE/no Chrome — write first):**
+
 ```rust
 #[tokio::test] async fn health_ok()                  // 200, body contains "ok"
 #[tokio::test] async fn preview_text_returns_png()   // 200, content-type image/png, body starts with PNG magic \x89PNG
@@ -120,6 +131,7 @@ Commit: `"Add serve command with status and preview endpoints"`.
 ### Task 4: Print endpoints
 
 **Files:**
+
 - Modify: `crates/lxd2/src/server.rs`
 
 - `POST /print/text` `{"content", "size"?, "density"?, "feed"?, "copies"?}` → render → `print_lock.lock().await` → `print_service::print_bitmap` → `{"printed_lines": N, "copies": M}`
@@ -136,13 +148,15 @@ Commit: `"Add print endpoints"`.
 ### Task 5: Embedded web UI
 
 **Files:**
+
 - Create: `crates/lxd2/src/server/ui.html` (include_str! from server.rs)
 - Modify: `server.rs` — `GET /` serves it (`Html<&'static str>`)
 
 Single self-contained HTML (vanilla JS, no external assets — must work offline):
+
 - Tabs: Text | Markdown | Image | QR | URL (URL tab hidden if the server was built without the feature — expose feature flag in /health response `{"url_printing": bool}` and hide via JS)
 - Controls: density (1-7 slider), feed, copies; textarea for text/markdown; file input for image (+ dither select); data+caption for QR; url input
-- Buttons: **Preview** (fetch POST /preview/* → blob → show `<img>`, 384px wide, bordered) and **Print** (POST /print/* → show result/error toast)
+- Buttons: **Preview** (fetch POST /preview/_ → blob → show `<img>`, 384px wide, bordered) and **Print** (POST /print/_ → show result/error toast)
 - Status footer: fetch /status on load — battery/paper/density; degrade gracefully on 503 ("printer unreachable")
 - Styling: minimal clean CSS inline, dark-mode friendly (prefers-color-scheme), mobile-first (this is used from a phone)
 - No framework, no build step

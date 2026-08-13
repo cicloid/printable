@@ -15,10 +15,12 @@
 ### Task 1: lxd2-web crate — rendering API
 
 **Files:**
+
 - Create: `crates/lxd2-web/Cargo.toml`, `crates/lxd2-web/src/lib.rs`
 - Modify: root `Cargo.toml` workspace members
 
 Cargo.toml:
+
 ```toml
 [package]
 name = "lxd2-web"
@@ -37,6 +39,7 @@ serde-wasm-bindgen = "0.6"
 ```
 
 API (all `#[wasm_bindgen]`):
+
 ```rust
 #[wasm_bindgen]
 pub struct WasmBitmap { inner: Bitmap }   // opaque to JS
@@ -66,6 +69,7 @@ Commit: `"Add lxd2-web WASM crate with rendering API"`.
 ### Task 2: WasmJob — the print FSM bridge
 
 **Files:**
+
 - Modify: `crates/lxd2-web/src/lib.rs` (or new `job.rs` module)
 
 ```rust
@@ -99,11 +103,13 @@ Commit: `"Add WASM print job bridge"`.
 ### Task 3: The web page
 
 **Files:**
+
 - Create: `web/index.html` (single file, adapted from `crates/lxd2/src/server/ui.html` — same look/tabs/options, NO URL tab)
 - Create: `web/app.js` (module script: imports `./pkg/lxd2_web.js`)
 - Create: `scripts/build-web.sh` (`#!/bin/sh -e`: wasm-pack build + echo serve instructions)
 
 Page structure (reuse ui.html's CSS wholesale):
+
 - Header: "lxd2 web" + Connect button + status chip (disconnected / connected LX-D02 / battery from first 5A 02 notification)
 - Tabs: Text | Markdown | Image | QR (client-side rendering via WASM — no server involved)
 - Options: density 1-7, feed, copies 1-20
@@ -112,14 +118,25 @@ Page structure (reuse ui.html's CSS wholesale):
 - Unsupported-browser banner when `!navigator.bluetooth` (Safari/iOS/Firefox) — page still previews, print disabled
 
 `app.js` core:
-```js
-import init, { render_text, render_markdown, render_qr, render_image, WasmJob } from "./pkg/lxd2_web.js";
 
-const SERVICE = 0xffe6, WRITE = 0xffe1, NOTIFY = 0xffe2;
+```js
+import init, {
+  render_text,
+  render_markdown,
+  render_qr,
+  render_image,
+  WasmJob,
+} from "./pkg/lxd2_web.js";
+
+const SERVICE = 0xffe6,
+  WRITE = 0xffe1,
+  NOTIFY = 0xffe2;
 
 async function connect() {
   const device = await navigator.bluetooth.requestDevice({
-    filters: [{ namePrefix: "LX" }], optionalServices: [SERVICE] });
+    filters: [{ namePrefix: "LX" }],
+    optionalServices: [SERVICE],
+  });
   const server = await device.gatt.connect();
   const svc = await server.getPrimaryService(SERVICE);
   writeChar = await svc.getCharacteristic(WRITE);
@@ -131,8 +148,11 @@ async function connect() {
 
 function onNotify(e) {
   const bytes = new Uint8Array(e.target.value.buffer);
-  latestStatusMaybe(bytes);        // update battery chip on 5A 02
-  if (job) { job.on_notification(bytes); pump(); }   // wake pump if waiting
+  latestStatusMaybe(bytes); // update battery chip on 5A 02
+  if (job) {
+    job.on_notification(bytes);
+    pump();
+  } // wake pump if waiting
 }
 
 async function pump() {
@@ -140,11 +160,16 @@ async function pump() {
     const a = job.next_action();
     if (a.kind === "send") await writeChar.writeValueWithoutResponse(a.bytes);
     else if (a.kind === "waitMs") await sleep(a.ms);
-    else if (a.kind === "waitNotification") return;   // onNotify re-enters pump
-    else { finishJob(); return; }                      // done: check error()
+    else if (a.kind === "waitNotification")
+      return; // onNotify re-enters pump
+    else {
+      finishJob();
+      return;
+    } // done: check error()
   }
 }
 ```
+
 Careful points (document in code): re-entrancy — guard `pump()` with an `isPumping` flag so onNotify during an in-flight write doesn't double-pump; copies loop = sequential jobs (fresh `crypto.getRandomValues(new Uint8Array(10))` challenge each); 10 s watchdog on waitNotification → error toast; `writeValueWithoutResponse` fallback to `writeValue` if unavailable.
 
 **Verification (no printer):** `scripts/build-web.sh`, then `python3 -m http.server 8080 -d web` + Playwright (python3, installed): page loads, WASM initializes, each tab's Preview renders a PNG <img> (assert natural width 384), unsupported-browser banner logic (Playwright's chromium HAS navigator.bluetooth? headless usually yes-but-unavailable — assert banner state matches `!!navigator.bluetooth`, whatever it is, and report), no console errors. Screenshot light+dark to scratchpad. Kill server. Real print: user validation (needs the physical printer + a permission chooser click).

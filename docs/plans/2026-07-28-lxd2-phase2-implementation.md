@@ -15,11 +15,13 @@
 ### Task 1: Styled text renderer (rich.rs)
 
 **Files:**
+
 - Create: `crates/lxd2-core/src/raster/rich.rs`; wire `pub mod rich;` + re-exports into `raster/mod.rs`
 - Add fonts: `crates/lxd2-core/assets/JetBrainsMono-Bold.ttf`, `JetBrainsMono-Italic.ttf` (same v2.304 release zip as Regular; OFL.txt already present)
 - Modify: `crates/lxd2-core/src/raster/text.rs` — refactor to delegate to rich.rs (keep `render_text` signature)
 
 **API:**
+
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontStyle { Regular, Bold, Italic }
@@ -56,6 +58,7 @@ Steps: red → implement → green → full suite → clippy → commit `"Add st
 ### Task 2: Markdown → bitmap
 
 **Files:**
+
 - Create: `crates/lxd2-core/src/raster/markdown.rs`; wire + re-export `render_markdown`
 - Modify: `crates/lxd2-core/Cargo.toml` — `pulldown-cmark = { version = "0.12", default-features = false }`
 
@@ -66,7 +69,7 @@ Mapping (YAGNI — this list only):
 |---|---|
 | H1 / H2 / H3+ | Bold 36 / 30 / 26 px, blank line before+after |
 | Paragraph | Regular 24 px, blank line after |
-| **bold** / *italic* | Bold / Italic span, inherits size |
+| **bold** / _italic_ | Bold / Italic span, inherits size |
 | `inline code` | Regular (monospace anyway) — pass through |
 | Bullet list item | indent 24, `• ` prefix span |
 | Ordered list item | indent 24, `N. ` prefix |
@@ -85,6 +88,7 @@ Steps: red → implement → green → clippy → commit `"Add markdown renderin
 ### Task 3: QR codes
 
 **Files:**
+
 - Create: `crates/lxd2-core/src/raster/qr.rs`; wire + re-export
 - Modify: `crates/lxd2-core/Cargo.toml` — `qrcode = { version = "0.14", default-features = false }`
 
@@ -97,11 +101,13 @@ Steps: red → implement → green → clippy → commit `"Add QR code rendering
 ### Task 4: Config file + device memory
 
 **Files:**
+
 - Create: `crates/lxd2/src/config.rs`
 - Modify: `crates/lxd2/Cargo.toml` — add `serde = { version = "1", features = ["derive"] }`, `toml = "0.8"`, `dirs = "5"`
 - Modify: `crates/lxd2/src/ble.rs`, `main.rs`
 
 **API:**
+
 ```rust
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -126,9 +132,11 @@ Steps: red → implement → green → clippy → commit `"Add config file with 
 ### Task 5: CLI wiring — .md files, qr subcommand, --copies
 
 **Files:**
+
 - Modify: `crates/lxd2/src/cli.rs`, `main.rs`
 
 Changes:
+
 - `print -f notes.md` (or `.markdown`) → `render_markdown(&contents)`; stdin/text-arg stay plain text
 - New subcommand: `Qr { data: String, #[arg(long)] caption: Option<String>, #[command(flatten)] device: DeviceArgs, #[arg(long, default_value_t = 3)] density: u8 (range 1-7), #[arg(long, default_value_t = 40)] feed: usize, #[arg(long)] preview: Option<PathBuf>, #[arg(long, default_value_t = 1)] copies: u16 (range 1..=20) }` — share a common print-dispatch helper with `cmd_print` (bitmap → preview-or-print pipeline) instead of duplicating it
 - `--copies N` on `Print` too (default 1, range 1..=20): one connection, then N sequential `PrintJob::new(...)` runs (fresh random challenge each; auth re-runs per job — acceptable; the printer expects a full session per job)
@@ -158,4 +166,4 @@ Steps: implement → verify → commit `"Add markdown printing, qr command, and 
 ## Post-review addenda
 
 - **Atkinson dithering**: `--dither` now accepts `floyd|atkinson|threshold` (`none` aliases `threshold`), matching the design doc's CLI sketch. Floyd–Steinberg and Atkinson share one kernel-parameterized error-diffusion helper in `dither.rs`.
-- **Saved-device fallback**: when the saved id is not seen before the scan deadline, connect now prefers a device advertising the saved *name* over any other `LX*` device (ranked fallback in `ble.rs`).
+- **Saved-device fallback**: when the saved id is not seen before the scan deadline, connect now prefers a device advertising the saved _name_ over any other `LX*` device (ranked fallback in `ble.rs`).

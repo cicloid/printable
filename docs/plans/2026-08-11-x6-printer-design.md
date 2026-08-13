@@ -42,7 +42,7 @@ untouched, hardware-validated `protocol/` directory:
 - `crc.rs` — CRC8/0x07. The LX-D02's CRC stays separate; the algorithms differ.
 - `job.rs` — `X6PrintJob`, a state machine with the same public shape as the
   existing `PrintJob`: `new(bitmap, options) → next_action() →
-  on_notification()`. It returns `Action` values, counts the same `JobStats`,
+on_notification()`. It returns `Action` values, counts the same `JobStats`,
   and has no auth phase. The X6 packetizer owns the LSB-leftmost bit packing,
   which differs from the LX-D02's.
 

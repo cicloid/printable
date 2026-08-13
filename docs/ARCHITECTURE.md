@@ -6,11 +6,11 @@ The whole project is one idea repeated: **everything becomes a 384 px wide, 1-bi
 
 ## The three crates
 
-| Crate | Binary / artifact | May do I/O | Depends on |
-|---|---|---|---|
-| `printa-ble-core` | rlib | **No** | `thiserror`, `image`, `fontdue`, `pulldown-cmark`, `qrcode`, `barcoders` |
-| `printa-ble` | `printable` (CLI + HTTP server) | Yes: BLE, files, network, Chrome | core + `tokio`, `btleplug`, `axum`, `clap`, `reqwest`, `rand`, `tracing`, `chromiumoxide` (optional), `serde`/`toml`/`dirs` |
-| `printa-ble-web` | cdylib (WASM) + rlib | No — JS does it | core + `wasm-bindgen`, `serde-wasm-bindgen`, `serde_bytes`, `image` |
+| Crate             | Binary / artifact               | May do I/O                       | Depends on                                                                                                                  |
+| ----------------- | ------------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `printa-ble-core` | rlib                            | **No**                           | `thiserror`, `image`, `fontdue`, `pulldown-cmark`, `qrcode`, `barcoders`                                                    |
+| `printa-ble`      | `printable` (CLI + HTTP server) | Yes: BLE, files, network, Chrome | core + `tokio`, `btleplug`, `axum`, `clap`, `reqwest`, `rand`, `tracing`, `chromiumoxide` (optional), `serde`/`toml`/`dirs` |
+| `printa-ble-web`  | cdylib (WASM) + rlib            | No — JS does it                  | core + `wasm-bindgen`, `serde-wasm-bindgen`, `serde_bytes`, `image`                                                         |
 
 The boundary is enforced by the dependency list, not by convention. `printa-ble-core` has **no tokio, no BLE, no `rand`, no HTTP client, no filesystem access**. Any code that wants to wait, connect, fetch, or roll dice lives in one of the other two crates.
 
@@ -40,28 +40,28 @@ loop {
 job.error() // None on success
 ```
 
-The caller owns *how* to write, sleep, and wait. The job owns *what* and *when*.
+The caller owns _how_ to write, sleep, and wait. The job owns _what_ and _when_.
 
 ### The wire flow
 
-| Step | Packet | Awaited notification |
-|---|---|---|
-| Hello | `5A 01` (12 B) | `5A 01` + MAC at bytes 4..10 |
-| Auth challenge | `5A 0A` + 10 random bytes | `5A 0A` (payload unused) |
-| Auth response | `5A 0B` + 10 bytes: per-byte `CRC16/XMODEM(challenge[i] ‖ mac) >> 8` | `5A 0B 01` ok / `5A 0B 00` fail (fatal) |
-| Density | `5A 0C <1-7>` | — |
-| Print start | `5A 04 <packets:be16> 00 00` | — |
-| Raster ×N | `55 <index:be16> <96 B> 00` — two 48-byte rows per packet | flow control, below |
-| Print end | `5A 04 <packets:be16> 01 00` | — |
+| Step           | Packet                                                               | Awaited notification                    |
+| -------------- | -------------------------------------------------------------------- | --------------------------------------- |
+| Hello          | `5A 01` (12 B)                                                       | `5A 01` + MAC at bytes 4..10            |
+| Auth challenge | `5A 0A` + 10 random bytes                                            | `5A 0A` (payload unused)                |
+| Auth response  | `5A 0B` + 10 bytes: per-byte `CRC16/XMODEM(challenge[i] ‖ mac) >> 8` | `5A 0B 01` ok / `5A 0B 00` fail (fatal) |
+| Density        | `5A 0C <1-7>`                                                        | —                                       |
+| Print start    | `5A 04 <packets:be16> 00 00`                                         | —                                       |
+| Raster ×N      | `55 <index:be16> <96 B> 00` — two 48-byte rows per packet            | flow control, below                     |
+| Print end      | `5A 04 <packets:be16> 01 00`                                         | —                                       |
 
 Flow control while streaming (`5A 05/06/07/08`):
 
-| Notification | Effect |
-|---|---|
+| Notification           | Effect                                                                                    |
+| ---------------------- | ----------------------------------------------------------------------------------------- |
 | `LostPacket { index }` | Rewind `send_idx` to `index − 1` and resume — the convention observed in the official app |
-| `Hold` | Park in `Holding` until a `LostPacket` resumes or a `Finished` ends the job |
-| `Cooldown` | Emit a one-shot `WaitMs(100)` back-off, then carry on |
-| `Finished` | The printer decides the job is over, even mid-stream → send print-end |
+| `Hold`                 | Park in `Holding` until a `LostPacket` resumes or a `Finished` ends the job               |
+| `Cooldown`             | Emit a one-shot `WaitMs(100)` back-off, then carry on                                     |
+| `Finished`             | The printer decides the job is over, even mid-stream → send print-end                     |
 
 Everything else (periodic `5A 02` status frames) is ignored by the FSM. Paper and battery checks belong to the transport layer, which sees those frames anyway.
 
@@ -73,13 +73,13 @@ Bounds live in the constructor: more than `u16::MAX` raster packets (131,070 row
 
 This is the same move as [randomness injection](#randomness-injection), applied to output instead of input, and it is what keeps the sans-IO rule from making the system opaque. A stalled thermal printer and a hung one look identical from outside; the counters are what tell them apart. So the FSM counts, and stops there — every consumer then decides what the numbers are for:
 
-| Consumer | What it does with `JobStats` |
-|---|---|
-| `ble.rs` | Feeds `packets_sent` / `retransmits` to the stall guard: a job whose counters have not moved in 60 s is not making progress, whatever the radio is doing |
-| `ble.rs` | Logs a one-line job summary, omitting flow-control terms entirely when the printer never invoked any |
-| `print_service.rs` | Sums them across copies into `PrintOutcome` |
-| `server.rs` | Logs them, *and* returns them in the `/print/*` JSON body for clients that never see the log |
-| The web app | Ignores them entirely |
+| Consumer           | What it does with `JobStats`                                                                                                                             |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ble.rs`           | Feeds `packets_sent` / `retransmits` to the stall guard: a job whose counters have not moved in 60 s is not making progress, whatever the radio is doing |
+| `ble.rs`           | Logs a one-line job summary, omitting flow-control terms entirely when the printer never invoked any                                                     |
+| `print_service.rs` | Sums them across copies into `PrintOutcome`                                                                                                              |
+| `server.rs`        | Logs them, _and_ returns them in the `/print/*` JSON body for clients that never see the log                                                             |
+| The web app        | Ignores them entirely                                                                                                                                    |
 
 None of that is core's business, and none of it required changing core. **The rule to preserve: observability data leaves core as values, never as log calls.** If a diagnostic seems to need a `tracing` call inside core, it needs a counter or a return value instead.
 
@@ -104,7 +104,7 @@ loop {
 }
 ```
 
-A background task parses raw 0xFFE2 frames into `Notification`s and pushes them into an unbounded channel. The loop drains that channel *before* every action, so mid-stream `Hold` / `LostPacket` / `Cooldown` reach the FSM even while it is on the fast Send/WaitMs path — and a no-paper status frame aborts the job there rather than later, as a misleading timeout.
+A background task parses raw 0xFFE2 frames into `Notification`s and pushes them into an unbounded channel. The loop drains that channel _before_ every action, so mid-stream `Hold` / `LostPacket` / `Cooldown` reach the FSM even while it is on the fast Send/WaitMs path — and a no-paper status frame aborts the job there rather than later, as a misleading timeout.
 
 The loop carries **two** deadlines, and both are needed. `NOTIFICATION_TIMEOUT` (10 s) bounds the `WaitNotification` arm and catches a printer that has gone off the air. It is re-armed by any frame at all, including the periodic unsolicited `5A 02` heartbeats — so a printer that holds the stream and never resumes keeps it satisfied forever, and the job (plus any HTTP client behind it) would wait indefinitely. `STALL_TIMEOUT` (60 s) measures what the printer cannot fake: whether `JobStats` is actually moving. Every arm above is itself bounded, so the guard is polled at least once per notification timeout even when the printer says nothing at all.
 
@@ -112,21 +112,26 @@ The loop carries **two** deadlines, and both are needed. `NOTIFICATION_TIMEOUT` 
 
 ```js
 while (job) {
-  const a = job.next_action();          // {kind:"send"|"waitMs"|"waitNotification"|"done"}
+  const a = job.next_action(); // {kind:"send"|"waitMs"|"waitNotification"|"done"}
   if (a.kind === "send") await gattWrite(a.bytes);
   else if (a.kind === "waitMs") await sleep(a.ms);
-  else if (a.kind === "waitNotification") { armWatchdog(); return; }
-  else { finishJob(null); return; }
+  else if (a.kind === "waitNotification") {
+    armWatchdog();
+    return;
+  } else {
+    finishJob(null);
+    return;
+  }
 }
 ```
 
-JS has no blocking receive, so the shape inverts: `pump()` *returns* on `waitNotification` and the GATT `characteristicvaluechanged` handler calls `job.on_notification(bytes)` and re-enters `pump()`. An `isPumping` flag makes re-entrant calls no-ops — a notification arriving mid-write is absorbed by the running loop's next `next_action()`. A 10 s watchdog replaces the native `timeout`, and a `gattserverdisconnected` event fails the job.
+JS has no blocking receive, so the shape inverts: `pump()` _returns_ on `waitNotification` and the GATT `characteristicvaluechanged` handler calls `job.on_notification(bytes)` and re-enters `pump()`. An `isPumping` flag makes re-entrant calls no-ops — a notification arriving mid-write is absorbed by the running loop's next `next_action()`. A 10 s watchdog replaces the native `timeout`, and a `gattserverdisconnected` event fails the job.
 
 `WasmJob` (`crates/printa-ble-web/src/job.rs`) is the bridge: it serializes `Action` to a tagged JS object and takes raw notification bytes, parsing them with the same `notifications::parse` the CLI uses. One subtlety is pinned in a comment there: `Send.bytes` uses `serde_bytes` so serde-wasm-bindgen emits a `Uint8Array`; a plain `Vec<u8>` would arrive as a JS `Array`, which GATT `writeValue` rejects.
 
 The result: a protocol fix — a flow-control quirk, a retry rule, an auth detail — is made once, in core, and both transports get it.
 
-The transports do hold a little protocol knowledge, and it is worth knowing exactly how much. The GATT UUIDs are no longer transport knowledge at all: they live in core's `model::PrinterModel` (LX-D02 service 0xFFE6, write 0xFFE1, notify 0xFFE2; X6 service 0xAE30, write 0xAE01, notify 0xAE02) as plain per-model values — facts, not I/O, so core stays sans-IO — and both transports read them from there, the web page via `#[wasm_bindgen]` getters. Beyond that, the BLE module knows the LX hello frame and its `5A 01` reply, and — for trace logging only — how to put a human-readable label on an outgoing frame. The hello is not a leak but a deliberate exception: the transport has to greet the printer *before* a `PrintJob` exists, because a connection that has not been answered is not a connection at all (see [The liveness handshake](#the-liveness-handshake)). The web page holds the chooser filters — the four name prefixes, plus both cat-family services, since some firmwares advertise the connect service instead of the advertisement one (`0xAF30` and `0xAE30`, both `PrinterModel` values read through getters) — one two-byte peek at `5A 02` frames to show battery percentage in the status chip (LX only — the X6 has no battery frame), and one structural fact used for model detection: the two families expose disjoint primary services, so `connect()` in `app.js` probes for the LX service and falls back to the X6 — whichever service the device answers with *is* the model switch.
+The transports do hold a little protocol knowledge, and it is worth knowing exactly how much. The GATT UUIDs are no longer transport knowledge at all: they live in core's `model::PrinterModel` (LX-D02 service 0xFFE6, write 0xFFE1, notify 0xFFE2; X6 service 0xAE30, write 0xAE01, notify 0xAE02) as plain per-model values — facts, not I/O, so core stays sans-IO — and both transports read them from there, the web page via `#[wasm_bindgen]` getters. Beyond that, the BLE module knows the LX hello frame and its `5A 01` reply, and — for trace logging only — how to put a human-readable label on an outgoing frame. The hello is not a leak but a deliberate exception: the transport has to greet the printer _before_ a `PrintJob` exists, because a connection that has not been answered is not a connection at all (see [The liveness handshake](#the-liveness-handshake)). The web page holds the chooser filters — the four name prefixes, plus both cat-family services, since some firmwares advertise the connect service instead of the advertisement one (`0xAF30` and `0xAE30`, both `PrinterModel` values read through getters) — one two-byte peek at `5A 02` frames to show battery percentage in the status chip (LX only — the X6 has no battery frame), and one structural fact used for model detection: the two families expose disjoint primary services, so `connect()` in `app.js` probes for the LX service and falls back to the X6 — whichever service the device answers with _is_ the model switch.
 
 ### The liveness handshake
 
@@ -150,16 +155,16 @@ qr / barcode ─────────────────────┘
 
 The layers, bottom up:
 
-| Module | Responsibility |
-|---|---|
-| `raster/bitmap.rs` | The 1-bit canvas and raster chunking |
-| `raster/rich.rs` | The typesetter: styled spans → glyphs. Greedy word wrap, mixed sizes on a shared baseline, strikethrough, indent. Owns the four embedded faces (JetBrains Mono Regular/Bold/Italic plus the Noto Sans JP fallback) and resolves per glyph which one draws a character — and supplies its metrics |
-| `raster/text.rs` | Plain text — a thin wrapper: split on `\n`, one `RichLine` each |
-| `raster/markdown.rs` | Lowers CommonMark events onto `rich`, plus its own block graphics |
-| `raster/dither.rs` | `prepare` (grayscale + Lanczos3 scale to 384 px, height clamped to 4096 rows) and `image_to_bitmap` (Floyd–Steinberg, Atkinson, or threshold) |
-| `raster/qr.rs`, `raster/barcode.rs` | Self-contained graphics with their own quiet zones and margins |
-| `raster/wagara.rs` | Procedural Japanese pattern bands: supersampled drawing collapsed by majority vote, periods chosen to divide 384 exactly so a band tiles |
-| `raster/preview.rs` | `Bitmap` → grayscale PNG, the paperless test path |
+| Module                              | Responsibility                                                                                                                                                                                                                                                                                   |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `raster/bitmap.rs`                  | The 1-bit canvas and raster chunking                                                                                                                                                                                                                                                             |
+| `raster/rich.rs`                    | The typesetter: styled spans → glyphs. Greedy word wrap, mixed sizes on a shared baseline, strikethrough, indent. Owns the four embedded faces (JetBrains Mono Regular/Bold/Italic plus the Noto Sans JP fallback) and resolves per glyph which one draws a character — and supplies its metrics |
+| `raster/text.rs`                    | Plain text — a thin wrapper: split on `\n`, one `RichLine` each                                                                                                                                                                                                                                  |
+| `raster/markdown.rs`                | Lowers CommonMark events onto `rich`, plus its own block graphics                                                                                                                                                                                                                                |
+| `raster/dither.rs`                  | `prepare` (grayscale + Lanczos3 scale to 384 px, height clamped to 4096 rows) and `image_to_bitmap` (Floyd–Steinberg, Atkinson, or threshold)                                                                                                                                                    |
+| `raster/qr.rs`, `raster/barcode.rs` | Self-contained graphics with their own quiet zones and margins                                                                                                                                                                                                                                   |
+| `raster/wagara.rs`                  | Procedural Japanese pattern bands: supersampled drawing collapsed by majority vote, periods chosen to divide 384 exactly so a band tiles                                                                                                                                                         |
+| `raster/preview.rs`                 | `Bitmap` → grayscale PNG, the paperless test path                                                                                                                                                                                                                                                |
 
 ### Block stacking
 
@@ -173,7 +178,7 @@ enum MdBlock {
 }
 ```
 
-Each block renders to its own `Bitmap` independently — text through `render_rich`, graphics through their own renderers — and `stack()` concatenates them vertically. `padded()` adds uniform white margins, which is how a QR (16 px of built-in quiet space) and a barcode (none) end up equally spaced: each fence declares what it already draws and is padded *to* a common 24 px, not *by* it.
+Each block renders to its own `Bitmap` independently — text through `render_rich`, graphics through their own renderers — and `stack()` concatenates them vertically. `padded()` adds uniform white margins, which is how a QR (16 px of built-in quiet space) and a barcode (none) end up equally spaced: each fence declares what it already draws and is padded _to_ a common 24 px, not _by_ it.
 
 This is why graphics are full-width and never inherit list or quote indentation (see [MARKDOWN.md](MARKDOWN.md#layout-limitations-worth-knowing)): they are siblings of the text block, not spans inside it. It is also why a failed fence prints its error text with the same margins a successful one would have had — otherwise it would collide with the neighbouring paragraph.
 
@@ -184,7 +189,7 @@ This is why graphics are full-width and never inherit list or quote indentation 
 Two consequences are load-bearing enough to be written down in the source:
 
 - **Metrics follow the face that draws.** A CJK glyph advances a full 1 em against JetBrains Mono's 0.6 em, so taking the advance from the style's face rather than the drawing face would wreck spacing and wrapping on any mixed-script line. The layout, the strikethrough bar, and the markdown table's column arithmetic all read the advance from `face_for`.
-- **The baseline does not.** Line height and ascent come from the *Latin* face even for fallback glyphs, which keeps a mixed-script run on one baseline and leaves line heights unchanged from before the fallback existed. Noto Sans JP declares a taller ascent than its ink needs — CJK ink tops out near 0.88 em, inside JetBrains Mono's 1.02 em ascent — so nothing clips.
+- **The baseline does not.** Line height and ascent come from the _Latin_ face even for fallback glyphs, which keeps a mixed-script run on one baseline and leaves line heights unchanged from before the fallback existed. Noto Sans JP declares a taller ascent than its ink needs — CJK ink tops out near 0.88 em, inside JetBrains Mono's 1.02 em ascent — so nothing clips.
 
 The face is ~4.5 MB, larger than everything else in the binary combined, so it sits behind the `cjk` cargo feature on `printa-ble-core`. Both `printa-ble` and `printa-ble-web` pass the feature through and enable it by default: a document must print the same from the browser as from the CLI, and that is worth more than the 1.8 MB → 6.3 MB the `.wasm` bundle grows by. Building either wrapper with `--no-default-features` drops the face and CJK returns to tofu; a `#[cfg(not(feature = "cjk"))]` test in `rich.rs` pins that path so it cannot rot. User-facing limitations are in [MARKDOWN.md](MARKDOWN.md#cjk-text).
 
@@ -192,33 +197,33 @@ The face is ~4.5 MB, larger than everything else in the binary combined, so it s
 
 User-facing detail for the first two lives in [CLI.md](CLI.md) and [API.md](API.md); this section is about what they share.
 
-| Surface | Entry point | Renders where | Talks to the printer how |
-|---|---|---|---|
-| CLI | `printable print/qr/scan/status` | Native, in-process | btleplug (native BLE) |
-| HTTP API | `printable serve` → `server.rs` | Native, in the server process | btleplug, serialized by one mutex |
-| Server UI | `crates/printa-ble/src/server/ui.html`, embedded with `include_str!` | Server-side, via the REST API | Indirectly — it is a thin client |
-| Web app | `web/index.html` + `web/app.js` + `web/pkg/` (WASM) | In the browser, WASM | Web Bluetooth, from the page |
+| Surface   | Entry point                                                          | Renders where                 | Talks to the printer how          |
+| --------- | -------------------------------------------------------------------- | ----------------------------- | --------------------------------- |
+| CLI       | `printable print/qr/scan/status`                                     | Native, in-process            | btleplug (native BLE)             |
+| HTTP API  | `printable serve` → `server.rs`                                      | Native, in the server process | btleplug, serialized by one mutex |
+| Server UI | `crates/printa-ble/src/server/ui.html`, embedded with `include_str!` | Server-side, via the REST API | Indirectly — it is a thin client  |
+| Web app   | `web/index.html` + `web/app.js` + `web/pkg/` (WASM)                  | In the browser, WASM          | Web Bluetooth, from the page      |
 
 What is shared and what is not:
 
-| Concern | Shared in core | Surface-specific |
-|---|---|---|
-| Text / markdown / QR / barcode rendering | ✅ Identical everywhere | — |
-| Image decode, scale, dither | ✅ `prepare` + `image_to_bitmap` | Which bytes get there |
-| Print protocol / FSM | ✅ `PrintJob` | The pump (tokio loop vs JS callback) |
-| Notification parsing | ✅ `notifications::parse` | Who reads the characteristic |
-| **Markdown image resolution** | ❌ Core only lists refs | CLI: files + HTTP · Server: HTTP only · Web: browser `fetch` (CORS) |
-| **Randomness** | ❌ Injected | CLI/server: `rand::random()` · Web: `crypto.getRandomValues` |
-| **URL → page rendering** | ❌ Not in core at all | CLI/server only, headless Chrome behind the `url` feature |
-| Device memory (`config.toml`) | ❌ | CLI/server only; the browser re-picks a device each session |
-| Paper/battery gating | ❌ | CLI/server abort on `no_paper`; the web page shows battery and relies on the watchdog |
-| Feed, density, copies bounds | ❌ (values passed in) | CLI: clap validators · Server: `PrintOpts::validate` · Web: JS `clamp` + `WasmJob::new` checks |
+| Concern                                  | Shared in core                   | Surface-specific                                                                               |
+| ---------------------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Text / markdown / QR / barcode rendering | ✅ Identical everywhere          | —                                                                                              |
+| Image decode, scale, dither              | ✅ `prepare` + `image_to_bitmap` | Which bytes get there                                                                          |
+| Print protocol / FSM                     | ✅ `PrintJob`                    | The pump (tokio loop vs JS callback)                                                           |
+| Notification parsing                     | ✅ `notifications::parse`        | Who reads the characteristic                                                                   |
+| **Markdown image resolution**            | ❌ Core only lists refs          | CLI: files + HTTP · Server: HTTP only · Web: browser `fetch` (CORS)                            |
+| **Randomness**                           | ❌ Injected                      | CLI/server: `rand::random()` · Web: `crypto.getRandomValues`                                   |
+| **URL → page rendering**                 | ❌ Not in core at all            | CLI/server only, headless Chrome behind the `url` feature                                      |
+| Device memory (`config.toml`)            | ❌                               | CLI/server only; the browser re-picks a device each session                                    |
+| Paper/battery gating                     | ❌                               | CLI/server abort on `no_paper`; the web page shows battery and relies on the watchdog          |
+| Feed, density, copies bounds             | ❌ (values passed in)            | CLI: clap validators · Server: `PrintOpts::validate` · Web: JS `clamp` + `WasmJob::new` checks |
 
 The CLI and the server share more than the table suggests: both go through `print_service::print_bitmap`, which appends feed, validates the job before touching BLE, connects (explicit `--device` > saved device > any `LX*`), runs one full job per copy over a single connection, and remembers the device. The server adds a mutex so concurrent requests queue instead of fighting over one printer, and maps the marker error types (`NoPrinterFound`, `NoPaper`, `PrintFailure`, `JobError::TooLarge`) to HTTP statuses exactly as the CLI maps them to exit codes 2/3/4/1.
 
 ## Randomness injection
 
-`PrintJob::new` takes `challenge: [u8; 10]` instead of generating it. The auth handshake needs 10 random bytes, and the printer answers by CRC-ing each of them against its own MAC — so the bytes must be unpredictable in production but *fixed* in a test.
+`PrintJob::new` takes `challenge: [u8; 10]` instead of generating it. The auth handshake needs 10 random bytes, and the printer answers by CRC-ing each of them against its own MAC — so the bytes must be unpredictable in production but _fixed_ in a test.
 
 Injecting them buys three things:
 
@@ -232,11 +237,11 @@ A fresh challenge is drawn per copy, not per connection: `print_bitmap` builds a
 
 `cargo test --workspace` runs everything natively in a couple of seconds. Exactly one test is `#[ignore]`d — the Chrome render — and nothing else needs hardware or network. [CONTRIBUTING.md](../CONTRIBUTING.md#testing) has the current count.
 
-| Crate | Notable coverage |
-|---|---|
-| `printa-ble-core` | Markdown lowering (the largest test module by far), rich-text layout, dithering ratios, QR/barcode geometry, packet bytes, CRC check value, notification parsing, and the FSM |
-| `printa-ble` | HTTP handlers via `tower::ServiceExt::oneshot`, error→status mapping, multipart parsing, image resolution against a loopback server, config round-trips, URL scheme validation |
-| `printa-ble-web` | WASM wrappers and the `WasmJob` action contract, all through the rlib build |
+| Crate             | Notable coverage                                                                                                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `printa-ble-core` | Markdown lowering (the largest test module by far), rich-text layout, dithering ratios, QR/barcode geometry, packet bytes, CRC check value, notification parsing, and the FSM  |
+| `printa-ble`      | HTTP handlers via `tower::ServiceExt::oneshot`, error→status mapping, multipart parsing, image resolution against a loopback server, config round-trips, URL scheme validation |
+| `printa-ble-web`  | WASM wrappers and the `WasmJob` action contract, all through the rlib build                                                                                                    |
 
 Techniques worth copying when you add code:
 

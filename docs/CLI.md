@@ -6,13 +6,13 @@
 printable <COMMAND> [OPTIONS]
 ```
 
-| Command | Purpose |
-|---|---|
-| [`scan`](#scan) | List nearby supported printers |
+| Command             | Purpose                                    |
+| ------------------- | ------------------------------------------ |
+| [`scan`](#scan)     | List nearby supported printers             |
 | [`status`](#status) | Show battery, paper, density (LX-D02 only) |
-| [`print`](#print) | Print text, a file, or a web page |
-| [`qr`](#qr) | Print a QR code |
-| [`serve`](#serve) | Run the HTTP print server |
+| [`print`](#print)   | Print text, a file, or a web page          |
+| [`qr`](#qr)         | Print a QR code                            |
+| [`serve`](#serve)   | Run the HTTP print server                  |
 
 Global flags: `-h, --help` (per command too), `-V, --version`, and `-v` for [verbosity](#verbosity-and-logging).
 
@@ -24,10 +24,10 @@ Global flags: `-h, --help` (per command too), `-V, --version`, and `-v` for [ver
 
 Two printer families are supported, sharing the rendering pipeline (both have 384 px print heads) but speaking completely different wire protocols:
 
-| Family | `--model` value | Detected by | Status |
-|---|---|---|---|
-| LX-D02 / LX-D2 | `lx-d02` | Name starts with `LX` | Hardware-validated |
-| X6 / X6h "cat printer" family | `x6` | Name starts with `X6h-`, `x6h-`, or `SC05-`, **or** the advertisement carries the cat-family service `0xAF30` (some firmwares advertise the connect service `0xAE30` instead — either counts) | Hardware-validated (X6h, and an `SC05-` cat-face unit first found by service detection) |
+| Family                        | `--model` value | Detected by                                                                                                                                                                                   | Status                                                                                  |
+| ----------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| LX-D02 / LX-D2                | `lx-d02`        | Name starts with `LX`                                                                                                                                                                         | Hardware-validated                                                                      |
+| X6 / X6h "cat printer" family | `x6`            | Name starts with `X6h-`, `x6h-`, or `SC05-`, **or** the advertisement carries the cat-family service `0xAF30` (some firmwares advertise the connect service `0xAE30` instead — either counts) | Hardware-validated (X6h, and an `SC05-` cat-face unit first found by service detection) |
 
 `X6H-` (capital H) is a different model and is deliberately not matched.
 
@@ -50,12 +50,12 @@ What the X6 does differently:
 
 `-v` is global: it parses before or after the subcommand, repeats for more detail, and writes to **stderr** only. `RUST_LOG` overrides it entirely when set.
 
-| Flag | Filter | What it is for |
-|---|---|---|
-| *(none)* | `printable=warn` | This crate's warnings and nothing else |
-| `-v` | `printable=info` | Flow control and progress — connection, thermal holds and resumes, retransmit requests, per-copy progress, the server's request log and job summaries |
-| `-vv` | `printable=debug` | Parsed protocol frames, device resolution, notification decoding, image-resolution timings |
-| `-vvv` | `debug,printable=trace` | Raw hex on the wire, **plus dependency logs** (btleplug, chromiumoxide, reqwest) |
+| Flag     | Filter                  | What it is for                                                                                                                                        |
+| -------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| _(none)_ | `printable=warn`        | This crate's warnings and nothing else                                                                                                                |
+| `-v`     | `printable=info`        | Flow control and progress — connection, thermal holds and resumes, retransmit requests, per-copy progress, the server's request log and job summaries |
+| `-vv`    | `printable=debug`       | Parsed protocol frames, device resolution, notification decoding, image-resolution timings                                                            |
+| `-vvv`   | `debug,printable=trace` | Raw hex on the wire, **plus dependency logs** (btleplug, chromiumoxide, reqwest)                                                                      |
 
 The default filter names this crate and nothing else, which is load-bearing rather than tidy: chromiumoxide logs the websocket frames it fails to deserialize at ERROR, and recent Chrome sends several per screenshot, so a bare `warn` floor made a perfectly successful `print --url` emit two red lines about a connection error. `-vvv` is the rung where you deliberately ask for that noise back — it is the one to reach for when the fault might be in btleplug or Chrome rather than here.
 
@@ -71,23 +71,23 @@ Nothing is logged from `printa-ble-core`: it is sans-IO and has no logger. What 
 
 Every command that talks to the printer resolves a device the same way. `scan` is the exception — it lists everything it sees.
 
-| Rank | Source | Match | When it wins |
-|---|---|---|---|
-| 1 | `--device <STR>` | Advertised name **or** platform id contains `<STR>` | Immediately, first match |
-| 2 | Saved device id (config file) | Exact platform id | Immediately |
-| 2a | Saved device *name* | Advertised name equals the saved name | Only at the scan deadline, preferred over 2b |
-| 2b | Any supported printer | Advertised name — or the cat-family service — identifies a supported model | Only at the scan deadline |
-| 3 | No flag, no saved device | Advertised name — or the cat-family service — identifies a supported model | Immediately, first match |
+| Rank | Source                        | Match                                                                      | When it wins                                 |
+| ---- | ----------------------------- | -------------------------------------------------------------------------- | -------------------------------------------- |
+| 1    | `--device <STR>`              | Advertised name **or** platform id contains `<STR>`                        | Immediately, first match                     |
+| 2    | Saved device id (config file) | Exact platform id                                                          | Immediately                                  |
+| 2a   | Saved device _name_           | Advertised name equals the saved name                                      | Only at the scan deadline, preferred over 2b |
+| 2b   | Any supported printer         | Advertised name — or the cat-family service — identifies a supported model | Only at the scan deadline                    |
+| 3    | No flag, no saved device      | Advertised name — or the cat-family service — identifies a supported model | Immediately, first match                     |
 
 When a model restriction is in effect — an explicit `--model`, or the saved device's remembered model on a reconnect (see [Printer models](#printer-models)) — every rank matches only devices of that model.
 
 The scan runs up to **10 seconds**, polling every 300 ms. An exact match short-circuits it; the ranked fallbacks are used only if no exact match appears before the deadline. If nothing matches at all, the command fails with `no supported printer found. Is the printer on and in range?` and exit code 2.
 
-After every successful connection the device's id, name, and model are written to the config file, so the next run reconnects to the same printer without a flag. `--device` overrides the saved printer *and* replaces it.
+After every successful connection the device's id, name, and model are written to the config file, so the next run reconnects to the same printer without a flag. `--device` overrides the saved printer _and_ replaces it.
 
 ### Connecting means the printer answered
 
-Finding a device is not the same as finding a *live* printer. On macOS, CoreBluetooth caches the GATT database of any peripheral it has paired with before, so connecting and discovering the characteristics both succeed against a printer that is switched off. A connection is therefore only reported once the printer has answered a `5A 01` hello frame of its own accord — the first thing in the flow that only the hardware itself can produce.
+Finding a device is not the same as finding a _live_ printer. On macOS, CoreBluetooth caches the GATT database of any peripheral it has paired with before, so connecting and discovering the characteristics both succeed against a printer that is switched off. A connection is therefore only reported once the printer has answered a `5A 01` hello frame of its own accord — the first thing in the flow that only the hardware itself can produce.
 
 This guarantee is **LX-D02 only**. The X6 protocol has no known liveness probe, so an X6 "connection" means only that the subscription is up, and a switched-off X6 fails later and worse — see [Printer models](#printer-models).
 
@@ -103,17 +103,17 @@ That is exit code **2** (and `503` on the server): from a caller's point of view
 
 None of these come from the protocol; they are this implementation's choices.
 
-| Constant | Value | Guards against |
-|---|---|---|
-| Scan | 10 s | No matching device ever advertises |
-| `CONNECT_TIMEOUT` | 15 s | CoreBluetooth's own connect has no deadline and will wait forever for a peripheral that is not there |
-| `HELLO_TIMEOUT` | 4 s | A device that connects but never answers (the liveness probe above; LX-D02 only — the X6 has no hello) |
-| `NOTIFICATION_TIMEOUT` | 10 s | Total BLE silence mid-job — the link dropped |
-| `STALL_TIMEOUT` | 60 s | A printer that keeps talking without taking data |
-| `DISCONNECT_TIMEOUT` | 3 s | A teardown that never gets its confirmation callback |
-| Status wait | 5 s (`status`), 3 s (pre-print) | No unsolicited status frame arrives (LX-D02 only) |
+| Constant               | Value                           | Guards against                                                                                         |
+| ---------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Scan                   | 10 s                            | No matching device ever advertises                                                                     |
+| `CONNECT_TIMEOUT`      | 15 s                            | CoreBluetooth's own connect has no deadline and will wait forever for a peripheral that is not there   |
+| `HELLO_TIMEOUT`        | 4 s                             | A device that connects but never answers (the liveness probe above; LX-D02 only — the X6 has no hello) |
+| `NOTIFICATION_TIMEOUT` | 10 s                            | Total BLE silence mid-job — the link dropped                                                           |
+| `STALL_TIMEOUT`        | 60 s                            | A printer that keeps talking without taking data                                                       |
+| `DISCONNECT_TIMEOUT`   | 3 s                             | A teardown that never gets its confirmation callback                                                   |
+| Status wait            | 5 s (`status`), 3 s (pre-print) | No unsolicited status frame arrives (LX-D02 only)                                                      |
 
-`NOTIFICATION_TIMEOUT` and `STALL_TIMEOUT` are complementary, and both are needed. The notification deadline measures radio silence and is re-armed by *any* frame, including the periodic unsolicited status heartbeats — so a printer that pauses the stream for thermal reasons and never resumes keeps the deadline alive indefinitely, and the job (and any HTTP client behind it) would wait forever. The stall deadline measures something the printer cannot fake: whether raster data is actually moving. A minute is deliberately generous, since a genuine thermal cooldown resumes in seconds. When it fires after real flow control, the error suggests lowering `--density`:
+`NOTIFICATION_TIMEOUT` and `STALL_TIMEOUT` are complementary, and both are needed. The notification deadline measures radio silence and is re-armed by _any_ frame, including the periodic unsolicited status heartbeats — so a printer that pauses the stream for thermal reasons and never resumes keeps the deadline alive indefinitely, and the job (and any HTTP client behind it) would wait forever. The stall deadline measures something the printer cannot fake: whether raster data is actually moving. A minute is deliberately generous, since a genuine thermal cooldown resumes in seconds. When it fires after real flow control, the error suggests lowering `--density`:
 
 ```
 print failed: printer stalled for 60.0s without resuming, 47.3s of this job spent
@@ -122,11 +122,11 @@ paused for thermal flow control; the print head may be overheating — try a low
 
 ### Config file
 
-| Platform | Path |
-|---|---|
-| macOS | `~/Library/Application Support/printa-ble/config.toml` |
-| Linux | `~/.config/printa-ble/config.toml` |
-| Other | `<platform config dir>/printa-ble/config.toml` |
+| Platform | Path                                                   |
+| -------- | ------------------------------------------------------ |
+| macOS    | `~/Library/Application Support/printa-ble/config.toml` |
+| Linux    | `~/.config/printa-ble/config.toml`                     |
+| Other    | `<platform config dir>/printa-ble/config.toml`         |
 
 ```toml
 [device]
@@ -150,22 +150,22 @@ Re-enable it under System Settings → Privacy & Security → Bluetooth. Running
 
 ### Exit codes
 
-| Code | Meaning |
-|---|---|
-| 0 | Success |
-| 1 | General error (bad input, unreadable file, oversized job, render failure) |
-| 2 | No **usable** printer: none found, or one found that never answered — also `scan` finding nothing, and any command-line usage error (clap's convention) |
-| 3 | Printer is out of paper |
-| 4 | Print failed (authentication rejected, BLE write failed, printer stopped responding) |
+| Code | Meaning                                                                                                                                                 |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success                                                                                                                                                 |
+| 1    | General error (bad input, unreadable file, oversized job, render failure)                                                                               |
+| 2    | No **usable** printer: none found, or one found that never answered — also `scan` finding nothing, and any command-line usage error (clap's convention) |
+| 3    | Printer is out of paper                                                                                                                                 |
+| 4    | Print failed (authentication rejected, BLE write failed, printer stopped responding)                                                                    |
 
 ### Output streams
 
 Diagnostics go to stderr, results to stdout. Scripts can read stdout safely.
 
-| Stream | Text |
-|---|---|
+| Stream | Text                                                                                            |
+| ------ | ----------------------------------------------------------------------------------------------- |
 | stdout | Scan table, status fields, `Printed <N> lines.`, `Printed copy <i>/<N>.`, the preview file path |
-| stderr | `Connected to <name>.`, warnings, errors, and everything `-v` turns on |
+| stderr | `Connected to <name>.`, warnings, errors, and everything `-v` turns on                          |
 
 ---
 
@@ -177,10 +177,10 @@ List every nearby device a supported model claims — by advertised name (`LX*`,
 printable scan [--timeout <SECONDS>] [--all]
 ```
 
-| Flag | Type | Default | Notes |
-|---|---|---|---|
-| `--timeout` | integer seconds | `5` | Scans for the full duration before printing results |
-| `--all` | flag | off | List **every** BLE device seen, not just supported printers |
+| Flag        | Type            | Default | Notes                                                       |
+| ----------- | --------------- | ------- | ----------------------------------------------------------- |
+| `--timeout` | integer seconds | `5`     | Scans for the full duration before printing results         |
+| `--all`     | flag            | off     | List **every** BLE device seen, not just supported printers |
 
 ```console
 $ printable scan
@@ -224,10 +224,10 @@ Connect, read one status frame, disconnect. **LX-D02 only** — the X6 sends no 
 printable status [--device <DEVICE>] [--model <MODEL>]
 ```
 
-| Flag | Type | Default | Notes |
-|---|---|---|---|
-| `--device` | string | saved device, else first supported printer | Name or id substring |
-| `--model` | `lx-d02` \| `x6` | detect from the advertisement | Case-insensitive; see [Printer models](#printer-models) |
+| Flag       | Type             | Default                                    | Notes                                                   |
+| ---------- | ---------------- | ------------------------------------------ | ------------------------------------------------------- |
+| `--device` | string           | saved device, else first supported printer | Name or id substring                                    |
+| `--model`  | `lx-d02` \| `x6` | detect from the advertisement              | Case-insensitive; see [Printer models](#printer-models) |
 
 ```console
 $ printable status
@@ -264,13 +264,13 @@ echo ... | printable print [OPTIONS]
 
 Exactly one source is used. Combining them is an error.
 
-| Source | Rendered as | Notes |
-|---|---|---|
-| `--url <URL>` | Web page screenshot | Conflicts with `TEXT`, `--file`, and `--markdown` (usage error, exit 2). Requires the `url` build feature. |
-| `--file <PATH>` | By extension, see below | Passing `TEXT` too fails: `cannot combine a text argument with --file` |
-| `--file -` | Whatever arrives on stdin | A bare `-` is the Unix spelling of "read stdin". `./-` and `-.md` are ordinary filenames. |
-| `TEXT` positional | Plain text, or markdown with `-m` | |
-| stdin | Plain text, or markdown with `-m` | Used only when there is no `TEXT` and no `--file` |
+| Source            | Rendered as                       | Notes                                                                                                      |
+| ----------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `--url <URL>`     | Web page screenshot               | Conflicts with `TEXT`, `--file`, and `--markdown` (usage error, exit 2). Requires the `url` build feature. |
+| `--file <PATH>`   | By extension, see below           | Passing `TEXT` too fails: `cannot combine a text argument with --file`                                     |
+| `--file -`        | Whatever arrives on stdin         | A bare `-` is the Unix spelling of "read stdin". `./-` and `-.md` are ordinary filenames.                  |
+| `TEXT` positional | Plain text, or markdown with `-m` |                                                                                                            |
+| stdin             | Plain text, or markdown with `-m` | Used only when there is no `TEXT` and no `--file`                                                          |
 
 Markdown is otherwise chosen by file extension, so anything without one is **plain text by default** — piping a document renders its literal source. `-m` / `--markdown` is the only way to say so when there is no filename to give it away.
 
@@ -278,15 +278,15 @@ Markdown is otherwise chosen by file extension, so anything without one is **pla
 
 Forces the markdown renderer for input that would otherwise be plain text.
 
-| Input | Effect of `-m` |
-|---|---|
-| stdin | Renders as markdown |
-| `TEXT` positional | Renders as markdown |
-| `--file -` | Renders as markdown |
-| `--file x.txt` | Renders as markdown |
-| `--file x.md` / `.markdown` | Redundant — already markdown, and accepted without comment |
+| Input                             | Effect of `-m`                                                  |
+| --------------------------------- | --------------------------------------------------------------- |
+| stdin                             | Renders as markdown                                             |
+| `TEXT` positional                 | Renders as markdown                                             |
+| `--file -`                        | Renders as markdown                                             |
+| `--file x.txt`                    | Renders as markdown                                             |
+| `--file x.md` / `.markdown`       | Redundant — already markdown, and accepted without comment      |
 | `--file x.png` / `.jpg` / `.jpeg` | Error: `--markdown does not apply to an image file (…)`, exit 1 |
-| `--url` | Usage error at parse time (clap conflict), exit 2 |
+| `--url`                           | Usage error at parse time (clap conflict), exit 2               |
 
 ```sh
 cat notes.md | printable print -m
@@ -301,38 +301,38 @@ printable print -m -f notes.txt
 
 Extension matching is case-insensitive. Anything else fails with `unsupported file type: … (expected .png, .jpg, .jpeg, .txt, .md or .markdown)` and exit 1.
 
-| Extension | Rendering |
-|---|---|
-| `.txt` | Plain text at `--size`, greedy word-wrap at 384 px |
-| `.md`, `.markdown` | Full markdown: headings, emphasis, lists, task lists, tables, code, blockquotes, rules, `qr`, `barcode` and `wagara` fences, images |
-| `.png`, `.jpg`, `.jpeg` | Scaled to 384 px wide, dithered with `--dither` |
+| Extension               | Rendering                                                                                                                           |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `.txt`                  | Plain text at `--size`, greedy word-wrap at 384 px                                                                                  |
+| `.md`, `.markdown`      | Full markdown: headings, emphasis, lists, task lists, tables, code, blockquotes, rules, `qr`, `barcode` and `wagara` fences, images |
+| `.png`, `.jpg`, `.jpeg` | Scaled to 384 px wide, dithered with `--dither`                                                                                     |
 
 A `--file` document's image references resolve against **that document's own directory**; both local paths and `http(s)` URLs are fetched. At most 32 references resolve per document, the whole pass gets 30 seconds, each fetch gets 15 seconds and 5 MB. Anything unresolved renders as an italic `[image: alt]` placeholder — a broken image never fails a print.
 
 ### Options
 
-| Flag | Type | Default | Range | Applies to |
-|---|---|---|---|---|
-| `--device <STR>` | string | saved, else first supported printer | — | All |
-| `--model <MODEL>` | enum | detect from the advertisement | `lx-d02` \| `x6`, case-insensitive | All |
-| `-f, --file <PATH>` | path | — | `-` means stdin | — |
-| `-m, --markdown` | flag | off | — | Text input and `.txt`; rejected for images and `--url` |
-| `--url <URL>` | string | — | `http://` or `https://` only | — |
-| `--density <N>` | integer | `3` | 1–7, enforced by the parser | All (maps to speed and energy on an X6 — see [Printer models](#printer-models)) |
-| `--feed <N>` | integer | `40` | ≥ 0, no upper bound | All |
-| `--dither <MODE>` | enum | `floyd` | `floyd`, `atkinson`, `threshold` (alias `none`) | Image files and `--url` only |
-| `--size <PX>` | float | `24` | > 0, finite, no upper bound | Plain text only (`TEXT`, stdin, `.txt`) |
-| `--preview <PATH>` | path | — | — | All |
-| `--copies <N>` | integer | `1` | 1–20, enforced by the parser | All |
+| Flag                | Type    | Default                             | Range                                           | Applies to                                                                      |
+| ------------------- | ------- | ----------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------- |
+| `--device <STR>`    | string  | saved, else first supported printer | —                                               | All                                                                             |
+| `--model <MODEL>`   | enum    | detect from the advertisement       | `lx-d02` \| `x6`, case-insensitive              | All                                                                             |
+| `-f, --file <PATH>` | path    | —                                   | `-` means stdin                                 | —                                                                               |
+| `-m, --markdown`    | flag    | off                                 | —                                               | Text input and `.txt`; rejected for images and `--url`                          |
+| `--url <URL>`       | string  | —                                   | `http://` or `https://` only                    | —                                                                               |
+| `--density <N>`     | integer | `3`                                 | 1–7, enforced by the parser                     | All (maps to speed and energy on an X6 — see [Printer models](#printer-models)) |
+| `--feed <N>`        | integer | `40`                                | ≥ 0, no upper bound                             | All                                                                             |
+| `--dither <MODE>`   | enum    | `floyd`                             | `floyd`, `atkinson`, `threshold` (alias `none`) | Image files and `--url` only                                                    |
+| `--size <PX>`       | float   | `24`                                | > 0, finite, no upper bound                     | Plain text only (`TEXT`, stdin, `.txt`)                                         |
+| `--preview <PATH>`  | path    | —                                   | —                                               | All                                                                             |
+| `--copies <N>`      | integer | `1`                                 | 1–20, enforced by the parser                    | All                                                                             |
 
 Out-of-range `--density` or `--copies`, and a non-positive `--size`, are usage errors: exit **2** before anything else runs.
 
 #### `--dither`
 
-| Mode | Behavior |
-|---|---|
-| `floyd` | Floyd–Steinberg error diffusion — the default, best for photos and gradients |
-| `atkinson` | Atkinson error diffusion — higher contrast, lighter mid-tones |
+| Mode                 | Behavior                                                                         |
+| -------------------- | -------------------------------------------------------------------------------- |
+| `floyd`              | Floyd–Steinberg error diffusion — the default, best for photos and gradients     |
+| `atkinson`           | Atkinson error diffusion — higher contrast, lighter mid-tones                    |
 | `threshold` / `none` | Plain threshold at 128, no diffusion — best for line art and screenshots of text |
 
 `--dither` affects `--file photo.png` and `--url` renders. It does **not** affect images embedded in a markdown document: those are always Floyd–Steinberg.
@@ -375,19 +375,19 @@ printable print "meow" --model x6                # restrict to the X6 family
 
 ### Failure modes
 
-| Message | Exit | Cause |
-|---|---|---|
-| `nothing to print` | 1 | Input is empty or whitespace only |
-| `cannot combine a text argument with --file` | 1 | Both given |
-| `--markdown does not apply to an image file (…)` | 1 | `-m` with `-f photo.png` |
-| `unsupported file type: …` | 1 | Extension is not one of the six |
-| `failed to open …` / `failed to read …` | 1 | Unreadable file |
-| `failed to decode image: …` | 1 | Not a valid PNG or JPEG |
-| `cannot print this job: print too large: …` | 1 | Over 65 535 raster packets (more than 131 070 rows). Note the server answers `400` for the same condition |
-| `no supported printer found. Is the printer on and in range?` | 2 | Nothing matched within the 10 s scan |
-| `found <name> but it did not respond — is the printer powered on?` | 2 | The device was there and connected, but never answered hello |
-| `printer is out of paper` | 3 | Pre-print check or a mid-job status frame |
-| `print failed: …` | 4 | Auth rejected, BLE write failed, the printer went silent, or the job stalled |
+| Message                                                            | Exit | Cause                                                                                                     |
+| ------------------------------------------------------------------ | ---- | --------------------------------------------------------------------------------------------------------- |
+| `nothing to print`                                                 | 1    | Input is empty or whitespace only                                                                         |
+| `cannot combine a text argument with --file`                       | 1    | Both given                                                                                                |
+| `--markdown does not apply to an image file (…)`                   | 1    | `-m` with `-f photo.png`                                                                                  |
+| `unsupported file type: …`                                         | 1    | Extension is not one of the six                                                                           |
+| `failed to open …` / `failed to read …`                            | 1    | Unreadable file                                                                                           |
+| `failed to decode image: …`                                        | 1    | Not a valid PNG or JPEG                                                                                   |
+| `cannot print this job: print too large: …`                        | 1    | Over 65 535 raster packets (more than 131 070 rows). Note the server answers `400` for the same condition |
+| `no supported printer found. Is the printer on and in range?`      | 2    | Nothing matched within the 10 s scan                                                                      |
+| `found <name> but it did not respond — is the printer powered on?` | 2    | The device was there and connected, but never answered hello                                              |
+| `printer is out of paper`                                          | 3    | Pre-print check or a mid-job status frame                                                                 |
+| `print failed: …`                                                  | 4    | Auth rejected, BLE write failed, the printer went silent, or the job stalled                              |
 
 ---
 
@@ -399,16 +399,16 @@ Print a QR code encoding a URL or arbitrary text, centered at the full 384 px wi
 printable qr <DATA> [OPTIONS]
 ```
 
-| Argument / Flag | Type | Default | Range |
-|---|---|---|---|
-| `<DATA>` | string | required | Anything a QR code can hold |
-| `--caption <TEXT>` | string | — | Rendered below the code at 24 px, left-aligned |
-| `--device <STR>` | string | saved, else first supported printer | — |
-| `--model <MODEL>` | enum | detect from the advertisement | `lx-d02` \| `x6`, case-insensitive |
-| `--density <N>` | integer | `3` | 1–7 (maps to speed and energy on an X6 — see [Printer models](#printer-models)) |
-| `--feed <N>` | integer | `40` | ≥ 0 |
-| `--preview <PATH>` | path | — | — |
-| `--copies <N>` | integer | `1` | 1–20 |
+| Argument / Flag    | Type    | Default                             | Range                                                                           |
+| ------------------ | ------- | ----------------------------------- | ------------------------------------------------------------------------------- |
+| `<DATA>`           | string  | required                            | Anything a QR code can hold                                                     |
+| `--caption <TEXT>` | string  | —                                   | Rendered below the code at 24 px, left-aligned                                  |
+| `--device <STR>`   | string  | saved, else first supported printer | —                                                                               |
+| `--model <MODEL>`  | enum    | detect from the advertisement       | `lx-d02` \| `x6`, case-insensitive                                              |
+| `--density <N>`    | integer | `3`                                 | 1–7 (maps to speed and energy on an X6 — see [Printer models](#printer-models)) |
+| `--feed <N>`       | integer | `40`                                | ≥ 0                                                                             |
+| `--preview <PATH>` | path    | —                                   | —                                                                               |
+| `--copies <N>`     | integer | `1`                                 | 1–20                                                                            |
 
 There is no `--size` and no `--dither`: the version and error-correction level are chosen automatically, and the code is scaled by the largest integer factor that fits 384 px including a 4-module quiet zone, with a 16 px white margin above and below.
 
@@ -441,13 +441,13 @@ Run the HTTP print server: REST API plus a phone-friendly web UI. Runs until int
 printable serve [OPTIONS]
 ```
 
-| Flag | Type | Default | Notes |
-|---|---|---|---|
-| `--port <PORT>` | integer | `8000` | 0–65535; `0` picks a free port |
-| `--bind <ADDR>` | string | `0.0.0.0` | `0.0.0.0` = every interface (LAN printing); `127.0.0.1` = this machine only |
-| `--device <STR>` | string | saved, else first supported printer | Pins the printer for every request |
-| `--model <MODEL>` | enum | detect from the advertisement | Pins the protocol family, like `--device`; no HTTP route takes a model |
-| `--no-remote-images` | flag | off | Never fetch `http(s)` images referenced by markdown |
+| Flag                 | Type    | Default                             | Notes                                                                       |
+| -------------------- | ------- | ----------------------------------- | --------------------------------------------------------------------------- |
+| `--port <PORT>`      | integer | `8000`                              | 0–65535; `0` picks a free port                                              |
+| `--bind <ADDR>`      | string  | `0.0.0.0`                           | `0.0.0.0` = every interface (LAN printing); `127.0.0.1` = this machine only |
+| `--device <STR>`     | string  | saved, else first supported printer | Pins the printer for every request                                          |
+| `--model <MODEL>`    | enum    | detect from the advertisement       | Pins the protocol family, like `--device`; no HTTP route takes a model      |
+| `--no-remote-images` | flag    | off                                 | Never fetch `http(s)` images referenced by markdown                         |
 
 ```console
 $ printable serve
@@ -575,11 +575,11 @@ curl -X POST http://192.168.1.42:8000/print/text \
 ### No printer found (exit 2)
 
 1. Power the printer on and check it is not already connected to a phone — BLE links are exclusive.
-2. `found <name> but it did not respond` is a *different* fault from nothing being found, even though both exit 2: the device is right there and connected, but nothing answered. On macOS that is almost always a printer that is switched off, because CoreBluetooth answers connect and discovery out of its cache. Turn it on. (That message is LX-D02 only — an off X6 "connects" successfully and fails later, as a print job that stalls in silence. Same fix: turn it on.)
+2. `found <name> but it did not respond` is a _different_ fault from nothing being found, even though both exit 2: the device is right there and connected, but nothing answered. On macOS that is almost always a printer that is switched off, because CoreBluetooth answers connect and discovery out of its cache. Turn it on. (That message is LX-D02 only — an off X6 "connects" successfully and fails later, as a print job that stalls in silence. Same fix: turn it on.)
 3. Run `printable scan --timeout 15`. If the printer appears there but commands still fail, pass its id: `printable print "x" --device <ID>`. If it never appears, `printable scan --all` lists every advertiser with its services — a cat-family printer is the row showing `0xAF30`.
 4. If `scan` finds nothing, confirm Bluetooth is on. `no Bluetooth adapter found — is Bluetooth turned on?` means the adapter itself is missing or disabled.
 5. Connect attempts scan for 10 seconds. A printer that advertises slowly may need a power cycle rather than a longer wait.
-6. **A stale saved device costs a full 10 seconds on every command.** The resolver takes an exact id match immediately, but a saved id that no longer exists never matches — so it collects ranked fallbacks (a device with the saved *name*, then any supported printer of the saved model) and only uses one when the scan deadline expires. Every command pays the whole 10 seconds even with the printer sitting right there under a new identifier. Delete the config file, or pass `--device`, to skip it. Run with `-vv` to see which candidate won.
+6. **A stale saved device costs a full 10 seconds on every command.** The resolver takes an exact id match immediately, but a saved id that no longer exists never matches — so it collects ranked fallbacks (a device with the saved _name_, then any supported printer of the saved model) and only uses one when the scan deadline expires. Every command pays the whole 10 seconds even with the printer sitting right there under a new identifier. Delete the config file, or pass `--device`, to skip it. Run with `-vv` to see which candidate won.
 
 ### Bluetooth permission denied
 
@@ -615,15 +615,15 @@ If Chrome is installed but the render fails, try the page in a normal browser fi
 
 ### Print stalls or dies mid-job
 
-| Symptom | Cause |
-|---|---|
-| `printer went silent (no BLE notification at all for 10s)` (exit 4) | Nothing arrived on the link for 10 seconds. Usually the link dropped — move closer, then retry. |
-| `printer stalled for … without resuming` (exit 4) | The printer is still sending frames but has taken no data for 60 seconds. When the job spent time paused for flow control, the message says so and suggests a lower `--density`; when it never paused at all, the head is not the problem and the message does not blame it. |
-| Job pauses, then resumes | Normal flow control. The printer asks for a hold when its buffer fills or the head is hot. Run with `-v` to watch the pauses and resumes as they happen. |
-| An X6 job goes silent right after connecting | The printer is probably switched off: the X6 has no liveness probe, so a cached connect succeeds against a dead printer and the job dies on the 10 s notification timeout instead. |
-| `printer is out of paper` (exit 3) | Checked before the job starts and again on every status frame during it. LX-D02 only — the X6 has no paper signal, so it prints into thin air until the job ends. |
-| `warning: printer battery is low` | Printing continues, but density drops on a flat battery. Charge it before a long job. |
-| Faint or streaky output | Raise `--density` (up to 7). Long dark jobs trigger thermal cooldown pauses. |
-| `cannot print this job: print too large` | Over 131 070 rows. Split the document. |
+| Symptom                                                             | Cause                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `printer went silent (no BLE notification at all for 10s)` (exit 4) | Nothing arrived on the link for 10 seconds. Usually the link dropped — move closer, then retry.                                                                                                                                                                              |
+| `printer stalled for … without resuming` (exit 4)                   | The printer is still sending frames but has taken no data for 60 seconds. When the job spent time paused for flow control, the message says so and suggests a lower `--density`; when it never paused at all, the head is not the problem and the message does not blame it. |
+| Job pauses, then resumes                                            | Normal flow control. The printer asks for a hold when its buffer fills or the head is hot. Run with `-v` to watch the pauses and resumes as they happen.                                                                                                                     |
+| An X6 job goes silent right after connecting                        | The printer is probably switched off: the X6 has no liveness probe, so a cached connect succeeds against a dead printer and the job dies on the 10 s notification timeout instead.                                                                                           |
+| `printer is out of paper` (exit 3)                                  | Checked before the job starts and again on every status frame during it. LX-D02 only — the X6 has no paper signal, so it prints into thin air until the job ends.                                                                                                            |
+| `warning: printer battery is low`                                   | Printing continues, but density drops on a flat battery. Charge it before a long job.                                                                                                                                                                                        |
+| Faint or streaky output                                             | Raise `--density` (up to 7). Long dark jobs trigger thermal cooldown pauses.                                                                                                                                                                                                 |
+| `cannot print this job: print too large`                            | Over 131 070 rows. Split the document.                                                                                                                                                                                                                                       |
 
 A failed job leaves the paper where it stopped; re-running reprints from the top.

@@ -9,16 +9,18 @@
 **Tech stack:** Rust 2021 workspace; no new dependencies anywhere (the 1bpp raw-scanline path needs no LZO). `printa-ble-core` stays sans-IO and WASM-clean.
 
 **Protocol ground truth (do not work from memory):**
+
 - <https://parzivail.github.io/ble-thermal-printer/> — X6h frame format, command table, raw scanlines, status notification.
 - <https://github.com/nazarovmi/tinyprint-x6h> — working Python implementation; CRC8 table (`encoding.py`), header layout (`protocol.py`), `X6h-`/`x6h-` name prefixes, 20-byte/4 ms write pacing.
 - Frame: `51 78 | cmd u8 | direction u8 (00 host→printer, 01 printer→host) | len LE u16 | payload | CRC8(payload only, poly 0x07, init 0) | FF`.
 - BLE: service `0xAE30`, write `0xAE01` (write-without-response), notify `0xAE02`.
 - Commands used here: `0xA1` feed paper (LE u16 pixels), `0xA2` raw 1bpp scanline (48-byte payload, **leftmost pixel = least-significant bit** — the inverse of our `Bitmap`'s MSB-first layout), `0xAE` device status notification (payload `0x10` = buffer full / stop, `0x00` = ready / resume).
 - The first scanline must be all zeroes (white) or the printer prints artifacts (parzivail; tinyprint prepends a blank line too).
-- **Known discrepancy for the future 4bpp phase (out of scope now):** parzivail says the 4bpp lower nibble is the leftmost column; tinyprint packs the first pixel into the *upper* nibble (`(p0 >> 4) << 4 | (p1 >> 4)`). Do not implement 4bpp from either source without hardware confirmation.
+- **Known discrepancy for the future 4bpp phase (out of scope now):** parzivail says the 4bpp lower nibble is the leftmost column; tinyprint packs the first pixel into the _upper_ nibble (`(p0 >> 4) << 4 | (p1 >> 4)`). Do not implement 4bpp from either source without hardware confirmation.
 - **Hardware-validation risk:** tinyprint validates the LZO `0xCF` path, parzivail validates raw `0xA2` on his unit. Ours is unproven on `0xA2` until the maintainer prints. If `0xA2` misprints on real hardware, the fallback is `0xCE` (LZO-compressed binary scanline), which needs an LZO crate — a separate decision, not part of this plan.
 
 **Rules that bind every task:**
+
 - Never modify files under `crates/printa-ble-core/src/protocol/` except the one doc-comment edit in Task 4.
 - `cargo fmt --all` before every commit. No AI attribution in commit messages.
 - Any task touching `printa-ble-core` or `printa-ble-web` must pass `cargo clippy -p printa-ble-web --target wasm32-unknown-unknown` before its commit.
@@ -29,6 +31,7 @@
 ### Task 1: X6 CRC8
 
 **Files:**
+
 - Create: `crates/printa-ble-core/src/protocol_x6/mod.rs`
 - Create: `crates/printa-ble-core/src/protocol_x6/crc.rs`
 - Modify: `crates/printa-ble-core/src/lib.rs`
@@ -137,6 +140,7 @@ git commit -m "Add X6 protocol module with CRC8"
 ### Task 2: X6 packet framing
 
 **Files:**
+
 - Create: `crates/printa-ble-core/src/protocol_x6/packets.rs`
 - Modify: `crates/printa-ble-core/src/protocol_x6/mod.rs` (add `pub mod packets;`)
 
@@ -263,6 +267,7 @@ git commit -m "Add X6 packet framing"
 ### Task 3: X6 notification parsing
 
 **Files:**
+
 - Create: `crates/printa-ble-core/src/protocol_x6/notifications.rs`
 - Modify: `crates/printa-ble-core/src/protocol_x6/mod.rs` (add `pub mod notifications;`)
 
@@ -357,6 +362,7 @@ pub fn parse(data: &[u8]) -> Option<X6Notification> {
 ### Task 4: X6 print job state machine
 
 **Files:**
+
 - Create: `crates/printa-ble-core/src/protocol_x6/job.rs`
 - Modify: `crates/printa-ble-core/src/protocol_x6/mod.rs` (add `pub mod job;`)
 - Modify: `crates/printa-ble-core/src/protocol/job.rs` — **doc comments only** (see step 3); no code changes.
@@ -620,6 +626,7 @@ Then edit **doc comments only** in `crates/printa-ble-core/src/protocol/job.rs` 
 ### Task 5: `PrinterModel` in core
 
 **Files:**
+
 - Create: `crates/printa-ble-core/src/model.rs`
 - Modify: `crates/printa-ble-core/src/lib.rs` (add `pub mod model;`)
 
@@ -753,6 +760,7 @@ impl FromStr for PrinterModel {
 The matcher currently hardcodes `LX*`. Replace name checks with `PrinterModel::from_device_name`, thread an optional model restriction through, and rename `Target::AnyLx` to `Target::AnySupported`.
 
 **Files:**
+
 - Modify: `crates/printa-ble/src/ble.rs` — the `Target` enum (~line 378), `match_target` (~line 400), `scan` (~line 423), and their tests at the bottom of the file.
 
 **Steps:**
@@ -768,6 +776,7 @@ The matcher currently hardcodes `LX*`. Replace name checks with `PrinterModel::f
 ### Task 7: Model-aware connect and X6 job pump in `ble.rs`
 
 **Files:**
+
 - Modify: `crates/printa-ble/src/ble.rs` — `initialize` (~line 577), the notification forwarder (~line 628), `Printer` struct (~line 481), `run_job`/`pump` (~lines 778–860), `connect_resolved`.
 
 **Design (follow exactly):**
@@ -791,6 +800,7 @@ The matcher currently hardcodes `LX*`. Replace name checks with `PrinterModel::f
 ### Task 8: Config remembers the model
 
 **Files:**
+
 - Modify: `crates/printa-ble/src/config.rs` — `SavedDevice`
 - Modify: `crates/printa-ble/src/print_service.rs` — `remember_device`
 
@@ -806,6 +816,7 @@ The matcher currently hardcodes `LX*`. Replace name checks with `PrinterModel::f
 ### Task 9: Model dispatch in `print_service.rs`
 
 **Files:**
+
 - Modify: `crates/printa-ble/src/print_service.rs`
 
 **Design (follow exactly):**
@@ -828,6 +839,7 @@ The matcher currently hardcodes `LX*`. Replace name checks with `PrinterModel::f
 ### Task 10: CLI and server `--model` flag
 
 **Files:**
+
 - Modify: `crates/printa-ble/src/cli.rs` — `DeviceArgs` (~line 177)
 - Modify: `crates/printa-ble/src/main.rs` — thread `model` into `print_service::print_bitmap` and `ble` calls (status, devices)
 - Modify: `crates/printa-ble/src/server.rs` — serve args/state (~lines 48, 201–265): add `model` to `ServeState`, pass through both connect paths
@@ -853,6 +865,7 @@ pub model: Option<PrinterModel>,
 ### Task 11: Web Bluetooth support
 
 **Files:**
+
 - Create: `crates/printa-ble-web/src/x6job.rs`
 - Modify: `crates/printa-ble-web/src/lib.rs` (add `pub mod x6job;` and re-export)
 - Modify: `web/app.js` (~line 14 `SERVICE`, ~line 204 `requestDevice`, connect/drive path)
@@ -866,20 +879,23 @@ pub model: Option<PrinterModel>,
 
 ```js
 const device = await navigator.bluetooth.requestDevice({
-  filters: [{ namePrefix: 'LX' }, { namePrefix: 'X6h-' }, { namePrefix: 'x6h-' }],
+  filters: [
+    { namePrefix: "LX" },
+    { namePrefix: "X6h-" },
+    { namePrefix: "x6h-" },
+  ],
   optionalServices: [LX_SERVICE, X6_SERVICE],
 });
 ```
 
-then probe: `try { svc = await server.getPrimaryService(LX_SERVICE); model = 'lx'; } catch { svc = await server.getPrimaryService(X6_SERVICE); model = 'x6'; }` — the exposed service *is* the model detection. Select write/notify characteristics and job constructor (`WasmJob` with `crypto.getRandomValues(new Uint8Array(10))` vs `WasmX6Job`) off `model`. The drive loop is shared and unchanged.
-5. Verify: `cargo test -p printa-ble-web` (native tests), `cargo clippy -p printa-ble-web --target wasm32-unknown-unknown`, and `scripts/build-web.sh` builds. Browser check is manual (needs Chrome + printer) — not claimed in the commit.
-6. fmt; clippy; commit: `Add X6 support to the web app`.
+then probe: `try { svc = await server.getPrimaryService(LX_SERVICE); model = 'lx'; } catch { svc = await server.getPrimaryService(X6_SERVICE); model = 'x6'; }` — the exposed service _is_ the model detection. Select write/notify characteristics and job constructor (`WasmJob` with `crypto.getRandomValues(new Uint8Array(10))` vs `WasmX6Job`) off `model`. The drive loop is shared and unchanged. 5. Verify: `cargo test -p printa-ble-web` (native tests), `cargo clippy -p printa-ble-web --target wasm32-unknown-unknown`, and `scripts/build-web.sh` builds. Browser check is manual (needs Chrome + printer) — not claimed in the commit. 6. fmt; clippy; commit: `Add X6 support to the web app`.
 
 ---
 
 ### Task 12: Documentation
 
 **Files:**
+
 - Modify: `docs/PROTOCOL.md` — new "X6 / X6h family" section: BLE UUIDs, frame layout, the command subset used, status notification, bit order, blank lead row, the no-liveness-probe caveat, the 4bpp nibble-order discrepancy, links to both sources.
 - Modify: `docs/CLI.md`, `docs/API.md` — `--model` flag, model column in `devices` output, X6 notes (density ignored, no paper detection).
 - Modify: `README.md` — supported printers list; note X6 support is new and which parts are hardware-validated (fill honestly at the time of writing).

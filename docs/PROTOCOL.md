@@ -16,21 +16,21 @@ disagree — or where a field's meaning is simply unknown — this document says
 **Authority for this document.** Every byte value, offset, and behavior below was
 checked against the implementation in this repository:
 
-| Area | Source |
-|---|---|
-| CRC | `crates/printa-ble-core/src/protocol/crc.rs` |
-| Auth | `crates/printa-ble-core/src/protocol/auth.rs` |
-| Host → printer packets | `crates/printa-ble-core/src/protocol/packets.rs` |
-| Printer → host frames | `crates/printa-ble-core/src/protocol/notifications.rs` |
-| Session state machine | `crates/printa-ble-core/src/protocol/job.rs` |
-| Bitmap packing | `crates/printa-ble-core/src/raster/bitmap.rs` |
-| X6 CRC8 | `crates/printa-ble-core/src/protocol_x6/crc.rs` |
-| X6 framing | `crates/printa-ble-core/src/protocol_x6/packets.rs` |
-| X6 printer → host frames | `crates/printa-ble-core/src/protocol_x6/notifications.rs` |
-| X6 session state machine | `crates/printa-ble-core/src/protocol_x6/job.rs` |
-| Model facts (UUIDs, name prefixes) | `crates/printa-ble-core/src/model.rs` |
-| BLE transport (native) | `crates/printa-ble/src/ble.rs` |
-| BLE transport (browser) | `web/app.js` |
+| Area                               | Source                                                    |
+| ---------------------------------- | --------------------------------------------------------- |
+| CRC                                | `crates/printa-ble-core/src/protocol/crc.rs`              |
+| Auth                               | `crates/printa-ble-core/src/protocol/auth.rs`             |
+| Host → printer packets             | `crates/printa-ble-core/src/protocol/packets.rs`          |
+| Printer → host frames              | `crates/printa-ble-core/src/protocol/notifications.rs`    |
+| Session state machine              | `crates/printa-ble-core/src/protocol/job.rs`              |
+| Bitmap packing                     | `crates/printa-ble-core/src/raster/bitmap.rs`             |
+| X6 CRC8                            | `crates/printa-ble-core/src/protocol_x6/crc.rs`           |
+| X6 framing                         | `crates/printa-ble-core/src/protocol_x6/packets.rs`       |
+| X6 printer → host frames           | `crates/printa-ble-core/src/protocol_x6/notifications.rs` |
+| X6 session state machine           | `crates/printa-ble-core/src/protocol_x6/job.rs`           |
+| Model facts (UUIDs, name prefixes) | `crates/printa-ble-core/src/model.rs`                     |
+| BLE transport (native)             | `crates/printa-ble/src/ble.rs`                            |
+| BLE transport (browser)            | `web/app.js`                                              |
 
 Claims about the three reference projects (rusq, ValdikSS, paradon) are **not**
 verifiable from this repository — their source is not vendored here. Those claims
@@ -43,18 +43,18 @@ and the phase 1 plan) and are labelled as secondhand where they matter.
 
 ### Devices
 
-| Property | Value | Confidence |
-|---|---|---|
-| Models | LX-D02, LX-D2 | Confirmed — this is what the project targets and tests against |
-| Vendor | Shenzhen Xiqi Technology | Reported; not verified from firmware |
-| Official app | "FunnyPrint" (iOS/Android) | Reported |
-| Advertised BLE name | starts with `LX` | Confirmed — the only discovery signal this project uses |
-| Print head width | 384 dots | Confirmed (`raster/bitmap.rs`: `WIDTH = 384`) |
-| Resolution | 203 dpi (8 dots/mm) | Reported; consistent with 384 dots ≈ 48 mm |
-| Paper | 58 mm stock, ~48 mm printable | Reported |
-| Colors | 1 bit, black on thermal paper | Confirmed |
+| Property            | Value                         | Confidence                                                     |
+| ------------------- | ----------------------------- | -------------------------------------------------------------- |
+| Models              | LX-D02, LX-D2                 | Confirmed — this is what the project targets and tests against |
+| Vendor              | Shenzhen Xiqi Technology      | Reported; not verified from firmware                           |
+| Official app        | "FunnyPrint" (iOS/Android)    | Reported                                                       |
+| Advertised BLE name | starts with `LX`              | Confirmed — the only discovery signal this project uses        |
+| Print head width    | 384 dots                      | Confirmed (`raster/bitmap.rs`: `WIDTH = 384`)                  |
+| Resolution          | 203 dpi (8 dots/mm)           | Reported; consistent with 384 dots ≈ 48 mm                     |
+| Paper               | 58 mm stock, ~48 mm printable | Reported                                                       |
+| Colors              | 1 bit, black on thermal paper | Confirmed                                                      |
 
-Other printers sold under the same app, or other `LX*` names, *probably* speak the
+Other printers sold under the same app, or other `LX*` names, _probably_ speak the
 same protocol, but this is an assumption. The only hard discovery test in this
 project is the advertised name prefix plus the presence of characteristics `0xFFE1`
 and `0xFFE2`.
@@ -70,7 +70,7 @@ handshake, and uncompressed raster. Cat-printer software cannot drive an LX-D02,
 and this protocol cannot drive a cat printer. Do not mix the two bodies of
 documentation.
 
-This project *does* also drive one member of that family — the X6 / X6h — but
+This project _does_ also drive one member of that family — the X6 / X6h — but
 through a completely separate protocol module (`protocol_x6/`), documented in
 §11. Nothing in sections 2–10 applies to it.
 
@@ -80,11 +80,11 @@ through a completely separate protocol module (`protocol_x6/`), documented in
 
 ### GATT profile
 
-| Role | 16-bit UUID | Full 128-bit UUID | Properties used |
-|---|---|---|---|
-| Service | `0xFFE6` | `0000ffe6-0000-1000-8000-00805f9b34fb` | primary service |
-| Write (host → printer) | `0xFFE1` | `0000ffe1-0000-1000-8000-00805f9b34fb` | **write without response** |
-| Notify (printer → host) | `0xFFE2` | `0000ffe2-0000-1000-8000-00805f9b34fb` | notify (subscribe via CCCD) |
+| Role                    | 16-bit UUID | Full 128-bit UUID                      | Properties used             |
+| ----------------------- | ----------- | -------------------------------------- | --------------------------- |
+| Service                 | `0xFFE6`    | `0000ffe6-0000-1000-8000-00805f9b34fb` | primary service             |
+| Write (host → printer)  | `0xFFE1`    | `0000ffe1-0000-1000-8000-00805f9b34fb` | **write without response**  |
+| Notify (printer → host) | `0xFFE2`    | `0000ffe2-0000-1000-8000-00805f9b34fb` | notify (subscribe via CCCD) |
 
 The 128-bit forms are the standard Bluetooth SIG base-UUID expansion
 (`0000XXXX-0000-1000-8000-00805f9b34fb`).
@@ -102,12 +102,12 @@ The LX-D02 uses the same style of module with the service shifted to `0xFFE6`. T
 consequences:
 
 1. **There is no distinctive service UUID in the LX advertisement.** You cannot
-   filter on the service to find *these* printers — unlike the cat family, which
+   filter on the service to find _these_ printers — unlike the cat family, which
    is found by exactly that (§11). Discovery is by advertised local name prefix
    `LX`, then confirm by discovering `0xFFE1` and `0xFFE2` after connecting.
    `web/app.js` requests `filters: [{ namePrefix: "LX" }, { namePrefix: "X6h-" },
-   { namePrefix: "x6h-" }, { namePrefix: "SC05-" }, { services: [0xaf30] },
-   { services: [0xae30] }], optionalServices: [0xffe6, 0xae30]` — the `LX` name
+{ namePrefix: "x6h-" }, { namePrefix: "SC05-" }, { services: [0xaf30] },
+{ services: [0xae30] }], optionalServices: [0xffe6, 0xae30]` — the `LX` name
    prefix is the only filter that can catch an LX, the rest being all
    cat-family; `ble.rs` scans without a filter and matches
    `name.starts_with("LX")`.
@@ -121,8 +121,8 @@ Neither `ble.rs` nor `web/app.js` requests an MTU explicitly — CoreBluetooth a
 Chrome negotiate a large MTU automatically and the printer accepts the writes. On
 stacks where you control the MTU (BlueZ raw sockets, some embedded stacks) you will
 need to negotiate MTU ≥ 103 before streaming, or the raster packet will be
-fragmented and — most likely — rejected. *This is an inference from packet size, not
-an observed failure.*
+fragmented and — most likely — rejected. _This is an inference from packet size, not
+an observed failure._
 
 ### The macOS wrinkle: no MAC address from the OS
 
@@ -168,16 +168,16 @@ command byte disambiguates; the receiver is expected to know each command's leng
 
 Exactly **100 bytes**, always. Host → printer only.
 
-| Offset | Size | Field |
-|---|---|---|
-| 0 | 1 | `0x55` magic |
-| 1..3 | 2 | packet index, **big-endian**, starting at 0 |
-| 3..99 | 96 | two print lines of 48 bytes each (§8) |
-| 99 | 1 | `0x00` |
+| Offset | Size | Field                                       |
+| ------ | ---- | ------------------------------------------- |
+| 0      | 1    | `0x55` magic                                |
+| 1..3   | 2    | packet index, **big-endian**, starting at 0 |
+| 3..99  | 96   | two print lines of 48 bytes each (§8)       |
+| 99     | 1    | `0x00`                                      |
 
 The trailing `0x00` is constant. It is emitted by `packets::raster()` and asserted
-in that module's tests. Its purpose is unknown — it is *not* a checksum (a checksum
-would vary with the payload) and it is *not* a length. Treat it as required
+in that module's tests. Its purpose is unknown — it is _not_ a checksum (a checksum
+would vary with the payload) and it is _not_ a length. Treat it as required
 padding/terminator and always send `0x00`.
 
 Note the deliberate asymmetry: control packets start with `0x5A`, raster packets
@@ -190,15 +190,15 @@ with `0x55`. A receiver distinguishes them on the first byte alone.
 All of these are written to `0xFFE1` without response. Byte values below are exact;
 they are produced by `protocol/packets.rs` and pinned by that module's unit tests.
 
-| Command | Opcode | Length | Bytes | When sent |
-|---|---|---|---|---|
-| Hello | `5A 01` | 12 | `5A 01 00 00 00 00 00 00 00 00 00 00` | First packet after subscribing to `0xFFE2` |
-| Auth challenge | `5A 0A` | 12 | `5A 0A` + 10 challenge bytes | After the hello reply arrives |
-| Auth response | `5A 0B` | 12 | `5A 0B` + 10 response bytes | After the `5A 0A` reply arrives |
-| Set density | `5A 0C` | 3 | `5A 0C <level>` | After auth succeeds, before print start |
-| Print start | `5A 04` | 6 | `5A 04 <count:u16be> 00 00` | Immediately after density |
-| Raster | `55` | 100 | `55 <index:u16be> <96B> 00` | Streamed after print start |
-| Print end | `5A 04` | 6 | `5A 04 <count:u16be> 01 00` | After the `5A 06` finished notification |
+| Command        | Opcode  | Length | Bytes                                 | When sent                                  |
+| -------------- | ------- | ------ | ------------------------------------- | ------------------------------------------ |
+| Hello          | `5A 01` | 12     | `5A 01 00 00 00 00 00 00 00 00 00 00` | First packet after subscribing to `0xFFE2` |
+| Auth challenge | `5A 0A` | 12     | `5A 0A` + 10 challenge bytes          | After the hello reply arrives              |
+| Auth response  | `5A 0B` | 12     | `5A 0B` + 10 response bytes           | After the `5A 0A` reply arrives            |
+| Set density    | `5A 0C` | 3      | `5A 0C <level>`                       | After auth succeeds, before print start    |
+| Print start    | `5A 04` | 6      | `5A 04 <count:u16be> 00 00`           | Immediately after density                  |
+| Raster         | `55`    | 100    | `55 <index:u16be> <96B> 00`           | Streamed after print start                 |
+| Print end      | `5A 04` | 6      | `5A 04 <count:u16be> 01 00`           | After the `5A 06` finished notification    |
 
 ### Hello — `5A 01`
 
@@ -244,7 +244,7 @@ hardware that is off.
 5A 0A <c0> <c1> <c2> <c3> <c4> <c5> <c6> <c7> <c8> <c9>
 ```
 
-Ten bytes of host-chosen randomness. See §6 — the *host* issues the challenge and
+Ten bytes of host-chosen randomness. See §6 — the _host_ issues the challenge and
 then answers it itself; the printer only judges the answer.
 
 ### Auth response — `5A 0B`
@@ -312,29 +312,29 @@ A frame shorter than 2 bytes, or not starting with `0x5A`, is not a valid
 notification. Unrecognized opcodes should be ignored, not treated as errors — the
 firmware may emit frames this project has never seen.
 
-| Opcode | Min length | Meaning |
-|---|---|---|
-| `5A 01` | 10 | Hello reply, carries MAC |
-| `5A 02` | 5 | Status (unsolicited, periodic) |
-| `5A 05` | 4 | Lost packet — resend from index − 1 |
-| `5A 06` | 4 | Print finished |
-| `5A 07` | 2 | Cooldown — back off |
-| `5A 08` | 2 | Hold — pause streaming |
-| `5A 0A` | 2 | Challenge reply (payload is garbage) |
-| `5A 0B` | 3 | Auth result |
+| Opcode  | Min length | Meaning                              |
+| ------- | ---------- | ------------------------------------ |
+| `5A 01` | 10         | Hello reply, carries MAC             |
+| `5A 02` | 5          | Status (unsolicited, periodic)       |
+| `5A 05` | 4          | Lost packet — resend from index − 1  |
+| `5A 06` | 4          | Print finished                       |
+| `5A 07` | 2          | Cooldown — back off                  |
+| `5A 08` | 2          | Hold — pause streaming               |
+| `5A 0A` | 2          | Challenge reply (payload is garbage) |
+| `5A 0B` | 3          | Auth result                          |
 
 ### `5A 01` — hello reply
 
 Minimum 10 bytes. The frames this project has captured and pinned in its tests are
 12 bytes.
 
-| Offset | Size | Field |
-|---|---|---|
-| 0 | 1 | `0x5A` |
-| 1 | 1 | `0x01` |
-| 2..4 | 2 | unknown — ignored by this implementation |
-| **4..10** | **6** | **printer MAC address, in order** |
-| 10..12 | 2 | unknown (present in observed frames), ignored |
+| Offset    | Size  | Field                                         |
+| --------- | ----- | --------------------------------------------- |
+| 0         | 1     | `0x5A`                                        |
+| 1         | 1     | `0x01`                                        |
+| 2..4      | 2     | unknown — ignored by this implementation      |
+| **4..10** | **6** | **printer MAC address, in order**             |
+| 10..12    | 2     | unknown (present in observed frames), ignored |
 
 Example (from the parser's unit test):
 
@@ -355,16 +355,16 @@ Unsolicited. The printer starts emitting these on its own once you subscribe to
 connect, subscribe, and wait. This project waits up to 3–5 seconds for the first
 frame and treats a timeout as "unknown", not as an error.
 
-| Offset | Size | Field | Interpretation |
-|---|---|---|---|
-| 0..2 | 2 | `5A 02` | — |
-| 2 | 1 | battery | percentage, 0–100 |
-| 3 | 1 | paper | `!= 0` → **out of paper** (note the inverted sense) |
-| 4 | 1 | charge state | `1` → charging, `2` → fully charged, other → neither |
-| 5 | 1 | overheat | `!= 0` → print head overheating (**optional**) |
-| 6 | 1 | low battery | `!= 0` → low battery warning (**optional**) |
-| 7 | 1 | density | current darkness setting (**optional**) |
-| 8..10 | 2 | voltage | millivolts, **big-endian** (**optional**) |
+| Offset | Size | Field        | Interpretation                                       |
+| ------ | ---- | ------------ | ---------------------------------------------------- |
+| 0..2   | 2    | `5A 02`      | —                                                    |
+| 2      | 1    | battery      | percentage, 0–100                                    |
+| 3      | 1    | paper        | `!= 0` → **out of paper** (note the inverted sense)  |
+| 4      | 1    | charge state | `1` → charging, `2` → fully charged, other → neither |
+| 5      | 1    | overheat     | `!= 0` → print head overheating (**optional**)       |
+| 6      | 1    | low battery  | `!= 0` → low battery warning (**optional**)          |
+| 7      | 1    | density      | current darkness setting (**optional**)              |
+| 8..10  | 2    | voltage      | millivolts, **big-endian** (**optional**)            |
 
 "Optional" means literally that the frame may be shorter. The parser requires ≥ 5
 bytes (through the charge-state byte) and then reads bytes 5, 6, 7, and 8..10 only if
@@ -397,7 +397,7 @@ else unknown.
 ```
 
 Minimum 4 bytes. `index` is a big-endian raster packet index. The printer is telling
-you it is missing data at that index. See §7 for the resend rule — which is *not* "resend
+you it is missing data at that index. See §7 for the resend rule — which is _not_ "resend
 that index".
 
 This frame doubles as the resume signal after a `5A 08` hold.
@@ -458,10 +458,10 @@ carries no data.
 
 Minimum 3 bytes.
 
-| `result` | Meaning |
-|---|---|
-| `0x01` | authenticated |
-| anything else | rejected |
+| `result`      | Meaning       |
+| ------------- | ------------- |
+| `0x01`        | authenticated |
+| anything else | rejected      |
 
 The parser treats only `0x01` as success. Rejection is fatal: no further command in
 the session will be honored, and this implementation aborts the job with
@@ -526,14 +526,14 @@ discarded.
 
 ### CRC16-XMODEM parameters
 
-| Parameter | Value |
-|---|---|
-| Width | 16 bits |
-| Polynomial | `0x1021` |
-| Initial value | `0x0000` |
-| Input reflected | no |
-| Output reflected | no |
-| XOR out | `0x0000` |
+| Parameter             | Value    |
+| --------------------- | -------- |
+| Width                 | 16 bits  |
+| Polynomial            | `0x1021` |
+| Initial value         | `0x0000` |
+| Input reflected       | no       |
+| Output reflected      | no       |
+| XOR out               | `0x0000` |
 | Check (`"123456789"`) | `0x31C3` |
 
 This is the standard CRC-16/XMODEM (a.k.a. CRC-16/ACORN, CRC-16/LTE, CRC-16/V-41-MSB).
@@ -563,18 +563,18 @@ MAC       = 11 22 33 44 55 66
 challenge = 5E 2A 00 FF 91 0C 7D 42 B3 08
 ```
 
-| i | 7-byte CRC input | CRC16-XMODEM | high byte → `response[i]` |
-|---|---|---|---|
-| 0 | `5E 11 22 33 44 55 66` | `0x407E` | `0x40` |
-| 1 | `2A 11 22 33 44 55 66` | `0x05D9` | `0x05` |
-| 2 | `00 11 22 33 44 55 66` | `0x9861` | `0x98` |
-| 3 | `FF 11 22 33 44 55 66` | `0x3D10` | `0x3D` |
-| 4 | `91 11 22 33 44 55 66` | `0xBC82` | `0xBC` |
-| 5 | `0C 11 22 33 44 55 66` | `0xCA0A` | `0xCA` |
-| 6 | `7D 11 22 33 44 55 66` | `0xF60A` | `0xF6` |
-| 7 | `42 11 22 33 44 55 66` | `0x256E` | `0x25` |
-| 8 | `B3 11 22 33 44 55 66` | `0xB297` | `0xB2` |
-| 9 | `08 11 22 33 44 55 66` | `0x0BCC` | `0x0B` |
+| i   | 7-byte CRC input       | CRC16-XMODEM | high byte → `response[i]` |
+| --- | ---------------------- | ------------ | ------------------------- |
+| 0   | `5E 11 22 33 44 55 66` | `0x407E`     | `0x40`                    |
+| 1   | `2A 11 22 33 44 55 66` | `0x05D9`     | `0x05`                    |
+| 2   | `00 11 22 33 44 55 66` | `0x9861`     | `0x98`                    |
+| 3   | `FF 11 22 33 44 55 66` | `0x3D10`     | `0x3D`                    |
+| 4   | `91 11 22 33 44 55 66` | `0xBC82`     | `0xBC`                    |
+| 5   | `0C 11 22 33 44 55 66` | `0xCA0A`     | `0xCA`                    |
+| 6   | `7D 11 22 33 44 55 66` | `0xF60A`     | `0xF6`                    |
+| 7   | `42 11 22 33 44 55 66` | `0x256E`     | `0x25`                    |
+| 8   | `B3 11 22 33 44 55 66` | `0xB297`     | `0xB2`                    |
+| 9   | `08 11 22 33 44 55 66` | `0x0BCC`     | `0x0B`                    |
 
 Resulting packets on the wire:
 
@@ -728,14 +728,14 @@ This off-by-one is deliberate and load-bearing. This project's notes attribute t
 convention to observed behavior of the official app, transcribed from rusq's
 `fsm.go`; `job.rs` carries the comment "the convention observed in the official app
 (per rusq fsm.go)" and two unit tests pin it. **The underlying reason is not known.**
-The plausible reading is that the printer reports the index it is *waiting for* while
+The plausible reading is that the printer reports the index it is _waiting for_ while
 having also discarded the one before it, or that the index is off by one relative to
 what the host counts. Either way:
 
 - Resending one packet too many is harmless — the raster packet carries its own
-  index, so the printer can place or discard it idempotently. *(Inference: the
+  index, so the printer can place or discard it idempotently. _(Inference: the
   protocol's use of explicit indices only makes sense if repeats are idempotent. Not
-  directly verified.)*
+  directly verified.)_
 - Resending one too few strands the printer waiting forever.
 
 So if you deviate, deviate toward rewinding further, never less.
@@ -754,11 +754,11 @@ states. Send print end and stop, even if you believe packets are outstanding.
 
 ### Inter-packet delay: the implementations disagree
 
-| Implementation | Delay between raster writes |
-|---|---|
-| **printa-ble (this project)** | **15 ms** (`INTER_PACKET_DELAY_MS` in `print_service.rs` and `printa-ble-web/src/job.rs`) |
-| rusq/thermoprint | 7 ms (secondhand, from this project's notes) |
-| ValdikSS/printer-driver-funnyprint | 20 ms (secondhand, from this project's notes) |
+| Implementation                     | Delay between raster writes                                                               |
+| ---------------------------------- | ----------------------------------------------------------------------------------------- |
+| **printa-ble (this project)**      | **15 ms** (`INTER_PACKET_DELAY_MS` in `print_service.rs` and `printa-ble-web/src/job.rs`) |
+| rusq/thermoprint                   | 7 ms (secondhand, from this project's notes)                                              |
+| ValdikSS/printer-driver-funnyprint | 20 ms (secondhand, from this project's notes)                                             |
 
 15 ms was chosen as a midpoint between the two references rather than derived from
 measurement. This is a genuine open question: nobody has published a principled
@@ -768,7 +768,7 @@ resend requests; if your flow-control handling is correct, an aggressive delay
 degrades throughput rather than breaking the print. Start at 15 ms, implement flow
 control properly, and tune from there.
 
-The delay is applied *between* raster packets only — not after the last one, and not
+The delay is applied _between_ raster packets only — not after the last one, and not
 between control packets.
 
 ### Multiple copies
@@ -784,16 +784,16 @@ shortcut exists (re-issuing only `5A 04 … 00 00` for a second copy) is **untes
 
 Nothing is compressed. Nothing is packed cleverly. The wire carries the framebuffer.
 
-| Property | Value |
-|---|---|
-| Width | 384 pixels, fixed |
-| Bits per pixel | 1 |
-| Bit order within a byte | **MSB first** — bit 7 is the leftmost pixel |
-| Bit sense | **1 = black** (burn), 0 = white (no burn) |
-| Bytes per print line | 48 (`384 / 8`) |
-| Print lines per raster packet | 2 |
-| Bitmap bytes per raster packet | 96 |
-| Compression | none |
+| Property                       | Value                                       |
+| ------------------------------ | ------------------------------------------- |
+| Width                          | 384 pixels, fixed                           |
+| Bits per pixel                 | 1                                           |
+| Bit order within a byte        | **MSB first** — bit 7 is the leftmost pixel |
+| Bit sense                      | **1 = black** (burn), 0 = white (no burn)   |
+| Bytes per print line           | 48 (`384 / 8`)                              |
+| Print lines per raster packet  | 2                                           |
+| Bitmap bytes per raster packet | 96                                          |
+| Compression                    | none                                        |
 
 Pixel `(x, y)` lives in row byte `x / 8`, at mask `0x80 >> (x % 8)`
 (`raster/bitmap.rs`). So pixel x = 0 is bit `0x80` of byte 0, and pixel x = 383 is bit
@@ -834,12 +834,12 @@ entirely zeros.
 
 ## 9. Limits and quirks
 
-| Limit | Value | Where enforced |
-|---|---|---|
-| Max raster packets | **65 535** (`u16::MAX`) | `PrintJob::new` returns `JobError::TooLarge` beyond it |
-| Max print lines per job | **131 070** (65 535 × 2) | consequence of the above |
-| Density range | **1–7** | CLI/server/WASM layers, *not* the protocol layer |
-| Copies (this project) | 1–20 | CLI and server validation; not a protocol limit |
+| Limit                     | Value                       | Where enforced                                                        |
+| ------------------------- | --------------------------- | --------------------------------------------------------------------- |
+| Max raster packets        | **65 535** (`u16::MAX`)     | `PrintJob::new` returns `JobError::TooLarge` beyond it                |
+| Max print lines per job   | **131 070** (65 535 × 2)    | consequence of the above                                              |
+| Density range             | **1–7**                     | CLI/server/WASM layers, _not_ the protocol layer                      |
+| Copies (this project)     | 1–20                        | CLI and server validation; not a protocol limit                       |
 | Rendered image height cap | 4096 rows (~0.5 m of paper) | `raster/dither.rs`, a rendering-pipeline choice, not a protocol limit |
 
 **The 65 535-packet ceiling is a real protocol limit**, not an arbitrary one: both the
@@ -852,7 +852,7 @@ must check rather than let the index wrap.
 keeps emitting `5A 02` status frames throughout a job, and the paper flag (byte 3)
 turns non-zero when paper runs out. This project polls those frames on the streaming
 fast path and aborts the job as soon as one reports no paper
-(`check_paper` in `ble.rs`). What the *printer* does — whether it holds the job,
+(`check_paper` in `ble.rs`). What the _printer_ does — whether it holds the job,
 discards it, or resumes on paper insert — is **unknown**. Do a pre-print status check
 too: this project refuses to start when the first status frame reports no paper.
 
@@ -862,7 +862,7 @@ the status bit warns the user, the `5A 07` frame throttles the stream.
 
 **No error frames.** There is no generic NAK, error code, or "bad command" response.
 A malformed or unsupported command produces silence. Debug by observing which
-notification *fails* to arrive.
+notification _fails_ to arrive.
 
 **No checksums.** Apart from the auth CRC, nothing on the wire is protected. Integrity
 rests entirely on BLE's own link-layer CRC plus the printer's index-based
@@ -871,13 +871,13 @@ retransmission requests.
 **Timeouts.** None of this project's deadlines come from the protocol; all are
 pragmatic. The native transport (`ble.rs`) uses:
 
-| Constant | Value | Bounds |
-|---|---|---|
-| `CONNECT_TIMEOUT` | 15 s | Link establishment — CoreBluetooth's own connect never gives up |
-| `HELLO_TIMEOUT` | 4 s | The `5A 01` liveness reply (§4) |
-| `NOTIFICATION_TIMEOUT` | 10 s | Any frame at all, mid-job |
-| `STALL_TIMEOUT` | 60 s | Forward progress, mid-job |
-| `DISCONNECT_TIMEOUT` | 3 s | Best-effort teardown |
+| Constant               | Value | Bounds                                                          |
+| ---------------------- | ----- | --------------------------------------------------------------- |
+| `CONNECT_TIMEOUT`      | 15 s  | Link establishment — CoreBluetooth's own connect never gives up |
+| `HELLO_TIMEOUT`        | 4 s   | The `5A 01` liveness reply (§4)                                 |
+| `NOTIFICATION_TIMEOUT` | 10 s  | Any frame at all, mid-job                                       |
+| `STALL_TIMEOUT`        | 60 s  | Forward progress, mid-job                                       |
+| `DISCONNECT_TIMEOUT`   | 3 s   | Best-effort teardown                                            |
 
 The browser page uses a single 10-second watchdog (`WATCHDOG_MS` in `web/app.js`),
 the equivalent of `NOTIFICATION_TIMEOUT`.
@@ -901,12 +901,12 @@ starting over from hello.
 Four prior projects. Each solved part of this, and none published a complete spec —
 which is why this document exists.
 
-| Project | Language | Contribution |
-|---|---|---|
-| [rusq/thermoprint](https://github.com/rusq/thermoprint) | Go | The first public reverse-engineering of the framing and the print-job **state machine** (`fsm.go`) — including the lost-packet "rewind to index − 1" convention this document inherits. Also shipped AirPrint integration. Its auth is a **hardcoded captured response**, valid only for the author's unit (secondhand claim; see §6). |
-| [ValdikSS/printer-driver-funnyprint](https://github.com/ValdikSS/printer-driver-funnyprint) | Python / CUPS | The **best prior protocol documentation** — packet layouts, the status frame fields, the observation that the `5A 0A` reply payload is uninitialized garbage, and the **analysis of the auth weakness** (per-byte independence, so an all-zero challenge with one repeated CRC authenticates). A working CUPS raster driver. |
-| [paradon/lxprint](https://github.com/paradon/lxprint) | TypeScript / Web Bluetooth | The **correct, general auth implementation**: real random challenge, per-byte CRC16-XMODEM over `[challenge[i]] + MAC`, high byte transmitted. This is the version reimplemented here. Demonstrated that the protocol works from a browser with no native driver. |
-| [joaquimorg/lxprint](https://github.com/joaquimorg/lxprint) | Vue | A fork of paradon's work with a fuller UI. |
+| Project                                                                                     | Language                   | Contribution                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [rusq/thermoprint](https://github.com/rusq/thermoprint)                                     | Go                         | The first public reverse-engineering of the framing and the print-job **state machine** (`fsm.go`) — including the lost-packet "rewind to index − 1" convention this document inherits. Also shipped AirPrint integration. Its auth is a **hardcoded captured response**, valid only for the author's unit (secondhand claim; see §6). |
+| [ValdikSS/printer-driver-funnyprint](https://github.com/ValdikSS/printer-driver-funnyprint) | Python / CUPS              | The **best prior protocol documentation** — packet layouts, the status frame fields, the observation that the `5A 0A` reply payload is uninitialized garbage, and the **analysis of the auth weakness** (per-byte independence, so an all-zero challenge with one repeated CRC authenticates). A working CUPS raster driver.           |
+| [paradon/lxprint](https://github.com/paradon/lxprint)                                       | TypeScript / Web Bluetooth | The **correct, general auth implementation**: real random challenge, per-byte CRC16-XMODEM over `[challenge[i]] + MAC`, high byte transmitted. This is the version reimplemented here. Demonstrated that the protocol works from a browser with no native driver.                                                                      |
+| [joaquimorg/lxprint](https://github.com/joaquimorg/lxprint)                                 | Vue                        | A fork of paradon's work with a fuller UI.                                                                                                                                                                                                                                                                                             |
 
 **printa-ble** (this repository) contributes the consolidation: a sans-IO state
 machine with the full flow-control set (hold, cooldown, lost-packet rewind, printer-
@@ -937,11 +937,11 @@ different CRC, no authentication.
 
 ### Sources
 
-| Source | Contribution |
-|---|---|
-| [parzivail's BLE thermal printer notes](https://parzivail.github.io/ble-thermal-printer/) | Frame format, command table, the raw-scanline command, the flow-control notification, and the captured frames the CRC tests pin |
-| [nazarovmi/tinyprint-x6h](https://github.com/nazarovmi/tinyprint-x6h) | A working Python implementation: the CRC8 table, the `X6h-`/`x6h-` name prefixes, the blank lead row |
-| [NaitLee/kitty-printer](https://github.com/NaitLee/kitty-printer) | Web Bluetooth precedent for the same family; the speed command (`setSpeed` 0xBD in its `common/cat-protocol.ts`) and its presets (`SPEED_RANGE` in `common/constants.ts` — 8 quick, 16 fast, 32 normal, its `DEF_SPEED`); the energy commands (`SetEnergy` 0xAF / `ApplyEnergy` 0xBE) and their "strength" presets — 12000 low, 24000 medium (its default), 48000 high |
+| Source                                                                                    | Contribution                                                                                                                                                                                                                                                                                                                                                           |
+| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [parzivail's BLE thermal printer notes](https://parzivail.github.io/ble-thermal-printer/) | Frame format, command table, the raw-scanline command, the flow-control notification, and the captured frames the CRC tests pin                                                                                                                                                                                                                                        |
+| [nazarovmi/tinyprint-x6h](https://github.com/nazarovmi/tinyprint-x6h)                     | A working Python implementation: the CRC8 table, the `X6h-`/`x6h-` name prefixes, the blank lead row                                                                                                                                                                                                                                                                   |
+| [NaitLee/kitty-printer](https://github.com/NaitLee/kitty-printer)                         | Web Bluetooth precedent for the same family; the speed command (`setSpeed` 0xBD in its `common/cat-protocol.ts`) and its presets (`SPEED_RANGE` in `common/constants.ts` — 8 quick, 16 fast, 32 normal, its `DEF_SPEED`); the energy commands (`SetEnergy` 0xAF / `ApplyEnergy` 0xBE) and their "strength" presets — 12000 low, 24000 medium (its default), 48000 high |
 
 None of these sources is vendored here; claims attributed to them are
 secondhand, exactly as §10 treats the LX references. The captured frames quoted
@@ -949,13 +949,13 @@ below are pinned in `protocol_x6/`'s unit tests.
 
 ### Devices and discovery
 
-| Property | Value | Confidence |
-|---|---|---|
-| Models | X6, X6h | This is what the sources describe and this project targets |
-| Advertised BLE name | starts with `X6h-` or `x6h-`, or `SC05-` | `X6h-`/`x6h-` from tinyprint-x6h; `SC05-` observed on the maintainer's validated cat-face unit (`SC05-025B`) |
+| Property              | Value                                    | Confidence                                                                                                                                                                                                                               |
+| --------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Models                | X6, X6h                                  | This is what the sources describe and this project targets                                                                                                                                                                               |
+| Advertised BLE name   | starts with `X6h-` or `x6h-`, or `SC05-` | `X6h-`/`x6h-` from tinyprint-x6h; `SC05-` observed on the maintainer's validated cat-face unit (`SC05-025B`)                                                                                                                             |
 | Advertisement service | `0xAF30` (base-UUID expansion, as in §2) | Marks the family in advertisement frames; some firmwares put the connect service `0xAE30` there instead, and this project accepts either. Confirmed against hardware: a cat-family unit was discovered by this service alone and printed |
-| Print head width | 384 dots | Same rendering pipeline as the LX-D02 |
-| Colors | 1 bit, black on thermal paper | This implementation; the hardware also has a 4bpp grayscale mode (below) |
+| Print head width      | 384 dots                                 | Same rendering pipeline as the LX-D02                                                                                                                                                                                                    |
+| Colors                | 1 bit, black on thermal paper            | This implementation; the hardware also has a 4bpp grayscale mode (below)                                                                                                                                                                 |
 
 **`X6H-` (capital H) is deliberately not matched.** parzivail notes it is a
 distinct model, so `model.rs` folds case only on the prefix's first letter:
@@ -974,11 +974,11 @@ was discovered by its advertisement service alone and printed correctly.
 
 ### GATT profile
 
-| Role | 16-bit UUID | Properties used |
-|---|---|---|
-| Service | `0xAE30` | primary service |
-| Write (host → printer) | `0xAE01` | **write without response** |
-| Notify (printer → host) | `0xAE02` | notify (subscribe via CCCD) |
+| Role                    | 16-bit UUID | Properties used             |
+| ----------------------- | ----------- | --------------------------- |
+| Service                 | `0xAE30`    | primary service             |
+| Write (host → printer)  | `0xAE01`    | **write without response**  |
+| Notify (printer → host) | `0xAE02`    | notify (subscribe via CCCD) |
 
 The 128-bit forms are the standard SIG base-UUID expansion, as in §2. A
 scanline frame is 56 bytes, so a single ATT write needs an MTU of at least 59 —
@@ -992,15 +992,15 @@ Every frame, in both directions, has the same layout:
 51 78 <cmd> <dir> <len:u16 little-endian> <payload…> <crc8(payload)> FF
 ```
 
-| Offset | Size | Field |
-|---|---|---|
-| 0..2 | 2 | `0x51 0x78` magic |
-| 2 | 1 | command byte |
-| 3 | 1 | direction: `0x00` host → printer, `0x01` printer → host |
-| 4..6 | 2 | payload length, **little-endian** (the LX-D02's integers are big-endian; this family's are not) |
-| 6..6+len | len | payload |
-| 6+len | 1 | CRC8 over the **payload only** — not the header |
-| 7+len | 1 | `0xFF` trailer |
+| Offset   | Size | Field                                                                                           |
+| -------- | ---- | ----------------------------------------------------------------------------------------------- |
+| 0..2     | 2    | `0x51 0x78` magic                                                                               |
+| 2        | 1    | command byte                                                                                    |
+| 3        | 1    | direction: `0x00` host → printer, `0x01` printer → host                                         |
+| 4..6     | 2    | payload length, **little-endian** (the LX-D02's integers are big-endian; this family's are not) |
+| 6..6+len | len  | payload                                                                                         |
+| 6+len    | 1    | CRC8 over the **payload only** — not the header                                                 |
+| 7+len    | 1    | `0xFF` trailer                                                                                  |
 
 Worked example, from parzivail (pinned in `packets.rs`' tests): command `0xA4`
 with payload `[0x35]` frames as `51 78 A4 00 01 00 35 8B FF`. (This project
@@ -1008,14 +1008,14 @@ never sends `0xA4`; the frame is quoted only as a layout check.)
 
 ### CRC8
 
-| Parameter | Value |
-|---|---|
-| Width | 8 bits |
-| Polynomial | `0x07` |
-| Initial value | `0x00` |
-| Input/output reflected | no |
-| XOR out | none |
-| Scope | payload bytes only |
+| Parameter              | Value              |
+| ---------------------- | ------------------ |
+| Width                  | 8 bits             |
+| Polynomial             | `0x07`             |
+| Initial value          | `0x00`             |
+| Input/output reflected | no                 |
+| XOR out                | none               |
+| Scope                  | payload bytes only |
 
 Check vectors, all lifted from captured frames rather than computed:
 `crc8([0x35]) = 0x8B`, `crc8([0x10]) = 0x70`, `crc8([0x00]) = 0x00`,
@@ -1028,14 +1028,14 @@ LZO-compressed scanline…). This project sends exactly five and parses exactly
 one, and this document deliberately describes only those — the rest are
 unverified here and belong to the sources.
 
-| Command | Direction | Payload | Meaning |
-|---|---|---|---|
-| `0xBD` | host → printer | u8 | Set feed speed, as a divisor — smaller is faster |
-| `0xAF` | host → printer | u16 LE | Set thermal printhead energy |
-| `0xBE` | host → printer | 1 byte, always `0x01` | Apply (latch) the energy just set |
-| `0xA2` | host → printer | 48 bytes | One uncompressed 1bpp scanline |
-| `0xA1` | host → printer | u16 LE | Feed that many pixel rows of blank paper |
-| `0xAE` | printer → host | 1 byte | Device status: `0x10` = buffer full, `0x00` = ready |
+| Command | Direction      | Payload               | Meaning                                             |
+| ------- | -------------- | --------------------- | --------------------------------------------------- |
+| `0xBD`  | host → printer | u8                    | Set feed speed, as a divisor — smaller is faster    |
+| `0xAF`  | host → printer | u16 LE                | Set thermal printhead energy                        |
+| `0xBE`  | host → printer | 1 byte, always `0x01` | Apply (latch) the energy just set                   |
+| `0xA2`  | host → printer | 48 bytes              | One uncompressed 1bpp scanline                      |
+| `0xA1`  | host → printer | u16 LE                | Feed that many pixel rows of blank paper            |
+| `0xAE`  | printer → host | 1 byte                | Device status: `0x10` = buffer full, `0x00` = ready |
 
 #### `0xBD` — feed speed, the dominant darkness knob
 
@@ -1071,7 +1071,7 @@ LE U16, thermal printhead energy") and lists `0xBE`. kitty-printer's
 "strength" presets are 12000 (low), 24000 (medium — its `DEF_ENERGY`) and
 48000 (high), and it sends `0xBE` with payload `0x01` immediately after every
 `0xAF`; this project does the same, since the energy may not latch without
-the apply. On the validated unit energy is the *secondary* darkness input —
+the apply. On the validated unit energy is the _secondary_ darkness input —
 see the `0xBD` section above — mainly affecting banding.
 
 `--density` maps to energy too (`density_to_energy` in `protocol_x6/job.rs`):
@@ -1109,7 +1109,7 @@ counted in `packets_sent` but **not** in any user-facing line count.
 #### `0xA1` — feed is a command here
 
 The exact opposite of §8's "there is no feed command": on the X6 the trailing
-feed is *not* blank raster lines but a single `0xA1` frame whose u16 LE payload
+feed is _not_ blank raster lines but a single `0xA1` frame whose u16 LE payload
 is a pixel count. Consequences: the feed costs one frame instead of wire time
 proportional to its length, a feed of 0 sends nothing at all, and one feed
 command tops out at 65 535 px (this project's print path saturates a larger
@@ -1250,7 +1250,7 @@ PRINTER → HOST (0xFFE2, notify)
    back-off; `5A 06` → send print end and finish.
 9. Append blank rows for feed — there is no feed command.
 10. Abort if a `5A 02` frame reports no paper.
-11. Bound the wait for a notification *and* the wait for forward progress — the
+11. Bound the wait for a notification _and_ the wait for forward progress — the
     first alone cannot catch a printer that holds the stream and keeps sending
     status frames (§9).
 12. On a platform that caches the GATT database (macOS, Chrome), treat the hello

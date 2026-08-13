@@ -4,7 +4,7 @@
 
 **Goal:** Markdown gains embedded QR codes, barcodes, images (local + remote), task-list checkboxes, strikethrough, tables, and a tear marker — across CLI, server, and web.
 
-**Architecture:** All rendering stays in sans-IO `lxd2-core`. Images use a two-pass design: `markdown_image_refs(md)` lists refs, each surface fetches bytes its own way (CLI: files + HTTP; server: HTTP only; web: browser fetch), then `render_markdown_with(md, &images)` renders with a `HashMap<String, Bitmap>`. Fences (```qr, ```barcode) and the tear marker are pure core. The lowering switches to `Parser::into_offset_iter` so the tear marker can inspect rule source text.
+**Architecture:** All rendering stays in sans-IO `lxd2-core`. Images use a two-pass design: `markdown_image_refs(md)` lists refs, each surface fetches bytes its own way (CLI: files + HTTP; server: HTTP only; web: browser fetch), then `render_markdown_with(md, &images)` renders with a `HashMap<String, Bitmap>`. Fences (`qr, `barcode) and the tear marker are pure core. The lowering switches to `Parser::into_offset_iter` so the tear marker can inspect rule source text.
 
 **Tech Stack:** pulldown-cmark extensions (TABLES, STRIKETHROUGH, TASKLISTS), `barcoders` (pure Rust, no default features) for Code128, `reqwest` 0.12 (rustls, no default features) in the CLI crate for remote images.
 
@@ -21,12 +21,12 @@
 
 ### Task 2: Core — tables
 
-- Monospace layout (the font is monospace — char-count math is exact): collect table cells as plain text (inline styling flattened), compute per-column max char width, total = cols + separators (` | ` → 3 chars, no outer borders... simpler: `col1  col2` two-space gutters). Budget: code-style 20px → advance ≈ 12px → 32 chars/line. If total exceeds budget, shrink widest columns (truncate cells with `…`). Render as code-block-style lines (Regular 20px, indent 0) with a full-width underline row after the header (use box-drawing `─`? — NO, draw a thin rule bitmap line via a Rule-like block scaled to table width… simplest: a text row of `-` chars per column). Alignment: left only (ignore alignment markers). Tests: 2-col table renders (ink), header separator row present, overwide cells truncated with …, table wider than budget still ≤384px ink.
+- Monospace layout (the font is monospace — char-count math is exact): collect table cells as plain text (inline styling flattened), compute per-column max char width, total = cols + separators (`|` → 3 chars, no outer borders... simpler: `col1  col2` two-space gutters). Budget: code-style 20px → advance ≈ 12px → 32 chars/line. If total exceeds budget, shrink widest columns (truncate cells with `…`). Render as code-block-style lines (Regular 20px, indent 0) with a full-width underline row after the header (use box-drawing `─`? — NO, draw a thin rule bitmap line via a Rule-like block scaled to table width… simplest: a text row of `-` chars per column). Alignment: left only (ignore alignment markers). Tests: 2-col table renders (ink), header separator row present, overwide cells truncated with …, table wider than budget still ≤384px ink.
 - Commit: `"Add table rendering to markdown"`.
 
 ### Task 3: Core — qr and barcode fences
 
-- `markdown.rs`: fenced code blocks with info string `qr` → `MdBlock::Qr(String)` (trimmed content); `barcode` → `MdBlock::Barcode(String)`. Render: Qr → `qr::render_qr(data, None)` centered (already 384-wide) — on error, render the error message as code-style text instead (document; a bad QR shouldn't kill the whole doc). Barcode: `barcoders` crate, Code128 — content charset limited; on encode error render error text. Bars: height 80px, module width = max integer scale fitting 384 −  2×16px quiet margins, centered; data text NOT printed below (YAGNI).
+- `markdown.rs`: fenced code blocks with info string `qr` → `MdBlock::Qr(String)` (trimmed content); `barcode` → `MdBlock::Barcode(String)`. Render: Qr → `qr::render_qr(data, None)` centered (already 384-wide) — on error, render the error message as code-style text instead (document; a bad QR shouldn't kill the whole doc). Barcode: `barcoders` crate, Code128 — content charset limited; on encode error render error text. Bars: height 80px, module width = max integer scale fitting 384 − 2×16px quiet margins, centered; data text NOT printed below (YAGNI).
 - Cargo.toml (core): `barcoders = { version = "2", default-features = false }`.
 - Tests: qr fence produces scannable-shaped block (finder corners like qr.rs tests); qr fence with 4000 chars renders error text not panic; barcode fence renders vertical bars (columns with tall black runs); invalid barcode chars → error text; normal ``` code fence unaffected.
 - Commit: `"Add qr and barcode fences to markdown"`.

@@ -18,33 +18,33 @@ None. Anyone who can reach the port can print, read printer status, and — thro
 
 ## Content types
 
-| Direction | Type | Used by |
-|---|---|---|
-| Request | `application/json` | Everything except the image endpoints |
-| Request | `multipart/form-data` | `POST /preview/image`, `POST /print/image` |
-| Response | `image/png` | All `/preview/*` endpoints |
-| Response | `application/json` | All `/print/*` endpoints, `/health`, `/status`, and every error the handlers raise |
-| Response | `text/html` | `GET /` |
+| Direction | Type                  | Used by                                                                            |
+| --------- | --------------------- | ---------------------------------------------------------------------------------- |
+| Request   | `application/json`    | Everything except the image endpoints                                              |
+| Request   | `multipart/form-data` | `POST /preview/image`, `POST /print/image`                                         |
+| Response  | `image/png`           | All `/preview/*` endpoints                                                         |
+| Response  | `application/json`    | All `/print/*` endpoints, `/health`, `/status`, and every error the handlers raise |
+| Response  | `text/html`           | `GET /`                                                                            |
 
 Request bodies are capped at **20 MiB** (20 971 520 bytes) on every route. On the JSON routes a larger body gets `413 Payload Too Large` with a plain-text message; on the multipart routes it surfaces as a `400` in the JSON envelope instead (see [Errors](#the-plain-text-exception)).
 
 ## Endpoints
 
-| Method | Path | Body | Success |
-|---|---|---|---|
-| GET | `/` | — | `200` HTML web UI |
-| GET | `/health` | — | `200` JSON |
-| GET | `/status` | — | `200` JSON |
-| POST | `/preview/text` | JSON | `200` PNG |
-| POST | `/preview/markdown` | JSON | `200` PNG |
-| POST | `/preview/qr` | JSON | `200` PNG |
-| POST | `/preview/image` | multipart | `200` PNG |
-| POST | `/preview/url` | JSON | `200` PNG |
-| POST | `/print/text` | JSON | `200` JSON |
-| POST | `/print/markdown` | JSON | `200` JSON |
-| POST | `/print/qr` | JSON | `200` JSON |
-| POST | `/print/image` | multipart | `200` JSON |
-| POST | `/print/url` | JSON | `200` JSON |
+| Method | Path                | Body      | Success           |
+| ------ | ------------------- | --------- | ----------------- |
+| GET    | `/`                 | —         | `200` HTML web UI |
+| GET    | `/health`           | —         | `200` JSON        |
+| GET    | `/status`           | —         | `200` JSON        |
+| POST   | `/preview/text`     | JSON      | `200` PNG         |
+| POST   | `/preview/markdown` | JSON      | `200` PNG         |
+| POST   | `/preview/qr`       | JSON      | `200` PNG         |
+| POST   | `/preview/image`    | multipart | `200` PNG         |
+| POST   | `/preview/url`      | JSON      | `200` PNG         |
+| POST   | `/print/text`       | JSON      | `200` JSON        |
+| POST   | `/print/markdown`   | JSON      | `200` JSON        |
+| POST   | `/print/qr`         | JSON      | `200` JSON        |
+| POST   | `/print/image`      | multipart | `200` JSON        |
+| POST   | `/print/url`        | JSON      | `200` JSON        |
 
 The two `/…/url` routes exist only in builds with the `url` feature (on by default). Without it they return `404` and `/health` reports `"url_printing": false`.
 
@@ -54,11 +54,11 @@ The two `/…/url` routes exist only in builds with the `url` feature (on by def
 
 Every `/print/*` endpoint accepts three job options. In JSON bodies they are flattened into the top level alongside the content fields, not nested under an object. In multipart bodies they are ordinary text fields.
 
-| Field | Type | Default | Valid range |
-|---|---|---|---|
-| `density` | integer | `3` | 1–7 |
-| `feed` | integer | `40` | 0–2000 |
-| `copies` | integer | `1` | 1–20 |
+| Field     | Type    | Default | Valid range |
+| --------- | ------- | ------- | ----------- |
+| `density` | integer | `3`     | 1–7         |
+| `feed`    | integer | `40`    | 0–2000      |
+| `copies`  | integer | `1`     | 1–20        |
 
 ```json
 { "content": "Hello", "density": 5, "feed": 60, "copies": 2 }
@@ -78,13 +78,13 @@ Unknown fields are ignored. A value of the wrong JSON type, or an integer outsid
 
 These bounds are the server's, not the renderer's, and the CLI does not share all of them:
 
-| Field | Server | CLI equivalent |
-|---|---|---|
-| `density` | 1–7 | `--density`, 1–7 |
-| `copies` | 1–20 | `--copies`, 1–20 |
-| `feed` | 0–2000 | `--feed`, ≥ 0 with **no upper bound** |
-| `size` | > 0, ≤ 128 | `--size`, > 0 and finite, **no upper bound** |
-| Request body | 20 MiB | — (the CLI reads a local file of any size) |
+| Field        | Server     | CLI equivalent                               |
+| ------------ | ---------- | -------------------------------------------- |
+| `density`    | 1–7        | `--density`, 1–7                             |
+| `copies`     | 1–20       | `--copies`, 1–20                             |
+| `feed`       | 0–2000     | `--feed`, ≥ 0 with **no upper bound**        |
+| `size`       | > 0, ≤ 128 | `--size`, > 0 and finite, **no upper bound** |
+| Request body | 20 MiB     | — (the CLI reads a local file of any size)   |
 
 The server caps what the CLI leaves open because it takes input from anyone who can reach the port; a local user asking for a 100 000-line feed is only wasting their own paper.
 
@@ -108,10 +108,10 @@ curl http://localhost:8000/health
 }
 ```
 
-| Field | Type | Notes |
-|---|---|---|
-| `status` | string | Always `"ok"` |
-| `version` | string | Crate version of the running binary |
+| Field          | Type    | Notes                                         |
+| -------------- | ------- | --------------------------------------------- |
+| `status`       | string  | Always `"ok"`                                 |
+| `version`      | string  | Crate version of the running binary           |
 | `url_printing` | boolean | Whether `/preview/url` and `/print/url` exist |
 
 ### GET /status
@@ -135,16 +135,16 @@ curl http://localhost:8000/status
 }
 ```
 
-| Field | Type | Notes |
-|---|---|---|
-| `battery_pct` | integer | 0–100 |
-| `no_paper` | boolean | `true` when the paper sensor is clear |
-| `charging` | boolean | On USB power, still charging |
-| `charged` | boolean | On USB power, full |
-| `overheat` | boolean | Print head over temperature |
-| `low_battery` | boolean | |
-| `density` | integer | Present only when the printer reports it |
-| `voltage_mv` | integer | Millivolts; present only when the printer reports it |
+| Field         | Type    | Notes                                                |
+| ------------- | ------- | ---------------------------------------------------- |
+| `battery_pct` | integer | 0–100                                                |
+| `no_paper`    | boolean | `true` when the paper sensor is clear                |
+| `charging`    | boolean | On USB power, still charging                         |
+| `charged`     | boolean | On USB power, full                                   |
+| `overheat`    | boolean | Print head over temperature                          |
+| `low_battery` | boolean |                                                      |
+| `density`     | integer | Present only when the printer reports it             |
+| `voltage_mv`  | integer | Millivolts; present only when the printer reports it |
 
 While a print job is running, `/status` returns immediately with a single field instead of queueing behind the job or opening a second BLE connection:
 
@@ -152,10 +152,10 @@ While a print job is running, `/status` returns immediately with a single field 
 { "printing": true }
 ```
 
-| Status | Cause |
-|---|---|
-| `200` | Status read, or a print is in progress |
-| `503` | No printer found within the 10 s scan, no status frame within 5 s, or the printer is an X6 (no status support) |
+| Status | Cause                                                                                                          |
+| ------ | -------------------------------------------------------------------------------------------------------------- |
+| `200`  | Status read, or a print is in progress                                                                         |
+| `503`  | No printer found within the 10 s scan, no status frame within 5 s, or the printer is an X6 (no status support) |
 
 The device is saved to the config file on a successful connection, exactly as the CLI does.
 
@@ -167,10 +167,10 @@ Previews return a PNG of what would print, at 384 px wide. They never connect to
 
 ### POST /preview/text
 
-| Field | Type | Default | Validation |
-|---|---|---|---|
+| Field     | Type   | Default  | Validation                           |
+| --------- | ------ | -------- | ------------------------------------ |
 | `content` | string | required | Must not be empty or whitespace only |
-| `size` | number | `24` | Finite, > 0, ≤ 128 (pixels) |
+| `size`    | number | `24`     | Finite, > 0, ≤ 128 (pixels)          |
 
 ```bash
 curl -X POST http://localhost:8000/preview/text \
@@ -183,8 +183,8 @@ Text wraps greedily at 384 px, line height is 1.3 × `size`, `\n` forces a break
 
 ### POST /preview/markdown
 
-| Field | Type | Default | Validation |
-|---|---|---|---|
+| Field     | Type   | Default  | Validation                           |
+| --------- | ------ | -------- | ------------------------------------ |
 | `content` | string | required | Must not be empty or whitespace only |
 
 ```bash
@@ -198,10 +198,10 @@ Supports headings, emphasis, strikethrough, lists, task lists, tables, code bloc
 
 ### POST /preview/qr
 
-| Field | Type | Default | Validation |
-|---|---|---|---|
-| `data` | string | required | Must fit some QR version |
-| `caption` | string | none | Rendered below the code at 24 px |
+| Field     | Type   | Default  | Validation                       |
+| --------- | ------ | -------- | -------------------------------- |
+| `data`    | string | required | Must fit some QR version         |
+| `caption` | string | none     | Rendered below the code at 24 px |
 
 ```bash
 curl -X POST http://localhost:8000/preview/qr \
@@ -216,10 +216,10 @@ Version and error correction are chosen automatically. Data too large for any ve
 
 `multipart/form-data`.
 
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `file` | file | required | PNG or JPEG bytes |
-| `dither` | text | `floyd` | `floyd`, `atkinson`, `threshold`, or `none` (alias for `threshold`) |
+| Field    | Type | Default  | Notes                                                               |
+| -------- | ---- | -------- | ------------------------------------------------------------------- |
+| `file`   | file | required | PNG or JPEG bytes                                                   |
+| `dither` | text | `floyd`  | `floyd`, `atkinson`, `threshold`, or `none` (alias for `threshold`) |
 
 ```bash
 curl -X POST http://localhost:8000/preview/image \
@@ -233,8 +233,8 @@ The image is scaled to 384 px wide and reduced to 1 bit. Unknown fields are igno
 
 Requires the `url` feature.
 
-| Field | Type | Default | Validation |
-|---|---|---|---|
+| Field | Type   | Default  | Validation                                                 |
+| ----- | ------ | -------- | ---------------------------------------------------------- |
 | `url` | string | required | Must start with `http://` or `https://` (case-insensitive) |
 
 ```bash
@@ -246,11 +246,11 @@ curl -X POST http://localhost:8000/preview/url \
 
 The page renders in system headless Chrome at a 384 px viewport, settles for 500 ms, and is captured full-page, then dithered with Floyd–Steinberg. The dither mode is not configurable here.
 
-| Status | Cause |
-|---|---|
-| `400` | Scheme is not `http`/`https` — checked before Chrome launches |
-| `502` | Chrome could not launch, navigate, or capture |
-| `500` | The screenshot could not be decoded |
+| Status | Cause                                                         |
+| ------ | ------------------------------------------------------------- |
+| `400`  | Scheme is not `http`/`https` — checked before Chrome launches |
+| `502`  | Chrome could not launch, navigate, or capture                 |
+| `500`  | The screenshot could not be decoded                           |
 
 ---
 
@@ -270,25 +270,25 @@ Print endpoints render exactly like their preview counterparts, then take the pr
 }
 ```
 
-| Field | Type | Notes |
-|---|---|---|
+| Field           | Type    | Notes                                                                                                                                                                             |
+| --------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `printed_lines` | integer | (content rows + `feed`) × `copies` on an LX-D02. On an X6 it is content rows × `copies`: the feed is a command, not rows, and the protocol's blank lead row is not counted either |
-| `copies` | integer | Echo of the requested copy count |
-| `elapsed_ms` | integer | Wall clock from the start of the connect to the last copy finishing — connect, hello, auth, streaming and all |
-| `packets_sent` | integer | Raster packets written, summed over every copy (on an X6: one scanline per row, plus one blank lead row per copy) |
-| `holds` | integer | Times the printer paused the stream — `5A 08` on an LX-D02, a buffer-full notification on an X6 |
-| `cooldowns` | integer | Times the printer asked for a thermal back-off (`5A 07`); always 0 on an X6, whose protocol has no such event |
-| `retransmits` | integer | Times the printer asked for a resend from a given packet index (`5A 05`); always 0 on an X6 |
+| `copies`        | integer | Echo of the requested copy count                                                                                                                                                  |
+| `elapsed_ms`    | integer | Wall clock from the start of the connect to the last copy finishing — connect, hello, auth, streaming and all                                                                     |
+| `packets_sent`  | integer | Raster packets written, summed over every copy (on an X6: one scanline per row, plus one blank lead row per copy)                                                                 |
+| `holds`         | integer | Times the printer paused the stream — `5A 08` on an LX-D02, a buffer-full notification on an X6                                                                                   |
+| `cooldowns`     | integer | Times the printer asked for a thermal back-off (`5A 07`); always 0 on an X6, whose protocol has no such event                                                                     |
+| `retransmits`   | integer | Times the printer asked for a resend from a given packet index (`5A 05`); always 0 on an X6                                                                                       |
 
 The last five are the same counters the server writes to its log, repeated here for clients that never see it. They are what distinguishes a slow print from a stuck one: an `elapsed_ms` far larger than `packets_sent` × 15 ms means the difference was spent paused, and `holds` and `cooldowns` say so. Zero across the board is a clean job. The counters come out of the sans-IO core as plain values (`JobStats`); the server only formats them.
 
 ### POST /print/text
 
-| Field | Type | Default | Validation |
-|---|---|---|---|
-| `content` | string | required | Must not be empty or whitespace only |
-| `size` | number | `24` | Finite, > 0, ≤ 128 |
-| `density`, `feed`, `copies` | — | — | [Shared print options](#shared-print-options) |
+| Field                       | Type   | Default  | Validation                                    |
+| --------------------------- | ------ | -------- | --------------------------------------------- |
+| `content`                   | string | required | Must not be empty or whitespace only          |
+| `size`                      | number | `24`     | Finite, > 0, ≤ 128                            |
+| `density`, `feed`, `copies` | —      | —        | [Shared print options](#shared-print-options) |
 
 ```bash
 curl -X POST http://localhost:8000/print/text \
@@ -298,10 +298,10 @@ curl -X POST http://localhost:8000/print/text \
 
 ### POST /print/markdown
 
-| Field | Type | Default | Validation |
-|---|---|---|---|
-| `content` | string | required | Must not be empty or whitespace only |
-| `density`, `feed`, `copies` | — | — | [Shared print options](#shared-print-options) |
+| Field                       | Type   | Default  | Validation                                    |
+| --------------------------- | ------ | -------- | --------------------------------------------- |
+| `content`                   | string | required | Must not be empty or whitespace only          |
+| `density`, `feed`, `copies` | —      | —        | [Shared print options](#shared-print-options) |
 
 ```bash
 curl -X POST http://localhost:8000/print/markdown \
@@ -311,11 +311,11 @@ curl -X POST http://localhost:8000/print/markdown \
 
 ### POST /print/qr
 
-| Field | Type | Default | Validation |
-|---|---|---|---|
-| `data` | string | required | Must fit some QR version |
-| `caption` | string | none | |
-| `density`, `feed`, `copies` | — | — | [Shared print options](#shared-print-options) |
+| Field                       | Type   | Default  | Validation                                    |
+| --------------------------- | ------ | -------- | --------------------------------------------- |
+| `data`                      | string | required | Must fit some QR version                      |
+| `caption`                   | string | none     |                                               |
+| `density`, `feed`, `copies` | —      | —        | [Shared print options](#shared-print-options) |
 
 ```bash
 curl -X POST http://localhost:8000/print/qr \
@@ -327,13 +327,13 @@ curl -X POST http://localhost:8000/print/qr \
 
 `multipart/form-data`. Field names are exact.
 
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `file` | file | required | PNG or JPEG bytes |
-| `dither` | text | `floyd` | `floyd`, `atkinson`, `threshold`, `none` |
-| `density` | text | `3` | 1–7 |
-| `feed` | text | `40` | 0–2000 |
-| `copies` | text | `1` | 1–20 |
+| Field     | Type | Default  | Notes                                    |
+| --------- | ---- | -------- | ---------------------------------------- |
+| `file`    | file | required | PNG or JPEG bytes                        |
+| `dither`  | text | `floyd`  | `floyd`, `atkinson`, `threshold`, `none` |
+| `density` | text | `3`      | 1–7                                      |
+| `feed`    | text | `40`     | 0–2000                                   |
+| `copies`  | text | `1`      | 1–20                                     |
 
 ```bash
 curl -X POST http://localhost:8000/print/image \
@@ -349,10 +349,10 @@ An unparseable numeric field is `400 {"error": "invalid density \`x\`"}`. Unknow
 
 Requires the `url` feature.
 
-| Field | Type | Default | Validation |
-|---|---|---|---|
-| `url` | string | required | `http://` or `https://` only |
-| `density`, `feed`, `copies` | — | — | [Shared print options](#shared-print-options) |
+| Field                       | Type   | Default  | Validation                                    |
+| --------------------------- | ------ | -------- | --------------------------------------------- |
+| `url`                       | string | required | `http://` or `https://` only                  |
+| `density`, `feed`, `copies` | —      | —        | [Shared print options](#shared-print-options) |
 
 ```bash
 curl -X POST http://localhost:8000/print/url \
@@ -379,21 +379,21 @@ The server holds one printer, so it prints one job at a time.
 
 `/preview/markdown` and `/print/markdown` resolve `![alt](dest)` references before rendering. What they will fetch is deliberately narrower than the CLI:
 
-| Reference | Server behavior |
-|---|---|
-| `http://…`, `https://…` | Fetched, unless the server was started with `--no-remote-images` |
-| `/etc/hosts`, `./logo.png`, any other path | **Never** read. Not opened, not stat-ed. |
+| Reference                                  | Server behavior                                                  |
+| ------------------------------------------ | ---------------------------------------------------------------- |
+| `http://…`, `https://…`                    | Fetched, unless the server was started with `--no-remote-images` |
+| `/etc/hosts`, `./logo.png`, any other path | **Never** read. Not opened, not stat-ed.                         |
 
 Refusing local paths is a security boundary: without it anyone on the LAN could read files off the host by posting `![x](/etc/hosts)` and looking at the returned PNG. A posted document also has no directory of its own, so relative references have nothing to resolve against.
 
 Resolution is bounded:
 
-| Limit | Value |
-|---|---|
-| References resolved per document | 32 (the rest render as placeholders) |
-| Total time for the whole pass | 30 s |
-| Timeout per fetch | 15 s |
-| Bytes per image | 5 MiB (`Content-Length` checked up front, body checked while streaming) |
+| Limit                            | Value                                                                   |
+| -------------------------------- | ----------------------------------------------------------------------- |
+| References resolved per document | 32 (the rest render as placeholders)                                    |
+| Total time for the whole pass    | 30 s                                                                    |
+| Timeout per fetch                | 15 s                                                                    |
+| Bytes per image                  | 5 MiB (`Content-Length` checked up front, body checked while streaming) |
 
 Fetches run sequentially on purpose — resolving them concurrently would multiply the outbound traffic one request can trigger.
 
@@ -411,18 +411,18 @@ Errors raised by the handlers use a JSON envelope:
 { "error": "density must be between 1 and 7" }
 ```
 
-| Status | Meaning | Examples |
-|---|---|---|
-| `400` | Invalid input | Out-of-range option, empty `content`, `size` over 128, unknown `dither`, missing `file` field, undecodable image, non-`http(s)` URL, QR data too long, job over 65 535 raster packets |
-| `404` | No such route | Also the `url` routes in a build without the feature |
-| `405` | Wrong method | e.g. `GET /print/text`. **Empty body** — no JSON, no text; the `allow` header carries the answer |
-| `409` | Printer is out of paper | Detected before the job starts or from a mid-job status frame (LX-D02 only — the X6 has no paper signal) |
-| `413` | Body over 20 MiB on a JSON route | Plain text, not JSON. The multipart routes report the same condition as `400` — see below |
-| `415` | Wrong `Content-Type` | Plain text, not JSON |
-| `422` | Body does not match the schema | Plain text, not JSON |
-| `500` | Print failed, or an internal render failure | Auth rejected, BLE write failed, printer stopped responding |
-| `502` | URL rendering failed | Chrome missing, page unreachable |
-| `503` | No printer found, no printer that answered, or no status frame | Nothing matched within the 10 s scan; or a device was found but never answered the hello probe (`found <name> but it did not respond — is the printer powered on?`) |
+| Status | Meaning                                                        | Examples                                                                                                                                                                              |
+| ------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `400`  | Invalid input                                                  | Out-of-range option, empty `content`, `size` over 128, unknown `dither`, missing `file` field, undecodable image, non-`http(s)` URL, QR data too long, job over 65 535 raster packets |
+| `404`  | No such route                                                  | Also the `url` routes in a build without the feature                                                                                                                                  |
+| `405`  | Wrong method                                                   | e.g. `GET /print/text`. **Empty body** — no JSON, no text; the `allow` header carries the answer                                                                                      |
+| `409`  | Printer is out of paper                                        | Detected before the job starts or from a mid-job status frame (LX-D02 only — the X6 has no paper signal)                                                                              |
+| `413`  | Body over 20 MiB on a JSON route                               | Plain text, not JSON. The multipart routes report the same condition as `400` — see below                                                                                             |
+| `415`  | Wrong `Content-Type`                                           | Plain text, not JSON                                                                                                                                                                  |
+| `422`  | Body does not match the schema                                 | Plain text, not JSON                                                                                                                                                                  |
+| `500`  | Print failed, or an internal render failure                    | Auth rejected, BLE write failed, printer stopped responding                                                                                                                           |
+| `502`  | URL rendering failed                                           | Chrome missing, page unreachable                                                                                                                                                      |
+| `503`  | No printer found, no printer that answered, or no status frame | Nothing matched within the 10 s scan; or a device was found but never answered the hello probe (`found <name> but it did not respond — is the printer powered on?`)                   |
 
 ### The plain-text exception
 
@@ -448,14 +448,14 @@ content-type: text/plain; charset=utf-8
 Expected request with `Content-Type: application/json`
 ```
 
-| Trigger | Status | Body |
-|---|---|---|
-| Malformed JSON | `400` | plain text |
-| Missing required field, or a field of the wrong type | `422` | plain text |
-| Missing or wrong `Content-Type` | `415` | plain text |
-| Body over the 20 MiB limit, JSON route | `413` | plain text |
-| Body over the 20 MiB limit, multipart route | `400` | **JSON** — see below |
-| Wrong method for an existing route | `405` | **empty** |
+| Trigger                                              | Status | Body                 |
+| ---------------------------------------------------- | ------ | -------------------- |
+| Malformed JSON                                       | `400`  | plain text           |
+| Missing required field, or a field of the wrong type | `422`  | plain text           |
+| Missing or wrong `Content-Type`                      | `415`  | plain text           |
+| Body over the 20 MiB limit, JSON route               | `413`  | plain text           |
+| Body over the 20 MiB limit, multipart route          | `400`  | **JSON** — see below |
+| Wrong method for an existing route                   | `405`  | **empty**            |
 
 Everything a handler rejects — every validation rule documented above — comes back as JSON.
 
@@ -480,14 +480,14 @@ The server writes to **stderr** under the same `-v` ladder as the rest of the CL
 
 `printable serve -v` adds the operational log:
 
-| Event | Line |
-|---|---|
-| Every request | `POST /print/markdown -> 200 in 24544ms` — method, path, status, elapsed ms |
-| Job start | `print job starting: markdown, 812 lines, density 3, feed 40, 1 copies` |
-| Job finish | `print job done: markdown, 812 lines in 24310ms (812 packets, 3 holds, 41 cooldowns, 0 resends)` |
-| Queueing | `printer is busy with another job; this request is queued`, then `printer free; queued for 18402ms` |
-| Flow control | `printer paused the stream (print head too hot); waiting to resume…`, `printer is cooling down` |
-| URL rendering | `rendering <url> with headless Chrome`, then `rendered <url> to 214 KiB in 2841ms` |
+| Event         | Line                                                                                                |
+| ------------- | --------------------------------------------------------------------------------------------------- |
+| Every request | `POST /print/markdown -> 200 in 24544ms` — method, path, status, elapsed ms                         |
+| Job start     | `print job starting: markdown, 812 lines, density 3, feed 40, 1 copies`                             |
+| Job finish    | `print job done: markdown, 812 lines in 24310ms (812 packets, 3 holds, 41 cooldowns, 0 resends)`    |
+| Queueing      | `printer is busy with another job; this request is queued`, then `printer free; queued for 18402ms` |
+| Flow control  | `printer paused the stream (print head too hot); waiting to resume…`, `printer is cooling down`     |
+| URL rendering | `rendering <url> with headless Chrome`, then `rendered <url> to 214 KiB in 2841ms`                  |
 
 The request line alone cannot say whether `/print/markdown` was two lines or two thousand, which is why the job lines name the content kind and the size. The queue lines exist because a request stuck behind another job is indistinguishable from a hang at the client end. Chrome's timing is separate because it happens before the printer is ever touched and is often the slowest part of a URL print.
 

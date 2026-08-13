@@ -1,0 +1,38 @@
+# Local mirror of the CI gate. Runs under prek (https://github.com/j178/prek),
+# a single-binary pre-commit runner:
+#
+#   brew install prek   # or: cargo install --locked prek
+#   prek install
+#
+# Skip once with `git commit --no-verify`; run everything on demand with
+# `prek run --all-files`. Tests stay in CI — they are too slow per commit.
+#
+# No markdown formatting hook on purpose: this repo's markdown dialect is
+# whitespace-sensitive on paper (`- - -` is a dashed tear line, `---` a solid
+# rule), so blanket formatting can silently change what prints.
+repos:
+  - repo: local
+    hooks:
+      - id: fmt
+        name: cargo fmt
+        entry: cargo fmt --all --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: clippy
+        name: cargo clippy (native)
+        entry: cargo clippy --workspace --all-targets --quiet -- -D warnings
+        language: system
+        files: '(\.rs|Cargo\.toml|Cargo\.lock)$'
+        pass_filenames: false
+
+      # The sans-IO gate: core must keep compiling for wasm32, a target with
+      # no sockets, filesystem, or threads. Only worth the extra compile when
+      # core itself changed.
+      - id: clippy-wasm
+        name: cargo clippy (wasm32 sans-IO gate)
+        entry: cargo clippy -p printa-ble-web --target wasm32-unknown-unknown --quiet -- -D warnings
+        language: system
+        files: "^crates/printa-ble-core/"
+        pass_filenames: false

@@ -32,10 +32,11 @@ are **untested** here — see [Where to Start](#where-to-start).
 git clone https://github.com/cicloid/printable.git
 cd printable
 
-# Optional but recommended: pre-commit hook mirroring the CI gate
+# Optional but recommended: pre-commit hooks mirroring the CI gate
 # (fmt + clippy, plus the wasm32 sans-IO check when core changed;
 # skip once with `git commit --no-verify`)
-git config core.hooksPath .githooks
+brew install prek   # or: cargo install --locked prek
+prek install
 
 # Build the whole workspace
 cargo build

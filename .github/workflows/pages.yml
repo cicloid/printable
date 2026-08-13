@@ -22,8 +22,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The wasm32 artifact is host-independent, so build on the fast cheap
+  # runner; only CI and release need macOS.
   deploy:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

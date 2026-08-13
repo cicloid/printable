@@ -15,6 +15,10 @@ The name **printa-ble** derives from _printa_ (the ancestor project) plus _BLE_ 
 
 The model is detected from the advertised device name (`LX*` vs `X6h-*`/`x6h-*`/`SC05-*`) and remembered in the config file; `--model <lx-d02|x6>` (case-insensitive, on every command that touches the printer) forces it. Cat-family printers shipping under other names are detected too, by the `0xAF30` service their advertisements carry, and driven as `x6` — validated on one such unit. The X6 speaks an entirely different wire protocol: no density control, no paper or battery status, no liveness probe, and its trailing feed is a printer command rather than blank lines — [docs/CLI.md](docs/CLI.md#printer-models) has the practical differences and [docs/PROTOCOL.md](docs/PROTOCOL.md) §11 the bytes.
 
+## Platform support
+
+macOS is the only developed and validated platform. The BLE transport uses [btleplug](https://github.com/deviceplug/btleplug), which also ships BlueZ (Linux) and WinRT (Windows) backends, and nothing in this codebase is knowingly macOS-specific outside the [Bluetooth permission handling](#macos-bluetooth-permission) — but **the Linux and Windows paths have never been built, run, or tested here**. If you have a supported printer and a BlueZ machine, trying it and reporting what happens — even "here is exactly how it fails" — is one of the most valuable contributions you can make. See [CONTRIBUTING.md](CONTRIBUTING.md#where-to-start).
+
 ## Documentation
 
 This README is the tour. The reference documents go deeper:

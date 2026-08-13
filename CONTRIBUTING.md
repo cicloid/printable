@@ -293,10 +293,15 @@ Good first contributions, roughly in order of self-containedness:
   renderer in `raster/`, a `Fence` variant, and an error path that prints text
   rather than panicking. `wagara` is the one to copy if your fence needs
   options as well as a payload.
-- **Linux and Windows testing.** btleplug supports both, and nothing in the
-  codebase is knowingly macOS-specific outside the permission prompt. Nobody has
-  tried. Reporting that it works — or exactly how it fails — is genuinely
-  valuable.
+- **Linux and Windows testing.** btleplug supports both (BlueZ and WinRT), and
+  nothing in the codebase is knowingly macOS-specific outside the permission
+  prompt. Nobody has tried. Reporting that it works — or exactly how it fails —
+  is genuinely valuable. A full Linux contribution would look like: `cargo
+  build` against BlueZ, `printable scan --all` seeing real advertisements, one
+  hardware-validated print per protocol family, notes on permissions and the
+  config path (the code already uses the platform config directory), and an
+  `ubuntu-latest` job in `.github/workflows/ci.yml` so the BlueZ backend keeps
+  compiling. Partial steps of that list are welcome as separate PRs.
 - **Another printer model.** See below.
 
 ### Adding a New Printer Model

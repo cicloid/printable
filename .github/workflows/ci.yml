@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt, clippy, test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy (native)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # The sans-IO gate: printa-ble-core must keep compiling for a target
+      # with no sockets, filesystem, or threads. A native-only I/O dependency
+      # sneaking into core fails here and nowhere else.
+      - name: Clippy (wasm32)
+        run: cargo clippy -p printa-ble-web --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace

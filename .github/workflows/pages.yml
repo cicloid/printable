@@ -1,0 +1,59 @@
+name: Deploy web app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "crates/printa-ble-web/**"
+      - "crates/printa-ble-core/**"
+      - "scripts/build-web.sh"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a newer push supersedes a queued one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: macos-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build
+        run: scripts/build-web.sh
+
+      # web/pkg/.gitignore (written by wasm-pack) would make the artifact
+      # uploader skip the wasm build output itself.
+      - name: Drop wasm-pack's .gitignore
+        run: rm -f web/pkg/.gitignore
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -16,8 +16,11 @@ use crate::raster::bitmap::{Bitmap, BYTES_PER_ROW};
 /// Wait after the final feed before declaring the job done, so the transport
 /// does not tear the link down while the printer is still draining its
 /// buffer. The printer sends no completion event, so this is a guess; tune
-/// against hardware.
-const SETTLE_MS: u64 = 500;
+/// against hardware. A 500 ms wait left intermittent missing trailing rows
+/// and feed on an X6h over BlueZ; repeated prints completed with five seconds.
+/// This conservative drain allowance is not a completion acknowledgement and
+/// adds 4.5 seconds per job compared with the previous default.
+const SETTLE_MS: u64 = 5_000;
 
 /// Map the user-facing density knob (1-7, the LX-D02's scale) to X6
 /// printhead energy for the 0xAF SetEnergy command.
@@ -308,7 +311,7 @@ mod tests {
         let _ = job.next_action(); // lead row
         let _ = job.next_action(); // row 0
         let _ = job.next_action(); // feed
-        assert!(matches!(job.next_action(), Action::WaitMs(SETTLE_MS)));
+        assert!(matches!(job.next_action(), Action::WaitMs(5_000)));
         assert!(matches!(job.next_action(), Action::Done));
     }
 

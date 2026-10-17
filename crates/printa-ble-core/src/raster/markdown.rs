@@ -17,19 +17,23 @@
 //! cell's inline content flattens to plain text (bold/italic dropped), columns
 //! are padded to their widest cell with two-space gutters, a dashed separator
 //! row follows the header, and over-wide tables shrink their widest columns —
-//! truncating cells with `…` — to fit the 384 px roll. Left-aligned only;
-//! markdown alignment markers are ignored. Widths are counted in *display
-//! columns*, so a full-width CJK character claims two and a table mixing
-//! Japanese and ASCII rows still lines up. The shrink has a floor (3 columns
-//! per table column), so the roll fits **at most six columns**: seven or more
-//! need more than the 32-column budget even at the floor, and the rows
-//! word-wrap instead, losing column alignment. Nothing panics and no ink
-//! leaves the paper — the table just stops being a table.
+//! truncating cells with `…` — to fit the 384 px roll. Columns are always
+//! left-aligned; markdown alignment markers are ignored. Widths are counted
+//! in *display columns*, so a full-width CJK character claims two and a table
+//! mixing Japanese and ASCII rows still lines up. The shrink has a floor
+//! (3 columns per table column), so the roll fits **at most six columns**:
+//! seven or more need more than the 32-column budget even at the floor, and
+//! the rows word-wrap instead, losing column alignment. Nothing panics and no
+//! ink leaves the paper — the table just stops being a table.
+//!
+//! Standalone top-level `<!-- align: left|center|right -->` comments select
+//! text alignment for following blocks; the default is left for each document.
 //!
 //! Three fence names turn a code block into a graphic instead of text, matched
 //! case-insensitively on the info string's first word (so ` ```QR ` and
 //! ` ```barcode utf8 ` both count): ` ```qr ` encodes its trimmed body as a QR
-//! code, ` ```barcode ` as a Code128 barcode (printable ASCII only, 28
+//! code (`qr width=240` optionally limits its square including the quiet zone),
+//! ` ```barcode ` as a Code128 barcode (printable ASCII only, 28
 //! characters max — see [`barcode`](super::barcode)), and ` ```wagara ` draws a
 //! traditional Japanese pattern band (see [`wagara`](super::wagara)). A wagara
 //! fence names its pattern in the info string's second token
@@ -67,8 +71,8 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, T
 
 use super::barcode::render_barcode;
 use super::bitmap::{Bitmap, WIDTH};
-use super::qr::{self, render_qr};
-use super::rich::{render_rich, FontStyle, RichLine, Span, Style};
+use super::qr::{self, render_qr_with_width, QrError};
+use super::rich::{render_rich, render_rich_aligned, Alignment, FontStyle, RichLine, Span, Style};
 use super::wagara::{parse_wagara_options, render_wagara, WagaraError};
 
 /// Body text size in pixels.
@@ -93,12 +97,12 @@ const IMAGE_MARGIN: usize = 8;
 
 /// A vertically-stacked unit of lowered markdown.
 enum MdBlock {
-    Lines(Vec<RichLine>),
+    Lines(Vec<RichLine>, Alignment),
     Rule,
     /// A dashed tear-off line (`- - -` in the source).
     Tear,
     /// A ` ```qr ` fence: the payload to encode.
-    Qr(String),
+    Qr(String, String),
     /// A ` ```barcode ` fence: the payload to encode.
     Barcode(String),
     /// A ` ```wagara ` fence: the pattern name and the raw option lines.
@@ -173,6 +177,20 @@ fn split_wagara(info_name: &str, body: &str) -> (String, String) {
     (name, lines.collect::<Vec<_>>().join("\n"))
 }
 
+/// Unknown legacy info tokens remain ignored; recognized widths are validated.
+fn qr_bitmap(data: &str, options: &str) -> Result<Bitmap, QrError> {
+    let mut width = None;
+    for option in options.split_whitespace() {
+        if let Some(value) = option.strip_prefix("width=") {
+            if width.is_some() {
+                return Err(QrError::InvalidWidth);
+            }
+            width = Some(value.parse::<usize>().map_err(|_| QrError::InvalidWidth)?);
+        }
+    }
+    render_qr_with_width(data, None, width.unwrap_or(WIDTH))
+}
+
 /// Render a wagara fence: parse the options, then draw the pattern.
 fn wagara_bitmap(name: &str, options: &str) -> Result<Bitmap, WagaraError> {
     render_wagara(name, parse_wagara_options(options)?)
@@ -240,12 +258,12 @@ pub fn render_markdown_with(md: &str, images: &HashMap<String, Bitmap>) -> Bitma
     let bitmaps = blocks
         .iter()
         .map(|block| match block {
-            MdBlock::Lines(lines) => render_rich(lines),
+            MdBlock::Lines(lines, alignment) => render_rich_aligned(lines, *alignment),
             MdBlock::Rule => rule_bitmap(),
             MdBlock::Tear => tear_bitmap(),
             // Each fence declares the margin its renderer already draws, so
             // both end up spaced identically on the page.
-            MdBlock::Qr(data) => fence_bitmap(render_qr(data, None), qr::MARGIN),
+            MdBlock::Qr(data, options) => fence_bitmap(qr_bitmap(data, options), qr::MARGIN),
             MdBlock::Barcode(data) => fence_bitmap(render_barcode(data), 0),
             MdBlock::Wagara(name, options) => fence_bitmap(wagara_bitmap(name, options), 0),
             MdBlock::Image(image) => padded(image, IMAGE_MARGIN),
@@ -534,6 +552,7 @@ struct Lowering<'a> {
     lines: Vec<RichLine>,
     /// The logical line being built (flushed into `lines`).
     current: RichLine,
+    alignment: Alignment,
     /// Nesting depths; unbalanced end tags saturate at zero.
     bold: u32,
     italic: u32,
@@ -578,6 +597,7 @@ fn lower(md: &str, images: &HashMap<String, Bitmap>) -> Vec<MdBlock> {
         blocks: Vec::new(),
         lines: Vec::new(),
         current: RichLine::default(),
+        alignment: Alignment::Left,
         bold: 0,
         italic: 0,
         strike: 0,
@@ -666,8 +686,10 @@ impl Lowering<'_> {
         self.flush_line();
         self.trim_trailing_blanks();
         if !self.lines.is_empty() {
-            self.blocks
-                .push(MdBlock::Lines(std::mem::take(&mut self.lines)));
+            self.blocks.push(MdBlock::Lines(
+                std::mem::take(&mut self.lines),
+                self.alignment,
+            ));
         }
     }
 
@@ -754,6 +776,23 @@ impl Lowering<'_> {
             return;
         }
         match event {
+            Event::Html(html)
+                if !self.in_code
+                    && !self.in_table
+                    && self.lists.is_empty()
+                    && self.quote_depth == 0 =>
+            {
+                let alignment = match html.trim() {
+                    "<!-- align: left -->" => Some(Alignment::Left),
+                    "<!-- align: center -->" => Some(Alignment::Center),
+                    "<!-- align: right -->" => Some(Alignment::Right),
+                    _ => None,
+                };
+                if let Some(alignment) = alignment {
+                    self.flush_block();
+                    self.alignment = alignment;
+                }
+            }
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
             Event::Text(text) => {
@@ -864,7 +903,14 @@ impl Lowering<'_> {
                     Fence::Code => self.current.indent = self.quote_indent() + CODE_INDENT,
                     Fence::Qr | Fence::Barcode | Fence::Wagara => {
                         self.fence_buf.clear();
-                        self.fence_name = fence_arg(info);
+                        self.fence_name = if self.fence == Fence::Qr {
+                            info.split_whitespace()
+                                .skip(1)
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        } else {
+                            fence_arg(info)
+                        };
                     }
                 }
             }
@@ -948,7 +994,7 @@ impl Lowering<'_> {
                             }
                             Fence::Barcode => MdBlock::Barcode(body.trim().to_string()),
                             // `Fence::Code` is handled by the arm above.
-                            _ => MdBlock::Qr(body.trim().to_string()),
+                            _ => MdBlock::Qr(body.trim().to_string(), name),
                         };
                         self.flush_block();
                         self.blocks.push(block);
@@ -1891,7 +1937,7 @@ mod tests {
         let mut counts = (0, 0, 0);
         for block in lower(md, images) {
             match block {
-                MdBlock::Lines(_) => counts.0 += 1,
+                MdBlock::Lines(_, _) => counts.0 += 1,
                 MdBlock::Image(_) => counts.1 += 1,
                 _ => counts.2 += 1,
             }
@@ -1979,5 +2025,86 @@ mod tests {
                 "{md:?} should still render as code text"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    fn rows(b: Bitmap) -> Vec<Vec<u8>> {
+        (0..b.height()).map(|y| b.row(y).to_vec()).collect()
+    }
+
+    #[test]
+    fn qr_width_option_reduces_height_and_keeps_legacy_arguments() {
+        let small = render_markdown("```qr width=240\nTREASURE:HUNT1:STEP1\n```\n");
+        let default = render_markdown("```qr\nTREASURE:HUNT1:STEP1\n```\n");
+        assert!(small.height() < default.height());
+        assert_eq!(
+            rows(default),
+            rows(render_markdown("```qr utf8\nTREASURE:HUNT1:STEP1\n```\n"))
+        );
+    }
+
+    #[test]
+    fn alignment_changes_text_and_can_reset_to_left() {
+        let ordinary = "# Hello\n\nShort text\n";
+        let left = rows(render_markdown(ordinary));
+        assert_eq!(
+            left,
+            rows(render_markdown(&format!(
+                "<!-- align: left -->\n\n{ordinary}"
+            )))
+        );
+        assert_eq!(
+            left,
+            rows(render_markdown(&format!(
+                "<!-- align: nonsense -->\n\n{ordinary}"
+            )))
+        );
+        assert_eq!(
+            left,
+            rows(render_markdown(&format!(
+                "<!-- align: center -->\n\n<!-- align: left -->\n\n{ordinary}"
+            )))
+        );
+        assert_ne!(
+            left,
+            rows(render_markdown(&format!(
+                "<!-- align: center -->\n\n{ordinary}"
+            )))
+        );
+        assert_ne!(
+            left,
+            rows(render_markdown(&format!(
+                "<!-- align: right -->\n\n{ordinary}"
+            )))
+        );
+    }
+
+    #[test]
+    fn malformed_width_does_not_abort_the_document() {
+        for width in [
+            "oops",
+            "0",
+            "9999999999999999999999999",
+            "385",
+            "20",
+            "240 width=200",
+        ] {
+            let b = render_markdown(&format!(
+                "```qr width={width}\nhello\n```\n\n# Still here\n"
+            ));
+            assert!(b.height() > render_markdown("# Still here").height());
+        }
+    }
+
+    #[test]
+    fn directives_inside_fences_are_literal_data() {
+        let doc = "```text\n<!-- align: center -->\n```\n\n# Hello";
+        assert_eq!(
+            rows(render_markdown(doc)),
+            rows(render_markdown(&format!("<!-- align: left -->\n\n{doc}")))
+        );
     }
 }

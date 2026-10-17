@@ -18,6 +18,52 @@ The renderer is not the default for text — plain text is. Which path input tak
 
 Piping a document without `-m` prints its `#` and `**` verbatim. See [CLI.md](CLI.md#-m---markdown) for what `-m` accepts and rejects, and where relative image references anchor in each case.
 
+## Layout extensions
+
+Existing documents keep their default left-aligned text and full-width QR codes.
+These optional extensions work through the CLI, HTTP Markdown endpoints, and Web
+Bluetooth renderer without changing the request format.
+
+### Text alignment
+
+Put one of these comments on its own line, separated from other blocks by blank
+lines: `<!-- align: left -->`, `<!-- align: center -->`, or `<!-- align: right -->`.
+The setting applies to following text blocks until changed, and resets to left
+for each document. Each wrapped line aligns independently within its available
+width; list/quote/code indentation is preserved. Inline bold, italics, and
+strikethrough still work. Table column alignment markers remain unsupported.
+
+Directives must appear at the top level. Inline comments, unknown alignment
+values, comments inside lists/quotes, and comments inside code fences do not
+change alignment. Other raw HTML remains ignored. Rules and graphic blocks keep
+their existing positioning; QR codes stay centered.
+
+### QR width
+
+Add `width=N` to a QR fence's info line. It sets the maximum square width in
+printer pixels, **including the four-module quiet border**. The renderer uses
+whole dots per module and centers the result; actual width can be slightly below
+N. The surrounding canvas remains 384 pixels wide.
+
+````markdown
+<!-- align: center -->
+
+# Toy kitchen
+
+```qr width=240
+TREASURE:HUNT1:STEP1
+```
+
+- - -
+````
+
+Widths must be positive integers no greater than 384 and large enough for at
+least two dots per module for that payload. Invalid, repeated, or too-small
+widths produce an error block without aborting the rest of the document. With no
+width option, the existing maximum-width behavior is unchanged. Previously
+ignored info tokens such as `qr utf8` remain ignored. Width is a Markdown-fence
+option; the standalone QR CLI/API interface is unchanged.
+
 ## The canvas
 
 | Property      | Value                                                                                                                                                                               |
@@ -27,7 +73,7 @@ Piping a document without `-m` prints its `#` and `**` verbatim. See [CLI.md](CL
 | Font          | JetBrains Mono (Regular / Bold / Italic), embedded in the binary, with Noto Sans JP Regular as a per-glyph fallback for characters JetBrains Mono lacks — see [CJK text](#cjk-text) |
 | Line height   | 1.3 × the largest font size on the rendered line                                                                                                                                    |
 | Wrapping      | Greedy word wrap at `384 − indent`; an overlong word breaks mid-word                                                                                                                |
-| Alignment     | Left, always. Nothing centres except QR codes and barcodes                                                                                                                          |
+| Alignment     | Left by default; `<!-- align: center -->` and `<!-- align: right -->` align text                                                                                                    |
 | Normalization | `\r\n` and `\r` → `\n`; tab → four spaces                                                                                                                                           |
 
 Because the font is monospace, character counts are exact: the advance is 0.6 em, so a full-width line holds 26 characters at 24 px and 32 characters at 20 px. Glyphs drawn from the CJK fallback are the exception — they advance a full 1 em, so a Japanese line holds 16 characters at 24 px. See [CJK text](#cjk-text).
@@ -363,7 +409,7 @@ Verified against the enabled parser options (`ENABLE_STRIKETHROUGH | ENABLE_TASK
 | Inline HTML                            | Tags dropped, text kept: `a <b>c</b> d` renders `a c d`                                                                                |
 | Link destinations                      | Link text renders; the URL is discarded. Autolinks (`<http://x>`) render as their text. Use a ` ```qr ` fence to make a URL actionable |
 | Table alignment, colspans, cell markup | Ignored / flattened (see Tables)                                                                                                       |
-| Colour, background, centred text       | The canvas is 1-bit and left-aligned                                                                                                   |
+| Colour, background                     | The canvas is 1-bit. Text alignment is supported — see [Text alignment](#text-alignment)                                               |
 
 ## Gotchas
 

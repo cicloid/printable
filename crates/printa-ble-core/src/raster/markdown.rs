@@ -17,14 +17,14 @@
 //! cell's inline content flattens to plain text (bold/italic dropped), columns
 //! are padded to their widest cell with two-space gutters, a dashed separator
 //! row follows the header, and over-wide tables shrink their widest columns —
-//! truncating cells with `…` — to fit the 384 px roll. Left-aligned only;
-//! markdown alignment markers are ignored. Widths are counted in *display
-//! columns*, so a full-width CJK character claims two and a table mixing
-//! Japanese and ASCII rows still lines up. The shrink has a floor (3 columns
-//! per table column), so the roll fits **at most six columns**: seven or more
-//! need more than the 32-column budget even at the floor, and the rows
-//! word-wrap instead, losing column alignment. Nothing panics and no ink
-//! leaves the paper — the table just stops being a table.
+//! truncating cells with `…` — to fit the 384 px roll. Columns are always
+//! left-aligned; markdown alignment markers are ignored. Widths are counted
+//! in *display columns*, so a full-width CJK character claims two and a table
+//! mixing Japanese and ASCII rows still lines up. The shrink has a floor
+//! (3 columns per table column), so the roll fits **at most six columns**:
+//! seven or more need more than the 32-column budget even at the floor, and
+//! the rows word-wrap instead, losing column alignment. Nothing panics and no
+//! ink leaves the paper — the table just stops being a table.
 //!
 //! Standalone top-level `<!-- align: left|center|right -->` comments select
 //! text alignment for following blocks; the default is left for each document.

@@ -6,7 +6,7 @@
 //! margin above and below. Even a version-40 code (177 modules + 8 quiet =
 //! 185) fits at factor 2 (370 px), so the scale factor is always ≥ 2. An
 //! optional caption is rendered below via [`render_text`] at 24 px
-//! (left-aligned — centering is not supported by the text renderer).
+//! (left-aligned; the caption does not follow markdown alignment directives).
 
 use qrcode::{Color, QrCode};
 

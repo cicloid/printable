@@ -73,7 +73,7 @@ option; the standalone QR CLI/API interface is unchanged.
 | Font          | JetBrains Mono (Regular / Bold / Italic), embedded in the binary, with Noto Sans JP Regular as a per-glyph fallback for characters JetBrains Mono lacks — see [CJK text](#cjk-text) |
 | Line height   | 1.3 × the largest font size on the rendered line                                                                                                                                    |
 | Wrapping      | Greedy word wrap at `384 − indent`; an overlong word breaks mid-word                                                                                                                |
-| Alignment     | Left by default; `<!-- align: center -->` and `<!-- align: right -->` align text                                                                                                                          |
+| Alignment     | Left by default; `<!-- align: center -->` and `<!-- align: right -->` align text                                                                                                    |
 | Normalization | `\r\n` and `\r` → `\n`; tab → four spaces                                                                                                                                           |
 
 Because the font is monospace, character counts are exact: the advance is 0.6 em, so a full-width line holds 26 characters at 24 px and 32 characters at 20 px. Glyphs drawn from the CJK fallback are the exception — they advance a full 1 em, so a Japanese line holds 16 characters at 24 px. See [CJK text](#cjk-text).
@@ -409,7 +409,7 @@ Verified against the enabled parser options (`ENABLE_STRIKETHROUGH | ENABLE_TASK
 | Inline HTML                            | Tags dropped, text kept: `a <b>c</b> d` renders `a c d`                                                                                |
 | Link destinations                      | Link text renders; the URL is discarded. Autolinks (`<http://x>`) render as their text. Use a ` ```qr ` fence to make a URL actionable |
 | Table alignment, colspans, cell markup | Ignored / flattened (see Tables)                                                                                                       |
-| Colour, background, centred text       | The canvas is 1-bit and left-aligned                                                                                                   |
+| Colour, background                     | The canvas is 1-bit. Text alignment is supported — see [Text alignment](#text-alignment)                                               |
 
 ## Gotchas
 

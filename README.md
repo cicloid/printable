@@ -19,7 +19,11 @@ The model is detected from the advertised device name (`LX*` vs `X6h-*`/`x6h-*`/
 
 ## Platform support
 
-macOS is the only developed and validated platform. The BLE transport uses [btleplug](https://github.com/deviceplug/btleplug), which also ships BlueZ (Linux) and WinRT (Windows) backends, and nothing in this codebase is knowingly macOS-specific outside the [Bluetooth permission handling](#macos-bluetooth-permission) — but **the Linux and Windows paths have never been built, run, or tested here**. If you have a supported printer and a BlueZ machine, trying it and reporting what happens — even "here is exactly how it fails" — is one of the most valuable contributions you can make. See [CONTRIBUTING.md](CONTRIBUTING.md#where-to-start).
+macOS is the primary development platform. Native Linux ARM64 CI now tests and
+builds the minimal-feature core and server; a downstream Raspberry Pi Zero 2 W /
+Debian 13.7 / BlueZ 5.82 / X6h setup has also been hardware-tested. See
+[Linux builds and the scope of that hardware report](docs/LINUX.md). Windows and
+Linux LX-D02 hardware behavior remain unverified here.
 
 ## Documentation
 

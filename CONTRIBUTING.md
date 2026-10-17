@@ -23,8 +23,9 @@ a plain laptop with no hardware attached.
 
 macOS is the primary platform: the BLE transport uses
 [btleplug](https://github.com/deviceplug/btleplug), which on macOS goes through
-CoreBluetooth. btleplug also supports Linux (BlueZ) and Windows, but those paths
-are **untested** here — see [Where to Start](#where-to-start).
+CoreBluetooth. btleplug also supports Linux (BlueZ) and Windows. Native Linux ARM64 CI covers
+the minimal-feature build; see [Linux builds and hardware notes](docs/LINUX.md)
+for the scope of Raspberry Pi testing. Windows remains untested here.
 
 ### Clone and Build
 
@@ -75,8 +76,8 @@ cargo test --workspace markdown
 
 This is the one place in the repository that quotes a test count, because it is
 the one that goes stale. At the time of writing `cargo test --workspace`
-collects **295 tests** — 172 in `printa-ble-core`, 94 unit plus 8 integration in
-`printa-ble`, 21 in `printa-ble-web` — of which 294 run and one is `#[ignore]`d.
+collects **381 tests** — 201 in `printa-ble-core`, 144 unit plus 8 integration in
+`printa-ble`, 28 in `printa-ble-web` — of which 380 run and one is `#[ignore]`d.
 The whole suite finishes in a couple of seconds with no printer, no Bluetooth
 adapter, and no network. If your change adds tests, the number here is expected
 to move; count them rather than trusting this line:
@@ -301,8 +302,9 @@ Good first contributions, roughly in order of self-containedness:
   options as well as a payload.
 - **Linux and Windows testing.** btleplug supports both (BlueZ and WinRT), and
   nothing in the codebase is knowingly macOS-specific outside the permission
-  prompt. Nobody has tried. Reporting that it works — or exactly how it fails —
-  is genuinely valuable. A full Linux contribution would look like: `cargo
+  prompt. The documented X6h/Raspberry Pi report and ARM64 CI cover part of this; more
+  hardware and backend coverage is welcome. Reporting what works or fails is
+  valuable. A full Linux contribution would look like: `cargo
   build` against BlueZ, `printable scan --all` seeing real advertisements, one
   hardware-validated print per protocol family, notes on permissions and the
   config path (the code already uses the platform config directory), and an

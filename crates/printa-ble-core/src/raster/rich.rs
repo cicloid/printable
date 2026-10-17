@@ -68,6 +68,15 @@ impl Default for Style {
     }
 }
 
+/// Horizontal placement within the line's available width after wrapping.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Alignment {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
 /// A run of text rendered in a single style.
 #[derive(Debug, Clone)]
 pub struct Span {
@@ -151,6 +160,7 @@ struct PlacedGlyph {
 /// Layout state for one rendered (post-wrap) line.
 struct RenderedLine {
     indent: u32,
+    width: f32,
     /// Largest glyph size placed on this line; 0 until a glyph lands here.
     max_size: f32,
     /// Height basis when no glyph lands here (blank or fully swallowed line).
@@ -173,6 +183,11 @@ struct RenderedLine {
 /// spans are expected to hold single logical lines: a remaining `\n` is not a
 /// line break here — it renders as an ordinary (blank) glyph.
 pub fn render_rich(lines: &[RichLine]) -> Bitmap {
+    render_rich_aligned(lines, Alignment::Left)
+}
+
+/// Align each rendered line independently, preserving wrapping and indentation.
+pub fn render_rich_aligned(lines: &[RichLine], alignment: Alignment) -> Bitmap {
     let mut placed: Vec<PlacedGlyph> = Vec::new();
     let mut rendered: Vec<RenderedLine> = Vec::new();
 
@@ -186,6 +201,7 @@ pub fn render_rich(lines: &[RichLine]) -> Bitmap {
             .unwrap_or(DEFAULT_SIZE_PX);
         let new_line = || RenderedLine {
             indent: rich_line.indent,
+            width: 0.0,
             max_size: 0.0,
             default_size,
             ascent: 0.0,
@@ -265,6 +281,7 @@ pub fn render_rich(lines: &[RichLine]) -> Bitmap {
                     .unwrap_or(style.size_px);
                 line.ascent = line.ascent.max(ascent);
                 pen_x += adv;
+                line.width = pen_x;
             }
         }
     }
@@ -287,7 +304,13 @@ pub fn render_rich(lines: &[RichLine]) -> Bitmap {
         let line = &rendered[g.line];
         let (metrics, coverage) = face_for(g.ch, g.style.font).rasterize(g.ch, g.style.size_px);
         let baseline = offsets[g.line] + line.ascent;
-        let x0 = line.indent as i64 + (g.pen_x + metrics.xmin as f32).round() as i64;
+        let spare = (WIDTH as f32 - line.indent as f32 - line.width).max(0.0);
+        let shift = match alignment {
+            Alignment::Left => 0.0,
+            Alignment::Center => (spare / 2.0).floor(),
+            Alignment::Right => spare.floor(),
+        };
+        let x0 = line.indent as i64 + (g.pen_x + shift + metrics.xmin as f32).round() as i64;
         let y0 = (baseline - metrics.ymin as f32).round() as i64 - metrics.height as i64;
         for row in 0..metrics.height {
             for col in 0..metrics.width {
@@ -308,8 +331,8 @@ pub fn render_rich(lines: &[RichLine]) -> Bitmap {
                 .metrics(g.ch, g.style.size_px)
                 .advance_width;
             let y_top = (baseline - STRIKE_FACTOR * g.style.size_px).round() as i64;
-            let x_start = line.indent as i64 + g.pen_x.round() as i64;
-            let x_end = line.indent as i64 + (g.pen_x + advance).round() as i64;
+            let x_start = line.indent as i64 + (g.pen_x + shift).round() as i64;
+            let x_end = line.indent as i64 + (g.pen_x + shift + advance).round() as i64;
             for y in y_top..y_top + STRIKE_THICKNESS as i64 {
                 for x in x_start..x_end {
                     if (0..WIDTH as i64).contains(&x) && (0..height as i64).contains(&y) {
@@ -529,5 +552,51 @@ mod tests {
         let expected = (24.0f32 * LINE_HEIGHT_FACTOR).ceil() as usize;
         assert_eq!(b.height(), expected);
         assert!(!has_ink(&b), "blank line should have no ink");
+    }
+}
+
+#[cfg(test)]
+mod alignment_tests {
+    use super::*;
+
+    #[test]
+    fn alignment_moves_each_wrapped_line_without_changing_ink_or_height() {
+        let lines = [RichLine {
+            spans: vec![Span {
+                text: "Short words wrap to separate lines with a short ending".into(),
+                style: Style {
+                    strike: true,
+                    ..Style::default()
+                },
+            }],
+            indent: 24,
+        }];
+        let left = render_rich(&lines);
+        let center = render_rich_aligned(&lines, Alignment::Center);
+        let right = render_rich_aligned(&lines, Alignment::Right);
+        let explicit_left = render_rich_aligned(&lines, Alignment::Left);
+        assert!(left.height() > 32);
+        for b in [&center, &right, &explicit_left] {
+            assert_eq!(b.height(), left.height());
+        }
+        let mut saw_shift = false;
+        for y in 0..left.height() {
+            assert_eq!(left.row(y), explicit_left.row(y));
+            let ink = |b: &Bitmap| (0..WIDTH).filter(|&x| b.get(x, y)).collect::<Vec<_>>();
+            let l = ink(&left);
+            let c = ink(&center);
+            let r = ink(&right);
+            assert_eq!(l.len(), c.len());
+            assert_eq!(l.len(), r.len());
+            if let Some(&start) = l.first() {
+                let dc = c[0] - start;
+                let dr = r[0] - start;
+                assert!(dc <= dr);
+                assert_eq!(c, l.iter().map(|x| x + dc).collect::<Vec<_>>());
+                assert_eq!(r, l.iter().map(|x| x + dr).collect::<Vec<_>>());
+                saw_shift |= dc > 0;
+            }
+        }
+        assert!(saw_shift);
     }
 }

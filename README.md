@@ -25,6 +25,11 @@ Markdown can embed PNGs with `![alt](data:image/png;base64,...)`, including with
 remote-image fetching disabled. See [the portable image example](examples/embedded-png.md)
 and [image limits](docs/MARKDOWN.md#embedded-pngs-cli-and-http-server).
 
+X6 jobs hold the link open for 5 s after the final feed so buffered output can
+drain. That value is a workaround from the one BlueZ field report so far (an X6h
+on a Raspberry Pi); [docs/PROTOCOL.md](docs/PROTOCOL.md#11-x6--x6h-family) §11
+has the evidence and how to re-evaluate it.
+
 ## Documentation
 
 This README is the tour. The reference documents go deeper:
@@ -443,6 +448,13 @@ lpadmin -p printable -E -v ipp://localhost:8631/ipp/print -m everywhere
 This wraps macOS's own `ippeveprinter` to provide the IPP server and the Bonjour advertisement, and hands each job to `printable ipp-command`. Because the printer advertises Apple Raster (`image/urf`) rather than PDF, the _client_ rasterises the document — so there is no PDF renderer anywhere in this repository.
 
 Try it with `AIRPRINT_ARGS="--preview /tmp/job.png"` first: every job then renders to a PNG instead of consuming paper. Pages are cropped to their content before scaling, because a whole Letter page reduced onto 48 mm paper is unreadable — [docs/AIRPRINT.md](docs/AIRPRINT.md) explains that trade-off, the status reporting, what is verified and what is not.
+
+## Markdown layout controls
+
+Text can be centered or right-aligned with standalone `<!-- align: center -->`
+or `<!-- align: right -->` comments. QR fences accept `width=240` to set a
+maximum square size including the quiet border. Existing documents retain their
+layout. See [Markdown layout extensions](docs/MARKDOWN.md#layout-extensions).
 
 ## Configuration
 

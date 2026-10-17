@@ -1151,13 +1151,25 @@ connect, discover 0xAE30, subscribe 0xAE02
                                value the LX-D02 path uses); pause on
                                buffer-full, resume on ready
 0xA1 feed                    … skipped when the feed is 0
-wait 500 ms                  … then disconnect
+wait 5 s                     … then disconnect
 ```
 
-The 500 ms settle (`SETTLE_MS` in `protocol_x6/job.rs`) exists because the
+The 5 s settle (`SETTLE_MS` in `protocol_x6/job.rs`) exists because the
 printer sends no completion event: without it the transport would tear the
-link down while the printer is still draining its buffer. **The value is a
-guess, to be tuned against hardware.** The inter-packet delay applies between
+link down while the printer is still draining its buffer. It started at
+500 ms, a guess; at that value an X6h driven over BlueZ (Raspberry Pi Zero 2 W,
+Debian 13, BlueZ 5.82, `ControllerMode = le`, density 6, feed 64) intermittently
+lost its final rows or the trailing feed, and 5 s made repeated jobs complete.
+**That is a hardware-tested workaround, not a measured minimum**: firmware,
+trial counts and HCI traces were not recorded, no other X6-family unit or
+platform was tested, and nothing between 0.5 s and 5 s was tried. Core only
+emits `Action::WaitMs(SETTLE_MS)`; the caller sleeps, so every X6 consumer —
+CLI, server and the browser app — pays the wait, once per copy. To re-evaluate
+it, print the same document with a recognisable last line, a tear rule and a
+feed under each candidate value, let every job finish before the next, and
+record model, firmware, OS, BlueZ version, options and elapsed time. If output
+still truncates, inspect flow control and feed delivery before raising the
+timeout again. The inter-packet delay applies between
 scanlines only — the three setup frames are written back to back with no delay
 before the lead row, and there is none before the feed command either.
 No setup frame counts toward `packets_sent`, which counts scanlines

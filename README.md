@@ -440,6 +440,13 @@ This wraps macOS's own `ippeveprinter` to provide the IPP server and the Bonjour
 
 Try it with `AIRPRINT_ARGS="--preview /tmp/job.png"` first: every job then renders to a PNG instead of consuming paper. Pages are cropped to their content before scaling, because a whole Letter page reduced onto 48 mm paper is unreadable — [docs/AIRPRINT.md](docs/AIRPRINT.md) explains that trade-off, the status reporting, what is verified and what is not.
 
+## Markdown layout controls
+
+Text can be centered or right-aligned with standalone `<!-- align: center -->`
+or `<!-- align: right -->` comments. QR fences accept `width=240` to set a
+maximum square size including the quiet border. Existing documents retain their
+layout. See [Markdown layout extensions](docs/MARKDOWN.md#layout-extensions).
+
 ## Configuration
 
 After each successful connection, printa-ble saves the printer's identifier, name, and model to a config file — `~/Library/Application Support/printa-ble/config.toml` on macOS (the platform config directory elsewhere) — and prefers that printer on later runs. If it is not seen, printa-ble falls back to a device advertising the saved name, or failing that any supported printer of the saved model. `--device` overrides the saved printer, and the newly connected device is saved in its place. Delete the file to forget the saved printer.

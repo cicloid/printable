@@ -1525,7 +1525,7 @@ dependencies = [
  "http-body-util",
  "image",
  "printa-ble-core",
- "rand 0.8.7",
+ "rand 0.10.2",
  "reqwest",
  "serde",
  "serde_json",

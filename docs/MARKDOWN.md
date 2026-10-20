@@ -365,6 +365,23 @@ The rendering core is sans-IO — it never opens a file or a socket. Images ther
 
 The server's refusal is a security boundary, not an omission: it listens on the LAN by default, and without it `![x](/etc/hosts)` would let any client read files off the host. The resolver does not even stat the path when local access is off. `--no-remote-images` additionally removes the outbound fetch, leaving the server with no request surface at all (no SSRF, no fetch amplification).
 
+### Embedded PNGs (CLI and HTTP server)
+
+`![sofa](data:image/png;base64,BASE64_PNG_BYTES)` embeds an image directly in a
+Markdown request. No file reads or network fetches are required, including when
+`--no-remote-images` is active. The exact supported prefix is
+`data:image/png;base64,`; other MIME types and encodings are rejected. The decoded
+file must have a PNG signature and pass image decoding. Both encoded input and
+decoded bytes are bounded by the existing 5 MiB image limit; the existing
+reference count, render-size, and request-body limits still apply.
+
+Invalid inline images become placeholders just like failed URL images. Payloads
+are not included in decode-error logs. `/health` advertises `embedded_png: true`
+so clients can reject older servers before sending illustrated print jobs.
+The standalone Web Bluetooth page is unchanged by this server feature.
+See [the complete embedded-PNG example](../examples/embedded-png.md) and its
+[rendered preview](previews/embedded-png.png).
+
 ### Rendering
 
 A resolved image is decoded (PNG or JPEG), scaled to exactly 384 px wide with Lanczos3 preserving aspect ratio, clamped to 4096 rows (~0.5 m of paper), and dithered with **Floyd–Steinberg — always**, regardless of `--dither` or the API's `dither` field. Those knobs apply to a directly printed image (`-f photo.png`, `/print/image`, the Image tab); a document has no per-image control. It is then stacked as its own full-width block with 8 px of white above and below.

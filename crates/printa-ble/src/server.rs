@@ -253,6 +253,7 @@ async fn health() -> Json<serde_json::Value> {
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
         "url_printing": cfg!(feature = "url"),
+        "embedded_png": true,
     }))
 }
 
@@ -821,6 +822,10 @@ mod tests {
         let body = String::from_utf8(body_bytes(resp).await).unwrap();
         assert!(body.contains("ok"), "body: {body}");
         assert!(body.contains("url_printing"), "body: {body}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["embedded_png"],
+            true
+        );
     }
 
     #[tokio::test]
@@ -832,6 +837,28 @@ mod tests {
     async fn preview_markdown_returns_png() {
         assert_png(post_json("/preview/markdown", r##"{"content":"# Hi\n\n- a\n- b"}"##).await)
             .await;
+    }
+
+    #[tokio::test]
+    async fn preview_embedded_png_renders_pixels_instead_of_placeholder() {
+        use base64::Engine as _;
+        let mut bitmap = Bitmap::new(208);
+        bitmap.set(192, 100, true);
+        let png = printa_ble_core::raster::bitmap_to_png(&bitmap);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+        let content = format!("![icon](data:image/png;base64,{encoded})");
+        let resp = post_json(
+            "/preview/markdown",
+            &json!({"content": content}).to_string(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = body_bytes(resp).await;
+        let image = image::load_from_memory(&bytes).unwrap().to_luma8();
+        assert_eq!(image.width(), 384);
+        assert_eq!(image.height(), 224); // 208 image rows + 8 white rows each side.
+        assert_eq!(image.get_pixel(192, 108).0, [0]);
+        assert_eq!(image.get_pixel(0, 108).0, [255]);
     }
 
     /// Security boundary: a local path in a posted document must not be read.

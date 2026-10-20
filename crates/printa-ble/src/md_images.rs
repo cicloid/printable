@@ -108,7 +108,16 @@ async fn resolve_into(
     };
 
     for dest in refs {
-        let bytes = if is_http(&dest) {
+        let embedded = dest.starts_with("data:");
+        let bytes = if embedded {
+            match decode_embedded_png(&dest) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    warn!("skipping embedded image: {error:#}");
+                    continue;
+                }
+            }
+        } else if is_http(&dest) {
             if !allow_remote {
                 debug!("skipping remote image {dest}: remote images are disabled");
                 continue;
@@ -147,7 +156,9 @@ async fn resolve_into(
         } else {
             // SECURITY BOUNDARY: no filesystem access for network-facing
             // callers. Move on before touching the path in any way.
-            warn!("skipping local image {dest}: only http(s) images are allowed here");
+            warn!(
+                "skipping local image {dest}: only http(s) or embedded PNG images are allowed here"
+            );
             continue;
         };
 
@@ -155,9 +166,33 @@ async fn resolve_into(
             Ok(bitmap) => {
                 out.insert(dest, bitmap);
             }
+            Err(e) if embedded => warn!("skipping embedded image: {e:#}"),
             Err(e) => warn!("skipping image {dest}: {e:#}"),
         }
     }
+}
+
+/// Inline PNGs need neither network nor filesystem access. Bound allocation
+/// before decoding and verify the format instead of trusting the MIME label.
+fn decode_embedded_png(dest: &str) -> anyhow::Result<Vec<u8>> {
+    use base64::Engine as _;
+    let encoded = dest
+        .strip_prefix("data:image/png;base64,")
+        .ok_or_else(|| anyhow::anyhow!("only data:image/png;base64 images are supported"))?;
+    anyhow::ensure!(
+        encoded.len() <= (MAX_IMAGE_BYTES as usize).div_ceil(3) * 4,
+        "embedded image exceeds byte limit"
+    );
+    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+    anyhow::ensure!(
+        bytes.len() <= MAX_IMAGE_BYTES as usize,
+        "embedded image exceeds byte limit"
+    );
+    anyhow::ensure!(
+        bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "embedded image is not PNG"
+    );
+    Ok(bytes)
 }
 
 fn is_http(dest: &str) -> bool {
@@ -250,6 +285,40 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
         format!("http://{addr}/x.png")
+    }
+
+    #[tokio::test]
+    async fn embedded_png_works_without_file_or_network_access() {
+        use base64::Engine as _;
+        let dest = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(png_bytes())
+        );
+        let images = resolve(&format!("![icon]({dest})"), None, false, false).await;
+        assert_eq!(images.len(), 1);
+        assert!(images[&dest].height() > 0);
+    }
+
+    #[tokio::test]
+    async fn invalid_embedded_images_are_not_resolved() {
+        for dest in [
+            "data:image/png;base64,!!!",
+            "data:text/plain;base64,aGk=",
+            "data:image/png;base64,aGk=",
+            "data:image/svg+xml;base64,aGk=",
+        ] {
+            let images = resolve(&format!("![icon]({dest})"), None, false, false).await;
+            assert!(images.is_empty(), "{dest}");
+        }
+    }
+
+    #[test]
+    fn embedded_images_enforce_size_before_decoding() {
+        assert!(decode_embedded_png(&format!(
+            "data:image/png;base64,{}",
+            "A".repeat((MAX_IMAGE_BYTES as usize).div_ceil(3) * 4 + 4)
+        ))
+        .is_err());
     }
 
     #[tokio::test]

@@ -21,6 +21,10 @@ The model is detected from the advertised device name (`LX*` vs `X6h-*`/`x6h-*`/
 
 macOS is the only developed and validated platform. The BLE transport uses [btleplug](https://github.com/deviceplug/btleplug), which also ships BlueZ (Linux) and WinRT (Windows) backends, and nothing in this codebase is knowingly macOS-specific outside the [Bluetooth permission handling](#macos-bluetooth-permission) — but **the Linux and Windows paths have never been built, run, or tested here**. If you have a supported printer and a BlueZ machine, trying it and reporting what happens — even "here is exactly how it fails" — is one of the most valuable contributions you can make. See [CONTRIBUTING.md](CONTRIBUTING.md#where-to-start).
 
+Markdown can embed PNGs with `![alt](data:image/png;base64,...)`, including with
+remote-image fetching disabled. See [the portable image example](examples/embedded-png.md)
+and [image limits](docs/MARKDOWN.md#embedded-pngs-cli-and-http-server).
+
 X6 jobs hold the link open for 5 s after the final feed so buffered output can
 drain. That value is a workaround from the one BlueZ field report so far (an X6h
 on a Raspberry Pi); [docs/PROTOCOL.md](docs/PROTOCOL.md#11-x6--x6h-family) §11

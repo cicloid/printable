@@ -104,7 +104,8 @@ curl http://localhost:8000/health
 {
   "status": "ok",
   "version": "0.1.0",
-  "url_printing": true
+  "url_printing": true,
+  "embedded_png": true
 }
 ```
 
@@ -112,6 +113,7 @@ curl http://localhost:8000/health
 | -------------- | ------- | --------------------------------------------- |
 | `status`       | string  | Always `"ok"`                                 |
 | `version`      | string  | Crate version of the running binary           |
+| `embedded_png` | boolean | Supports inline `data:image/png;base64,...` Markdown images |
 | `url_printing` | boolean | Whether `/preview/url` and `/print/url` exist |
 
 ### GET /status
